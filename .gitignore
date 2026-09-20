@@ -1,0 +1,59 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.eggs/
+
+# Tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+
+# Environments
+.venv/
+venv/
+env/
+
+# Runtime state. SPACEMAP writes to ~/.spacemap by default; these entries
+# cover a checkout that sets SPACEMAP_HOME to the repository itself.
+runtime/*
+!runtime/README.md
+assistant_data/
+.spacemap_home/
+
+# Per-developer interface state. These carry absolute paths and project
+# names and must never be committed.
+src/spacemap_gui/interface_state.json
+src/spacemap_gui/interface_settings.json
+*.pre-migration.bak
+
+# Large local artifacts
+models/
+environments/
+model_cache/
+package_cache/
+*.gguf
+*.safetensors
+*.ckpt
+*.pt
+*.pth
+
+# Data and analysis outputs are never part of the application
+projects/
+docker-projects/
+test_codes/
+data/
+outputs/
+*.ome.tiff
+*.qptiff
+*.svs
+*.ndpi
+
+# Logs and editor noise
+*.log
+.DS_Store
+.vscode/
+.idea/

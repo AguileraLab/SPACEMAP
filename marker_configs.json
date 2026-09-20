@@ -1,0 +1,77 @@
+{
+  "schema_version": 1,
+  "profiles": {
+    "default_phenotyping": {
+      "corr_markers": [
+        "CD31",
+        "E-cadherin",
+        "CD20",
+        "CD4",
+        "Pan-Cytokeratin",
+        "CD68",
+        "Podoplanin",
+        "CD11c",
+        "CD8",
+        "HLA-DR",
+        "CD3e",
+        "CD45",
+        "CD15",
+        "FoxP3",
+        "PDGFRa",
+        "aSMA",
+        "CD163",
+        "FN1",
+        "S100A9",
+        "CD11b",
+        "CD38",
+        "Vimentin"
+      ],
+      "non_corr_markers": []
+    },
+    "subphenotyping": {
+      "corr_markers": [
+        "E-cadherin",
+        "Pan-Cytokeratin",
+        "CD3e",
+        "CD4",
+        "CD8",
+        "FoxP3",
+        "CD31",
+        "Vimentin"
+      ],
+      "non_corr_markers": [
+        "area",
+        "major_axis_length",
+        "minor_axis_length",
+        "eccentricity",
+        "solidity"
+      ]
+    }
+  },
+  "notebooks": {
+    "Step6A_phenotype_leiden.ipynb": {
+      "profile": "default_phenotyping"
+    },
+    "Step6A_phenotype_leiden_subclustering.ipynb": {
+      "profile": "subphenotyping",
+      "non_corr_markers": [
+        "area"
+      ]
+    },
+    "Step6B_phenotype_SOM.ipynb": {
+      "profile": "default_phenotyping"
+    },
+    "Step6E_phenotype_vortex.ipynb": {
+      "profile": "default_phenotyping"
+    },
+    "Step9A_ML_manual_reference.ipynb": {
+      "profile": "default_phenotyping"
+    },
+    "Step9B_ML_concensus.ipynb": {
+      "profile": "default_phenotyping"
+    },
+    "Step10_sub_phenotypes.ipynb": {
+      "profile": "subphenotyping"
+    }
+  }
+}

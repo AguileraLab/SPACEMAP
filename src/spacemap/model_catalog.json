@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "_comment": [
+    "Offline models the SPACEMAP assistant can install and run.",
+    "This file ships with the package and is read-only at runtime.",
+    "To add a model, or to correct an entry, use Tab 0 > AI Assistant > Model library,",
+    "or edit the user catalog at <config dir>/model_catalog.json, which overrides",
+    "entries here by 'id'. Repository names and revisions change over time; verify",
+    "an entry on huggingface.co before reporting a download problem.",
+    "'backend' is 'transformers' for a model directory or 'gguf' for a single",
+    "quantized file served through llama-cpp-python."
+  ],
+  "models": [
+    {
+      "id": "gemma-4-12b-it",
+      "name": "Gemma 4 12B Instruct",
+      "publisher": "Google DeepMind",
+      "backend": "transformers",
+      "repo_id": "google/gemma-4-12B-it",
+      "revision": "main",
+      "local_dir": "google/gemma-4-12B-it",
+      "approx_size_gb": 23.9,
+      "min_vram_gb": 28,
+      "cpu_capable": true,
+      "gated": true,
+      "modalities": ["text", "image"],
+      "license": "Apache-2.0",
+      "license_url": "https://huggingface.co/google/gemma-4-12B-it",
+      "notes": "Reference model for SPACEMAP. Handles text and image questions, so it can comment on registration and segmentation previews. Needs a 28 GB GPU for comfortable use; runs on CPU but slowly. Accepting the model terms on Hugging Face may be required before download."
+    },
+    {
+      "id": "qwen3-4b-instruct-gguf",
+      "name": "Qwen3 4B Instruct (Q4_K_M)",
+      "publisher": "Alibaba Qwen",
+      "backend": "gguf",
+      "repo_id": "Qwen/Qwen3-4B-GGUF",
+      "revision": "main",
+      "local_dir": "gguf",
+      "filename": "Qwen3-4B-Q4_K_M.gguf",
+      "allow_patterns": ["Qwen3-4B-Q4_K_M.gguf"],
+      "approx_size_gb": 2.5,
+      "min_vram_gb": 0,
+      "cpu_capable": true,
+      "gated": false,
+      "modalities": ["text"],
+      "license": "Apache-2.0",
+      "license_url": "https://huggingface.co/Qwen/Qwen3-4B-GGUF",
+      "notes": "Small quantized model for machines with no GPU. Text only, so it cannot look at images, but it answers pipeline questions and drafts parameters on a laptop. Recommended starting point."
+    },
+    {
+      "id": "llama-3.1-8b-instruct",
+      "name": "Llama 3.1 8B Instruct",
+      "publisher": "Meta",
+      "backend": "transformers",
+      "repo_id": "meta-llama/Llama-3.1-8B-Instruct",
+      "revision": "main",
+      "local_dir": "meta-llama/Llama-3.1-8B-Instruct",
+      "approx_size_gb": 16.1,
+      "min_vram_gb": 20,
+      "cpu_capable": true,
+      "gated": true,
+      "modalities": ["text"],
+      "license": "Llama 3.1 Community License",
+      "license_url": "https://huggingface.co/meta-llama/Llama-3.1-8B-Instruct",
+      "notes": "Text-only alternative with a mid-size GPU footprint. Access must be requested on Hugging Face and approved before the download will work."
+    }
+  ]
+}

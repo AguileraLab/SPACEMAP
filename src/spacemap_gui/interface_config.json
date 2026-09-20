@@ -1,0 +1,10 @@
+{
+    "global_accent_color": "#4A90E2",
+    "global_border_radius": 8,
+    "global_tab_font_size": 22,
+    "global_content_font_size": 21,
+    "global_tab_align": "Center",
+    "global_cmap": "viridis",
+    "global_thumb_scale": 1.0,
+    "global_theme_mode": "Dark"
+}
