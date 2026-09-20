@@ -8,13 +8,14 @@ not edit it by hand -- run the script instead, or let CI regenerate it. The
 "Why" column comes from the `Why:` line in each commit message; see
 [CONTRIBUTING.md](../CONTRIBUTING.md) for how to write one.
 
-**4 changes** by **1 contributor**, touching **288 files**. Latest: `088c1ea` on 2026-09-19.
+**5 changes** by **1 contributor**, touching **289 files**. Latest: `e514064` on 2026-09-19.
 
 
 ## 2026-09
 
 | Date | Change | Who | Why | Files | Lines |
 | --- | --- | --- | --- | --- | --- |
+| 2026-09-19 | `e514064` docs: generate the change ledger | Aguilera Lab | Git already holds the history, but reading it requires knowing Git; the ledger puts the same record in front of a reviewer, an auditor or a new lab member as a single page. | 2 | +348/-3 |
 | 2026-09-19 | `088c1ea` ci: add licensing, contribution workflow and automated repository checks | Aguilera Lab | the change ledger is only as good as the commit messages behind it, and the no-extras and path checks stop the two regressions that would most easily slip back in. | 12 | +819/-0 |
 | 2026-09-19 | `d0b372a` docs: write installation, assistant, architecture and troubleshooting guides | Aguilera Lab | the previous notes recorded internal deliberation and site-specific operating procedure, neither of which helps an external user install or run the pipeline. | 6 | +1044/-0 |
 | 2026-09-19 | `81ad6db` build: package SPACEMAP for installation by other groups | Aguilera Lab | a new user must be able to install and start SPACEMAP without reproducing one machine's environment by hand. | 8 | +473/-0 |
@@ -23,6 +24,13 @@ not edit it by hand -- run the script instead, or let CI regenerate it. The
 ---
 
 ## Files changed per commit
+
+<details><summary><code>e514064</code> docs: generate the change ledger</summary>
+
+- `docs/LEDGER.md`
+- `scripts/update_ledger.py`
+
+</details>
 
 <details><summary><code>088c1ea</code> ci: add licensing, contribution workflow and automated repository checks</summary>
 

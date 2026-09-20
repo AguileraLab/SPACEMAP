@@ -146,7 +146,18 @@ def read_commits() -> list[Commit]:
             # Binary files report "-" instead of a count.
             commit.insertions += int(added) if added.isdigit() else 0
             commit.deletions += int(removed) if removed.isdigit() else 0
-    return commits
+
+    # A commit that only rewrites the ledger is bookkeeping, not a change to
+    # the project. Excluding it also makes this script a fixed point: writing
+    # the ledger and committing it does not make the ledger out of date again,
+    # so the --check in CI is stable.
+    return [commit for commit in commits if not _is_ledger_only(commit)]
+
+
+def _is_ledger_only(commit: Commit) -> bool:
+    """True when a commit touches nothing but the generated ledger."""
+    ledger = LEDGER_PATH.as_posix()
+    return bool(commit.files) and all(path == ledger for path in commit.files)
 
 
 def _escape(value: str) -> str:
