@@ -92,3 +92,74 @@ preferred-citation:
   notes: >-
     Preprint. Update this entry with the journal reference once the paper is
     published.
+
+# ---------------------------------------------------------------------------
+# JOURNAL VERSION - not active yet.
+#
+# Author order and affiliations for the manuscript submitted to Nature
+# Communications. It differs from the bioRxiv entry above: David Hein moves to
+# fourth, Eslam Elghonaimy to fifth, and Mengxi Yu is added eighth.
+#
+# Bassel Dawod and Arely Perez Rodriguez contributed equally.
+# Lead contact: Todd A. Aguilera <Todd.Aguilera@UTSouthwestern.edu>
+#
+# On acceptance, replace the preferred-citation block above with this one,
+# filling in doi, year, volume and article-number.
+#
+# preferred-citation:
+#   type: article
+#   title: >-
+#     Resolving phenotyping discordance with SPACEMAP, an integrated machine
+#     learning framework
+#   authors:
+#     - given-names: Bassel
+#       family-names: Dawod
+#       orcid: "https://orcid.org/0000-0002-1055-4387"
+#       affiliation: "Department of Radiation Oncology, University of Texas Southwestern Medical Center, Dallas, TX, USA"
+#     - given-names: Arely
+#       family-names: Perez Rodriguez
+#       affiliation: "Department of Radiation Oncology, University of Texas Southwestern Medical Center, Dallas, TX, USA"
+#     - given-names: Sebastian
+#       family-names: Diegeler
+#       affiliation: "Department of Radiation Oncology, University of Texas Southwestern Medical Center, Dallas, TX, USA; current address: Department of Pathology, University of Cambridge, Cambridge, UK"
+#     - given-names: David
+#       family-names: Hein
+#       affiliation: "Lyda Hill Department of Bioinformatics, University of Texas Southwestern Medical Center, Dallas, TX, USA"
+#     - given-names: Eslam
+#       family-names: Elghonaimy
+#       affiliation: "Department of Radiation Oncology, University of Texas Southwestern Medical Center, Dallas, TX, USA"
+#     - given-names: Megan
+#       family-names: Wachsman
+#       affiliation: "Department of Pathology, University of Texas Southwestern Medical Center, Dallas, TX, USA; Pathology and Laboratory Medicine Services, Veterans Affairs North Texas Health Care System, Dallas, TX, USA"
+#     - given-names: Purva
+#       family-names: Gopal
+#       affiliation: "Department of Pathology, University of Texas Southwestern Medical Center, Dallas, TX, USA; Pathology and Laboratory Medicine Services, Veterans Affairs North Texas Health Care System, Dallas, TX, USA"
+#     - given-names: Mengxi
+#       family-names: Yu
+#       affiliation: "Pathology and Laboratory Medicine Services, Veterans Affairs North Texas Health Care System, Dallas, TX, USA"
+#     - given-names: Paul
+#       name-particle: H.
+#       family-names: Acosta
+#       affiliation: "Lyda Hill Department of Bioinformatics, University of Texas Southwestern Medical Center, Dallas, TX, USA"
+#     - given-names: Andrew
+#       family-names: Jamieson
+#       affiliation: "Lyda Hill Department of Bioinformatics, University of Texas Southwestern Medical Center, Dallas, TX, USA"
+#     - given-names: Gaudenz
+#       family-names: Danuser
+#       affiliation: "Lyda Hill Department of Bioinformatics, University of Texas Southwestern Medical Center, Dallas, TX, USA"
+#     - given-names: Robert
+#       name-particle: D.
+#       family-names: Timmerman
+#       affiliation: "Department of Radiation Oncology, University of Texas Southwestern Medical Center, Dallas, TX, USA"
+#     - given-names: Satwik
+#       family-names: Rajaram
+#       affiliation: "Lyda Hill Department of Bioinformatics, University of Texas Southwestern Medical Center, Dallas, TX, USA"
+#     - given-names: Todd
+#       name-particle: A.
+#       family-names: Aguilera
+#       orcid: "https://orcid.org/0000-0002-3734-3758"
+#       affiliation: "Department of Radiation Oncology, University of Texas Southwestern Medical Center, Dallas, TX, USA"
+#   journal: "Nature Communications"
+#   year: TBD
+#   doi: TBD
+# ---------------------------------------------------------------------------
