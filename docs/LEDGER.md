@@ -8,28 +8,37 @@ not edit it by hand -- run the script instead, or let CI regenerate it. The
 "Why" column comes from the `Why:` line in each commit message; see
 [CONTRIBUTING.md](../CONTRIBUTING.md) for how to write one.
 
-**9 changes** by **1 contributor**, touching **290 files**. Latest: `9f6933b` on 2026-09-19.
+**10 changes** by **1 contributor**, touching **290 files**. Latest: `3291334` on 2026-09-19.
 
 
 ## 2026-09
 
 | Date | Change | Who | Why | Files | Lines |
 | --- | --- | --- | --- | --- | --- |
-| 2026-09-19 | `9f6933b` chore: drop the empty runtime/ directory | Aguilera Lab | it was a leftover from the internal checkout and only invited the question of what it was for. | 3 | +0/-22 |
-| 2026-09-19 | `0b004cf` fix: repair three latent NameError crashes found by static analysis | Aguilera Lab | all three were reachable crashes in released analysis code, and the batch-correction one meant a QC figure users believe they are getting was never produced. | 4 | +3285/-3284 |
-| 2026-09-19 | `d58c629` fix: make the project installable, and stop the container forcing the AI on | Aguilera Lab | every route into the project began with an install that could not succeed, and in the container the assistant was not actually optional. | 8 | +392/-14 |
-| 2026-09-19 | `03503c3` fix: keep the ledger stable when a commit only rewrites it | Aguilera Lab | without this the ledger was permanently one commit behind itself and the CI check could never pass. | 2 | +21/-2 |
-| 2026-09-19 | `e514064` docs: generate the change ledger | Aguilera Lab | Git already holds the history, but reading it requires knowing Git; the ledger puts the same record in front of a reviewer, an auditor or a new lab member as a single page. | 2 | +348/-3 |
-| 2026-09-19 | `088c1ea` ci: add licensing, contribution workflow and automated repository checks | Aguilera Lab | the change ledger is only as good as the commit messages behind it, and the no-extras and path checks stop the two regressions that would most easily slip back in. | 12 | +819/-0 |
-| 2026-09-19 | `d0b372a` docs: write installation, assistant, architecture and troubleshooting guides | Aguilera Lab | the previous notes recorded internal deliberation and site-specific operating procedure, neither of which helps an external user install or run the pipeline. | 6 | +1044/-0 |
-| 2026-09-19 | `81ad6db` build: package SPACEMAP for installation by other groups | Aguilera Lab | a new user must be able to install and start SPACEMAP without reproducing one machine's environment by hand. | 8 | +473/-0 |
-| 2026-09-19 | `74ae5d1` feat: import the SPACEMAP pipeline, GUI and test suite | Aguilera Lab | this is the first public release of a pipeline that until now only ran from one lab's checkout on one cluster. | 262 | +230730/-0 |
+| 2026-09-19 | `3291334` docs: record UTSW copyright and named authorship | Bassel Dawod | copyright ownership, software authorship and paper authorship are three different things, and a single lab name in every slot recorded none of them correctly. | 3 | +74/-9 |
+| 2026-09-19 | `47d7c92` chore: drop the empty runtime/ directory | Bassel Dawod | it was a leftover from the internal checkout and only invited the question of what it was for. | 3 | +0/-22 |
+| 2026-09-19 | `59c7b5d` fix: repair three latent NameError crashes found by static analysis | Bassel Dawod | all three were reachable crashes in released analysis code, and the batch-correction one meant a QC figure users believe they are getting was never produced. | 4 | +3285/-3284 |
+| 2026-09-19 | `8803cce` fix: make the project installable, and stop the container forcing the AI on | Bassel Dawod | every route into the project began with an install that could not succeed, and in the container the assistant was not actually optional. | 8 | +392/-14 |
+| 2026-09-19 | `8964ae3` fix: keep the ledger stable when a commit only rewrites it | Bassel Dawod | without this the ledger was permanently one commit behind itself and the CI check could never pass. | 2 | +21/-2 |
+| 2026-09-19 | `2fd931d` docs: generate the change ledger | Bassel Dawod | Git already holds the history, but reading it requires knowing Git; the ledger puts the same record in front of a reviewer, an auditor or a new lab member as a single page. | 2 | +348/-3 |
+| 2026-09-19 | `24f2903` ci: add licensing, contribution workflow and automated repository checks | Bassel Dawod | the change ledger is only as good as the commit messages behind it, and the no-extras and path checks stop the two regressions that would most easily slip back in. | 12 | +819/-0 |
+| 2026-09-19 | `2833155` docs: write installation, assistant, architecture and troubleshooting guides | Bassel Dawod | the previous notes recorded internal deliberation and site-specific operating procedure, neither of which helps an external user install or run the pipeline. | 6 | +1044/-0 |
+| 2026-09-19 | `7b34da7` build: package SPACEMAP for installation by other groups | Bassel Dawod | a new user must be able to install and start SPACEMAP without reproducing one machine's environment by hand. | 8 | +473/-0 |
+| 2026-09-19 | `288f52d` feat: import the SPACEMAP pipeline, GUI and test suite | Bassel Dawod | this is the first public release of a pipeline that until now only ran from one lab's checkout on one cluster. | 262 | +230730/-0 |
 
 ---
 
 ## Files changed per commit
 
-<details><summary><code>9f6933b</code> chore: drop the empty runtime/ directory</summary>
+<details><summary><code>3291334</code> docs: record UTSW copyright and named authorship</summary>
+
+- `CITATION.cff`
+- `LICENSE`
+- `pyproject.toml`
+
+</details>
+
+<details><summary><code>47d7c92</code> chore: drop the empty runtime/ directory</summary>
 
 - `.dockerignore`
 - `.gitignore`
@@ -37,7 +46,7 @@ not edit it by hand -- run the script instead, or let CI regenerate it. The
 
 </details>
 
-<details><summary><code>0b004cf</code> fix: repair three latent NameError crashes found by static analysis</summary>
+<details><summary><code>59c7b5d</code> fix: repair three latent NameError crashes found by static analysis</summary>
 
 - `pyproject.toml`
 - `src/spacemap/batch_correction_utils.py`
@@ -46,7 +55,7 @@ not edit it by hand -- run the script instead, or let CI regenerate it. The
 
 </details>
 
-<details><summary><code>d58c629</code> fix: make the project installable, and stop the container forcing the AI on</summary>
+<details><summary><code>8803cce</code> fix: make the project installable, and stop the container forcing the AI on</summary>
 
 - `Dockerfile`
 - `docker-compose.yml`
@@ -59,21 +68,21 @@ not edit it by hand -- run the script instead, or let CI regenerate it. The
 
 </details>
 
-<details><summary><code>03503c3</code> fix: keep the ledger stable when a commit only rewrites it</summary>
+<details><summary><code>8964ae3</code> fix: keep the ledger stable when a commit only rewrites it</summary>
 
 - `docs/LEDGER.md`
 - `scripts/update_ledger.py`
 
 </details>
 
-<details><summary><code>e514064</code> docs: generate the change ledger</summary>
+<details><summary><code>2fd931d</code> docs: generate the change ledger</summary>
 
 - `docs/LEDGER.md`
 - `scripts/update_ledger.py`
 
 </details>
 
-<details><summary><code>088c1ea</code> ci: add licensing, contribution workflow and automated repository checks</summary>
+<details><summary><code>24f2903</code> ci: add licensing, contribution workflow and automated repository checks</summary>
 
 - `.githooks/commit-msg`
 - `.github/ISSUE_TEMPLATE/bug_report.md`
@@ -90,7 +99,7 @@ not edit it by hand -- run the script instead, or let CI regenerate it. The
 
 </details>
 
-<details><summary><code>d0b372a</code> docs: write installation, assistant, architecture and troubleshooting guides</summary>
+<details><summary><code>2833155</code> docs: write installation, assistant, architecture and troubleshooting guides</summary>
 
 - `CHANGELOG.md`
 - `README.md`
@@ -101,7 +110,7 @@ not edit it by hand -- run the script instead, or let CI regenerate it. The
 
 </details>
 
-<details><summary><code>81ad6db</code> build: package SPACEMAP for installation by other groups</summary>
+<details><summary><code>7b34da7</code> build: package SPACEMAP for installation by other groups</summary>
 
 - `.dockerignore`
 - `Dockerfile`
@@ -114,7 +123,7 @@ not edit it by hand -- run the script instead, or let CI regenerate it. The
 
 </details>
 
-<details><summary><code>74ae5d1</code> feat: import the SPACEMAP pipeline, GUI and test suite</summary>
+<details><summary><code>288f52d</code> feat: import the SPACEMAP pipeline, GUI and test suite</summary>
 
 - `.gitignore`
 - `marker_configs.json`
