@@ -19,8 +19,6 @@ env/
 
 # Runtime state. SPACEMAP writes to ~/.spacemap by default; these entries
 # cover a checkout that sets SPACEMAP_HOME to the repository itself.
-runtime/*
-!runtime/README.md
 assistant_data/
 .spacemap_home/
 

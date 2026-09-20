@@ -12,8 +12,6 @@ models
 environments
 model_cache
 assistant_data
-runtime/*
-!runtime/README.md
 docker-projects
 test_codes
 *.log
