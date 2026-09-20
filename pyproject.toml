@@ -5,8 +5,11 @@ description = "SPACEMAP: a spatial multiplex imaging pipeline with an optional l
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
-authors = [{ name = "Aguilera Lab, UT Southwestern Medical Center" }]
-maintainers = [{ name = "Aguilera Lab, UT Southwestern Medical Center" }]
+authors = [
+    { name = "Bassel Dawod", email = "basbees@gmail.com" },
+    { name = "Todd A. Aguilera", email = "todd.aguilera@utsouthwestern.edu" },
+]
+maintainers = [{ name = "Bassel Dawod", email = "basbees@gmail.com" }]
 keywords = [
     "spatial-biology",
     "multiplex-imaging",

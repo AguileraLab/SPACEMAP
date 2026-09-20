@@ -1,13 +1,29 @@
 cff-version: 1.2.0
 title: "SPACEMAP: a spatial multiplex imaging analysis pipeline"
-message: "If you use SPACEMAP in your research, please cite it."
+message: >-
+  If you use SPACEMAP in your research, please cite the paper listed under
+  preferred-citation.
 type: software
+
+# Authors of the SOFTWARE. This is the development credit, and is separate
+# from the paper's author list below.
 authors:
-  - name: "Aguilera Lab, UT Southwestern Medical Center"
-    city: Dallas
-    region: Texas
-    country: US
-    website: "https://github.com/AguileraLab"
+  - given-names: Bassel
+    family-names: Dawod
+    affiliation: >-
+      Department of Radiation Oncology, University of Texas Southwestern
+      Medical Center
+    email: basbees@gmail.com
+    # orcid: "https://orcid.org/0000-0000-0000-0000"
+  - given-names: Todd
+    name-particle: A.
+    family-names: Aguilera
+    affiliation: >-
+      Department of Radiation Oncology, University of Texas Southwestern
+      Medical Center
+    email: todd.aguilera@utsouthwestern.edu
+    # orcid: "https://orcid.org/0000-0000-0000-0000"
+
 repository-code: "https://github.com/AguileraLab/SPACEMAP"
 url: "https://github.com/AguileraLab/SPACEMAP"
 abstract: >-
@@ -27,3 +43,49 @@ keywords:
 license: MIT
 version: 0.3.0
 date-released: "2026-09-19"
+
+# The publication describing the method. GitHub's "Cite this repository"
+# button and most reference managers prefer this over the software entry.
+preferred-citation:
+  type: article
+  title: >-
+    Resolving phenotyping discordance with SPACEMAP, an integrated machine
+    learning framework
+  authors:
+    - given-names: Bassel
+      family-names: Dawod
+    - given-names: Arely
+      family-names: Perez Rodriguez
+    - given-names: Sebastian
+      family-names: Diegeler
+    - given-names: Eslam
+      family-names: Elghonaimy
+    - given-names: Megan
+      family-names: Wachsman
+    - given-names: Purva
+      family-names: Gopal
+    - given-names: David
+      family-names: Hein
+    - given-names: Paul
+      name-particle: H.
+      family-names: Acosta
+    - given-names: Andrew
+      family-names: Jamieson
+    - given-names: Gaudenz
+      family-names: Danuser
+    - given-names: Robert
+      name-particle: D.
+      family-names: Timmerman
+    - given-names: Satwik
+      family-names: Rajaram
+    - given-names: Todd
+      name-particle: A.
+      family-names: Aguilera
+  journal: bioRxiv
+  year: 2025
+  month: 12
+  doi: "10.1101/2025.11.27.690631"
+  url: "https://www.biorxiv.org/content/10.1101/2025.11.27.690631v1"
+  notes: >-
+    Preprint. Update this entry with the journal reference once the paper is
+    published.
