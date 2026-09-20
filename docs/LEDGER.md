@@ -8,13 +8,14 @@ not edit it by hand -- run the script instead, or let CI regenerate it. The
 "Why" column comes from the `Why:` line in each commit message; see
 [CONTRIBUTING.md](../CONTRIBUTING.md) for how to write one.
 
-**11 changes** by **1 contributor**, touching **290 files**. Latest: `1784367` on 2026-09-19.
+**12 changes** by **1 contributor**, touching **290 files**. Latest: `7335961` on 2026-09-19.
 
 
 ## 2026-09
 
 | Date | Change | Who | Why | Files | Lines |
 | --- | --- | --- | --- | --- | --- |
+| 2026-09-19 | `7335961` docs: record the submitted manuscript's author list | Bassel Dawod | capturing the order now means the citation is a two-line edit on acceptance rather than a reconstruction from memory. | 1 | +71/-0 |
 | 2026-09-19 | `1784367` docs: add ORCID identifiers to the citation metadata | Bassel Dawod | an ORCID is what lets indexers and reference managers attribute the software to the right people when names are ambiguous or change. | 1 | +6/-3 |
 | 2026-09-19 | `3291334` docs: record UTSW copyright and named authorship | Bassel Dawod | copyright ownership, software authorship and paper authorship are three different things, and a single lab name in every slot recorded none of them correctly. | 3 | +74/-9 |
 | 2026-09-19 | `47d7c92` chore: drop the empty runtime/ directory | Bassel Dawod | it was a leftover from the internal checkout and only invited the question of what it was for. | 3 | +0/-22 |
@@ -30,6 +31,12 @@ not edit it by hand -- run the script instead, or let CI regenerate it. The
 ---
 
 ## Files changed per commit
+
+<details><summary><code>7335961</code> docs: record the submitted manuscript's author list</summary>
+
+- `CITATION.cff`
+
+</details>
 
 <details><summary><code>1784367</code> docs: add ORCID identifiers to the citation metadata</summary>
 
