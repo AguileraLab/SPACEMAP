@@ -1,0 +1,34 @@
+services:
+  spacemap:
+    build:
+      context: .
+      args:
+        # Add "ai" to bake the AI assistant's dependencies into the image, or
+        # "ai,gguf" to include the CPU-friendly llama.cpp backend.
+        SPACEMAP_EXTRAS: ""
+    image: spacemap:latest
+    ports:
+      - "8501:8501"
+    shm_size: "2gb"
+    environment:
+      # Set to "off" to hide the AI assistant entirely.
+      SPACEMAP_ASSISTANT: "on"
+    volumes:
+      # Your data. Set SPACEMAP_PROJECTS_DIR before 'docker compose up'.
+      - ${SPACEMAP_PROJECTS_DIR:-./docker-projects}:/workspace/projects
+      # Settings, logs and downloaded models, so they survive a rebuild.
+      - spacemap-home:/home/spacemap/.spacemap
+
+    # Uncomment to give the container a GPU.
+    # Requires the NVIDIA Container Toolkit on the host.
+    #
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+volumes:
+  spacemap-home:

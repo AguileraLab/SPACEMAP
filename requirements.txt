@@ -1,0 +1,7 @@
+# SPACEMAP uses pyproject.toml as the canonical dependency definition.
+# This compatibility file keeps `pip install -r requirements.txt` aligned
+# with the editable package installation used by the README and Dockerfile.
+#
+#     python -m pip install -r requirements.txt
+
+-e .[notebook]

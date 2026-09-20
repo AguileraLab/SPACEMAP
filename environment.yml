@@ -1,0 +1,28 @@
+# Conda environment for SPACEMAP.
+#
+# Conda supplies the compiled geospatial and imaging libraries that are awkward
+# to build with pip; the Python package itself is installed afterwards:
+#
+#     conda env create -f environment.yml
+#     conda activate spacemap
+#     pip install -e .
+#
+# The AI assistant is optional and is not installed here. Enable it from
+# Tab 0 inside the interface, which prints the command for this environment.
+name: spacemap
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  # Numeric stack, pinned where the pipeline is sensitive to the ABI.
+  - numpy=1.26.*
+  - scipy>=1.12
+  - libopenblas
+  # Compiled libraries behind rasterio, geopandas, shapely and opencv.
+  - gdal
+  - geos
+  - proj
+  - hdf5
+  # Developer tools
+  - pytest>=7.4.4
