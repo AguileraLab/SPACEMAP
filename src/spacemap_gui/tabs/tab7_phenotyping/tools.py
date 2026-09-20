@@ -5916,7 +5916,7 @@ def render_tools(project_root: Path, global_input_path: str | None) -> None:
                             output_path=export_path,
                             input_rows=len(df_working),
                             output_rows=len(export_df),
-                            extra={"export_columns": export_cols, "filters": filter_rows},
+                            extra={"export_columns": export_cols, "filters": updated_filters},
                         )
 
             with st.expander("E) Split + Group Export", expanded=False):

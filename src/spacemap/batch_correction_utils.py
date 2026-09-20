@@ -2996,24 +2996,9 @@ def generate_qc_plots_emd_silhouette(emd_df, sil_dict, output_dir):
     for bar in bars:
         height = bar.get_height()
         plt.text(bar.get_x() + bar.get_width()/2., height, f'{height:.3f}', ha='center', va='bottom', fontweight='bold')
-        print(f"   UMAP1_MIN = {recommendations['umap1_min']:.0f}")
-        print(f"   UMAP1_MAX = {recommendations['umap1_max']:.0f}")
-        print(f"   UMAP2_MIN = {recommendations['umap2_min']:.0f}")
-        print(f"   UMAP2_MAX = {recommendations['umap2_max']:.0f}")
-    else:
-        print(f"   # UMAP outlier filtering (Only {recommendations['outlier_fraction']*100:.2f}% potential outliers - filtering may not be needed)")
-        print(f"   FILTER_UMAP_OUTLIERS = False  # Optional - very few outliers detected")
-    
-    print(f"\n   # Correction distance filtering (usually disabled)")
-    print(f"   FILTER_HIGH_CORRECTION_DISTANCE = False  # Enable if you see extreme corrections\n")
-    
-    print(f"\nNEXT STEPS:")
-    print(f"   1. Review the UMAP plots above - check if batches are well-mixed")
-    print(f"   2. Examine the correction distance distribution")
-    print(f"   3. Look for obvious outlier clusters in the UMAP")
-    print(f"   4. Adjust Step 5 parameters if needed based on these visualizations")
-    print(f"   5. Proceed to Step 5 to apply QC filters")
-    print("="*80)
+    plt.tight_layout()
+    plt.savefig(output_dir / "qc_silhouette_comparison.png", dpi=300)
+    plt.close()
 
 
 def calculate_batch_emd(data, markers, batch_col, cofactor=5.0):
