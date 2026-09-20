@@ -1,0 +1,19 @@
+# <type>: <short summary, imperative mood, max ~72 chars>
+#
+# Types: feat, fix, docs, refactor, perf, test, build, ci, chore
+#
+# What changed and, if it is not obvious, how.
+#
+#
+# Why: <the reason for this change, in one sentence>
+#
+# The Why line is required. It is what appears in docs/LEDGER.md, and it is
+# the part that is impossible to reconstruct later from the diff.
+#
+# Example:
+#   fix: stop the model server refusing to start without a GPU
+#
+#   load_model() raised when torch.cuda.is_available() was false. It now
+#   loads on CPU in float32 instead.
+#
+#   Why: users without a GPU could not use the assistant at all.

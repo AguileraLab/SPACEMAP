@@ -1,0 +1,29 @@
+cff-version: 1.2.0
+title: "SPACEMAP: a spatial multiplex imaging analysis pipeline"
+message: "If you use SPACEMAP in your research, please cite it."
+type: software
+authors:
+  - name: "Aguilera Lab, UT Southwestern Medical Center"
+    city: Dallas
+    region: Texas
+    country: US
+    website: "https://github.com/AguileraLab"
+repository-code: "https://github.com/AguileraLab/SPACEMAP"
+url: "https://github.com/AguileraLab/SPACEMAP"
+abstract: >-
+  SPACEMAP is an end-to-end pipeline for spatial multiplex imaging analysis,
+  covering image registration, background subtraction, ROI extraction, tissue
+  annotation, cell segmentation, batch correction, immune phenotyping and
+  spatial analysis, through a graphical interface and reusable Python modules.
+  It includes an optional, local-first AI assistant that is disabled by
+  default.
+keywords:
+  - spatial biology
+  - multiplex imaging
+  - CODEX
+  - cell segmentation
+  - phenotyping
+  - bioimage analysis
+license: MIT
+version: 0.3.0
+date-released: "2026-09-19"

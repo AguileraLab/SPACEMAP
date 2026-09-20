@@ -1,0 +1,124 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install ruff
+      - run: python -m ruff check src scripts
+
+  hygiene:
+    name: Repository hygiene
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Ledger is up to date
+        run: python scripts/update_ledger.py --check
+
+      - name: No absolute paths from a contributor's machine
+        run: python scripts/check_no_local_paths.py
+
+      - name: Notebook outputs are stripped
+        run: |
+          python - <<'PY'
+          import json, sys
+          from pathlib import Path
+          offenders = []
+          for path in Path("notebooks").rglob("*.ipynb"):
+              nb = json.loads(path.read_text(encoding="utf-8"))
+              for cell in nb.get("cells", []):
+                  if cell.get("outputs"):
+                      offenders.append(str(path))
+                      break
+          if offenders:
+              print("Notebooks still contain saved outputs:")
+              for name in offenders:
+                  print(f"  {name}")
+              print("\nRun: pip install nbstripout && nbstripout notebooks/*.ipynb")
+              sys.exit(1)
+          print("All notebooks are stripped.")
+          PY
+
+  test:
+    name: Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgl1 libglib2.0-0 libgeos-dev libproj-dev proj-bin gdal-bin libgdal-dev
+
+      - name: Install SPACEMAP
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e . pytest
+
+      - name: Run tests
+        # The assistant is off, which is the configuration a new user gets.
+        env:
+          SPACEMAP_ASSISTANT: "off"
+        run: python -m pytest -q
+
+  import-without-extras:
+    name: Starts with no AI extras
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgl1 libglib2.0-0 libgeos-dev libproj-dev proj-bin gdal-bin libgdal-dev
+      - run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+      - name: The pipeline imports and the assistant reports itself off
+        run: |
+          python - <<'PY'
+          from spacemap import ai_settings, userpaths
+          from spacemap.hardware import detect_hardware
+          from spacemap.model_catalog import list_models
+          assert ai_settings.is_enabled() is False, "the assistant must ship switched off"
+          print("layout :", userpaths.describe_layout()["home"])
+          print("hardware:", detect_hardware().summary())
+          print("catalog :", [entry.id for entry in list_models()])
+          print("missing AI deps (expected):", ai_settings.missing_local_dependencies())
+          import spacemap_gui.launch as launch
+          assert launch.app_path().is_file()
+          print("GUI entry point present.")
+          PY
