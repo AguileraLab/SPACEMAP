@@ -8,13 +8,14 @@ not edit it by hand -- run the script instead, or let CI regenerate it. The
 "Why" column comes from the `Why:` line in each commit message; see
 [CONTRIBUTING.md](../CONTRIBUTING.md) for how to write one.
 
-**8 changes** by **1 contributor**, touching **290 files**. Latest: `0b004cf` on 2026-09-19.
+**9 changes** by **1 contributor**, touching **290 files**. Latest: `9f6933b` on 2026-09-19.
 
 
 ## 2026-09
 
 | Date | Change | Who | Why | Files | Lines |
 | --- | --- | --- | --- | --- | --- |
+| 2026-09-19 | `9f6933b` chore: drop the empty runtime/ directory | Aguilera Lab | it was a leftover from the internal checkout and only invited the question of what it was for. | 3 | +0/-22 |
 | 2026-09-19 | `0b004cf` fix: repair three latent NameError crashes found by static analysis | Aguilera Lab | all three were reachable crashes in released analysis code, and the batch-correction one meant a QC figure users believe they are getting was never produced. | 4 | +3285/-3284 |
 | 2026-09-19 | `d58c629` fix: make the project installable, and stop the container forcing the AI on | Aguilera Lab | every route into the project began with an install that could not succeed, and in the container the assistant was not actually optional. | 8 | +392/-14 |
 | 2026-09-19 | `03503c3` fix: keep the ledger stable when a commit only rewrites it | Aguilera Lab | without this the ledger was permanently one commit behind itself and the CI check could never pass. | 2 | +21/-2 |
@@ -27,6 +28,14 @@ not edit it by hand -- run the script instead, or let CI regenerate it. The
 ---
 
 ## Files changed per commit
+
+<details><summary><code>9f6933b</code> chore: drop the empty runtime/ directory</summary>
+
+- `.dockerignore`
+- `.gitignore`
+- `runtime/README.md`
+
+</details>
 
 <details><summary><code>0b004cf</code> fix: repair three latent NameError crashes found by static analysis</summary>
 
