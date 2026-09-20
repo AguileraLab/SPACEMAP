@@ -8,13 +8,14 @@ not edit it by hand -- run the script instead, or let CI regenerate it. The
 "Why" column comes from the `Why:` line in each commit message; see
 [CONTRIBUTING.md](../CONTRIBUTING.md) for how to write one.
 
-**5 changes** by **1 contributor**, touching **289 files**. Latest: `e514064` on 2026-09-19.
+**6 changes** by **1 contributor**, touching **289 files**. Latest: `03503c3` on 2026-09-19.
 
 
 ## 2026-09
 
 | Date | Change | Who | Why | Files | Lines |
 | --- | --- | --- | --- | --- | --- |
+| 2026-09-19 | `03503c3` fix: keep the ledger stable when a commit only rewrites it | Aguilera Lab | without this the ledger was permanently one commit behind itself and the CI check could never pass. | 2 | +21/-2 |
 | 2026-09-19 | `e514064` docs: generate the change ledger | Aguilera Lab | Git already holds the history, but reading it requires knowing Git; the ledger puts the same record in front of a reviewer, an auditor or a new lab member as a single page. | 2 | +348/-3 |
 | 2026-09-19 | `088c1ea` ci: add licensing, contribution workflow and automated repository checks | Aguilera Lab | the change ledger is only as good as the commit messages behind it, and the no-extras and path checks stop the two regressions that would most easily slip back in. | 12 | +819/-0 |
 | 2026-09-19 | `d0b372a` docs: write installation, assistant, architecture and troubleshooting guides | Aguilera Lab | the previous notes recorded internal deliberation and site-specific operating procedure, neither of which helps an external user install or run the pipeline. | 6 | +1044/-0 |
@@ -24,6 +25,13 @@ not edit it by hand -- run the script instead, or let CI regenerate it. The
 ---
 
 ## Files changed per commit
+
+<details><summary><code>03503c3</code> fix: keep the ledger stable when a commit only rewrites it</summary>
+
+- `docs/LEDGER.md`
+- `scripts/update_ledger.py`
+
+</details>
 
 <details><summary><code>e514064</code> docs: generate the change ledger</summary>
 
