@@ -16,9 +16,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     STREAMLIT_BROWSER_GATHER_USAGE_STATS=false \
     TOKENIZERS_PARALLELISM=false \
     # Everything the application writes goes to one mounted volume.
-    SPACEMAP_HOME=/home/spacemap/.spacemap \
-    # The assistant ships off; enable it from Tab 0 inside the container.
-    SPACEMAP_ASSISTANT=on
+    SPACEMAP_HOME=/home/spacemap/.spacemap
+# SPACEMAP_ASSISTANT is deliberately not set here. Setting it would override
+# the in-app setting and make the Tab 0 switch inert; leaving it unset lets the
+# user turn the assistant on and off from the interface, and the choice
+# persists in the mounted volume.
 
 # Native libraries for image processing, the geospatial stack, OpenBLAS and
 # PyTorch. Kept in one layer so the cleanup actually shrinks the image.

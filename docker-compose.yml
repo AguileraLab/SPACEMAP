@@ -10,9 +10,10 @@ services:
     ports:
       - "8501:8501"
     shm_size: "2gb"
-    environment:
-      # Set to "off" to hide the AI assistant entirely.
-      SPACEMAP_ASSISTANT: "on"
+    # environment:
+    #   # Uncomment to force the AI assistant off for every user of this
+    #   # deployment. Leave it unset to let them switch it on in Tab 0.
+    #   SPACEMAP_ASSISTANT: "off"
     volumes:
       # Your data. Set SPACEMAP_PROJECTS_DIR before 'docker compose up'.
       - ${SPACEMAP_PROJECTS_DIR:-./docker-projects}:/workspace/projects

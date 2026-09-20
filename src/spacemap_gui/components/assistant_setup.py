@@ -384,7 +384,9 @@ def render_assistant_setup() -> None:
                 "or choose a remote API provider on the assistant page."
             )
     with control:
-        if st.button("Turn off", key="ai_setup_disable", width="stretch"):
+        if ai_settings.is_forced_on():
+            st.caption("Pinned on by `SPACEMAP_ASSISTANT`.")
+        elif st.button("Turn off", key="ai_setup_disable", width="stretch"):
             ai_settings.set_enabled(False)
             st.rerun()
 

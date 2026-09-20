@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from io import BytesIO
 from pathlib import Path
 
@@ -40,7 +41,25 @@ from spacemap_gui.tabs.tab9_visualization.f1_strict_runner import (
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-REFERENCE_RESULTS = PROJECT_ROOT / "test_codes" / "Fig3_code_results" / "results_v2"
+
+# These tests reproduce manuscript figure panels from reference result tables.
+# Those tables are study output rather than application source, so they are not
+# distributed with the repository. Point SPACEMAP_REFERENCE_RESULTS at them to
+# run these checks; without it they skip.
+REFERENCE_RESULTS = Path(
+    os.environ.get(
+        "SPACEMAP_REFERENCE_RESULTS",
+        PROJECT_ROOT / "test_codes" / "Fig3_code_results" / "results_v2",
+    )
+)
+
+requires_reference_results = pytest.mark.skipif(
+    not REFERENCE_RESULTS.is_dir(),
+    reason=(
+        "reference result tables are not present; set SPACEMAP_REFERENCE_RESULTS "
+        "to the results_v2 folder to run the figure reproduction checks"
+    ),
+)
 
 
 def test_option2_defaults_recover_reference_code_visual_preset() -> None:
@@ -87,6 +106,7 @@ def test_option2_png_svg_exports_have_an_opaque_white_canvas(tmp_path: Path) -> 
     assert "#ffffff" in svg_path.read_text(encoding="utf-8").lower()
 
 
+@requires_reference_results
 def test_custom_dark_canvas_automatically_uses_readable_foreground() -> None:
     figure = build_paper_figure(
         "main_workflow",
@@ -228,6 +248,7 @@ def test_option2_exposes_complete_main_and_supplementary_panel_set() -> None:
     }.issubset(panel_ids)
 
 
+@requires_reference_results
 def test_panel_source_can_point_to_results_root_or_source_data() -> None:
     source_data = REFERENCE_RESULTS / "source_data"
 
@@ -235,6 +256,7 @@ def test_panel_source_can_point_to_results_root_or_source_data() -> None:
     assert missing_panel_tables("main_ref2_metrics", source_data) == []
 
 
+@requires_reference_results
 @pytest.mark.parametrize(
     "panel_id",
     [
@@ -265,6 +287,7 @@ def test_pairwise_panel_uses_percent_scale_by_default() -> None:
     assert settings["heatmap_vmax"] == 100.0
 
 
+@requires_reference_results
 def test_custom_method_and_colorbar_labels_reach_heatmap() -> None:
     common = {"method_labels": {"Leiden": "Custom Leiden"}}
     panel = {"colorbar_label": "Custom F1 scale"}

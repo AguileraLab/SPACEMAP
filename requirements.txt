@@ -1,7 +1,16 @@
-# SPACEMAP uses pyproject.toml as the canonical dependency definition.
-# This compatibility file keeps `pip install -r requirements.txt` aligned
-# with the editable package installation used by the README and Dockerfile.
+# SPACEMAP uses pyproject.toml as the single definition of its dependencies.
+# This file exists so that `pip install -r requirements.txt` works as people
+# expect; it installs the project itself, which pulls everything else.
 #
 #     python -m pip install -r requirements.txt
+#
+# Optional extras (see docs/installation.md):
+#     python -m pip install -e ".[ai]"        local AI model
+#     python -m pip install -e ".[gguf]"      quantized model, no GPU needed
+#     python -m pip install -e ".[deepcell]"  DeepCell/Mesmer segmentation
+#     python -m pip install -e ".[notebook]"  JupyterLab
+#
+# To reproduce a known-good set of exact versions instead, use
+# requirements-lock.txt.
 
 -e .[notebook]

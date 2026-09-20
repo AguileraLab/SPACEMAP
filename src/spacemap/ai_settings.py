@@ -137,6 +137,15 @@ def is_forced_off() -> bool:
     return _environment_override() is False
 
 
+def is_forced_on() -> bool:
+    """True when the environment pins the assistant on.
+
+    The in-app switch cannot override the environment, so the UI needs to say
+    so rather than offering a control that does nothing.
+    """
+    return _environment_override() is True
+
+
 def resolved_models_dir() -> Path:
     """Where offline model weights are stored for this installation."""
     configured = str(load_settings().get("models_dir") or "").strip()
@@ -221,6 +230,7 @@ __all__ = [
     "DEFAULT_SETTINGS",
     "is_enabled",
     "is_forced_off",
+    "is_forced_on",
     "load_settings",
     "local_backend_ready",
     "missing_local_dependencies",
