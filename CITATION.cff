@@ -6,7 +6,8 @@ message: >-
 type: software
 
 # Authors of the SOFTWARE. This is the development credit, and is separate
-# from the paper's author list below.
+# from the paper's author list below. Bassel Dawod wrote the code; Todd A.
+# Aguilera is the senior author and principal investigator.
 authors:
   - given-names: Bassel
     family-names: Dawod
@@ -14,7 +15,7 @@ authors:
       Department of Radiation Oncology, University of Texas Southwestern
       Medical Center
     email: basbees@gmail.com
-    # orcid: "https://orcid.org/0000-0000-0000-0000"
+    orcid: "https://orcid.org/0000-0002-1055-4387"
   - given-names: Todd
     name-particle: A.
     family-names: Aguilera
@@ -22,7 +23,7 @@ authors:
       Department of Radiation Oncology, University of Texas Southwestern
       Medical Center
     email: todd.aguilera@utsouthwestern.edu
-    # orcid: "https://orcid.org/0000-0000-0000-0000"
+    orcid: "https://orcid.org/0000-0002-3734-3758"
 
 repository-code: "https://github.com/AguileraLab/SPACEMAP"
 url: "https://github.com/AguileraLab/SPACEMAP"
@@ -54,6 +55,7 @@ preferred-citation:
   authors:
     - given-names: Bassel
       family-names: Dawod
+      orcid: "https://orcid.org/0000-0002-1055-4387"
     - given-names: Arely
       family-names: Perez Rodriguez
     - given-names: Sebastian
@@ -81,6 +83,7 @@ preferred-citation:
     - given-names: Todd
       name-particle: A.
       family-names: Aguilera
+      orcid: "https://orcid.org/0000-0002-3734-3758"
   journal: bioRxiv
   year: 2025
   month: 12
