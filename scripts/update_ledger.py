@@ -22,6 +22,7 @@ ledger is caught before it lands.
 from __future__ import annotations
 
 import argparse
+import re
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -71,10 +72,20 @@ class Commit:
         the body is used, because a commit that explains itself in prose is
         still better than nothing.
         """
-        for line in self.body.splitlines():
+        lines = self.body.splitlines()
+        for index, line in enumerate(lines):
             stripped = line.strip()
-            if stripped.lower().startswith("why:"):
-                return stripped[4:].strip()
+            if not stripped.lower().startswith("why:"):
+                continue
+            # A reason often wraps across several lines. Keep reading until a
+            # blank line or the next trailer.
+            collected = [stripped[4:].strip()]
+            for continuation in lines[index + 1:]:
+                text = continuation.strip()
+                if not text or re.match(r"^[A-Z][A-Za-z-]+:\s", text):
+                    break
+                collected.append(text)
+            return " ".join(part for part in collected if part)
         paragraph: list[str] = []
         for line in self.body.strip().splitlines():
             if not line.strip():
