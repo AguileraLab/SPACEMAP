@@ -150,6 +150,11 @@ def render():
         global_full_path = None
         if global_file_select:
             global_full_path = os.path.join(global_input_dir, global_file_select)
+
+            # Same fast-copy panel as Tabs 8 and 9; all three read this table.
+            from spacemap_gui.ui_utils import render_fast_copy_controls
+
+            render_fast_copy_controls(global_full_path, key_prefix="tab7")
         
         # Show active path
         if global_full_path and os.path.exists(global_full_path):

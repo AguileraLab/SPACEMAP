@@ -90,6 +90,18 @@ NOTEBOOK_NAME = "Step9A_ML_manual_reference.ipynb"
 INTERNAL_VALIDATION_OPTION = "Internal stratified cell split (exploratory)"
 
 
+def _dataio_load(path, columns=None):
+    """Read the unified table through the shared loader.
+
+    Uses the Parquet fast copy when one is current, so a large table loads in
+    seconds; falls back to the CSV otherwise. Passing *columns* reads only
+    those.
+    """
+    from spacemap import dataio
+
+    return dataio.load(path, columns=columns)
+
+
 def _looks_like_manual_reference(column: str) -> bool:
     name = str(column).strip().lower()
     reviewer_reference = name in {
@@ -1082,7 +1094,7 @@ def render_mr_ml(project_root: Path, global_input_path: str | None) -> None:
 
         print(f"[{_timestamp()}] MR-ML: Loading dataset...", flush=True)
         try:
-            full_df = pd.read_csv(full_input_path)
+            full_df = _dataio_load(full_input_path)
             audit_input_rows = len(full_df)
             full_df, cell_id_col, _ = ensure_cell_id_anchor(
                 full_df, cell_id_col

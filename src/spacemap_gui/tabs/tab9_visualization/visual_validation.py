@@ -181,14 +181,17 @@ def render_visual_validation(
         else:
             try:
                 with st.spinner("Loading and normalizing data..."):
-                    df_raw = get_cached_unified_df(unified_csv_path)
+                    # Work out the wanted columns from the header, then read
+                    # only those, instead of reading all of them and slicing.
+                    from .common import get_csv_columns_fast
+
+                    all_columns = get_csv_columns_fast(unified_csv_path)
                     meta_needed = ["cell_id", "x_centroid", "y_centroid", batch_col_vv]
                     cols_to_keep = markers_final + meta_needed
-                    phenotype_candidates = [col for col in df_raw.columns if col.startswith("phenotype_")]
-                    cols_to_keep += phenotype_candidates
-                    cols_to_keep = list(dict.fromkeys([col for col in cols_to_keep if col in df_raw.columns]))
+                    cols_to_keep += [col for col in all_columns if col.startswith("phenotype_")]
+                    cols_to_keep = list(dict.fromkeys([col for col in cols_to_keep if col in all_columns]))
 
-                    viz_df = df_raw[cols_to_keep].copy()
+                    viz_df = get_cached_unified_df(unified_csv_path, columns=cols_to_keep).copy()
                     for marker in markers_final:
                         if marker in viz_df.columns:
                             viz_df[marker] = pd.to_numeric(viz_df[marker], errors="coerce").fillna(0)
@@ -224,7 +227,11 @@ def render_visual_validation(
     st.markdown("##### Visualization Target")
 
     viz_df = st.session_state["viz_val_cached_df"]
-    full_df = get_cached_unified_df(unified_csv_path)
+    # Only the phenotype columns are read from here on.
+    from .common import get_csv_columns_fast
+
+    _phenotype_cols = [c for c in get_csv_columns_fast(unified_csv_path) if c.startswith("phenotype_")]
+    full_df = get_cached_unified_df(unified_csv_path, columns=_phenotype_cols)
     loaded_markers = st.session_state.get("viz_val_loaded_markers", [])
     if loaded_markers != markers_final:
         st.warning("Marker selection has changed. Please reload data above.")

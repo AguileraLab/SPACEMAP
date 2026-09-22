@@ -115,6 +115,18 @@ except Exception:
     _HAS_SCIMAP = False
 
 
+def _dataio_load(path, columns=None):
+    """Read the unified table through the shared loader.
+
+    Uses the Parquet fast copy when one is current, so a large table loads in
+    seconds; falls back to the CSV otherwise. Passing *columns* reads only
+    those.
+    """
+    from spacemap import dataio
+
+    return dataio.load(path, columns=columns)
+
+
 def _timestamp() -> str:
     return time.strftime("%H:%M:%S")
 
@@ -1066,7 +1078,7 @@ def render_scimap(project_root: Path, global_input_path: str | None) -> None:
     if compute_auto and selected_markers and full_input_path and os.path.exists(full_input_path):
         with st.spinner(f"Computing {_active_mode} thresholds per batch..."):
             try:
-                df_tmp = pd.read_csv(full_input_path, low_memory=False)
+                df_tmp = _dataio_load(full_input_path)
                 # Apply data filter if set
                 _filt = {
                     'enable_filter': st.session_state["scimap_config"].get('enable_filter', False),
@@ -1343,7 +1355,7 @@ def render_scimap(project_root: Path, global_input_path: str | None) -> None:
             try:
                 status.write(f"[{_timestamp()}] Loading input data...")
                 print(f"[{_timestamp()}] Loading input data...")
-                df = pd.read_csv(full_input_path, low_memory=False)
+                df = _dataio_load(full_input_path)
                 audit_input_rows = len(df)
                 status.write(f"[{_timestamp()}] Loaded {len(df):,} cells")
                 print(f"[{_timestamp()}] Loaded {len(df):,} cells")

@@ -123,6 +123,17 @@ RESOLVE_TRANSFORM_OPTIONS = ("None", "ArcSinh", "Log")
 RESOLVE_NORMALIZATION_OPTIONS = ("None", "Z1", "Z2", "CDF", "NLog")
 
 
+def _dataio_load(path, columns=None):
+    """Read a large table through the shared loader.
+
+    Uses the Parquet fast copy when one is current, otherwise the CSV. Passing
+    *columns* reads only those.
+    """
+    from spacemap import dataio
+
+    return dataio.load(path, columns=columns)
+
+
 def _canonical_resolve_transform(value: object) -> str:
     """Return the short UI name for a saved or runtime transformation value."""
     key = "" if value is None else str(value).strip().lower()
@@ -1826,7 +1837,7 @@ def render_resolve(project_root, global_input_path):
             else:
                 with st.spinner(f"Computing {_current_mode} thresholds..."):
                     try:
-                        _df_for_thresh = pd.read_csv(full_input_path, low_memory=False)
+                        _df_for_thresh = _dataio_load(full_input_path)
                         # Apply active filter
                         _filt = {
                             'enable_filter': st.session_state['resolve_config'].get('enable_filter', False),
@@ -2465,7 +2476,7 @@ def render_resolve(project_root, global_input_path):
                     # Load data
                     status.write(f"[{_timestamp()}] Loading input data...")
                     _log_console(f"[{_timestamp()}] Resolve: Loading input data...")
-                    df = pd.read_csv(full_input_path, low_memory=False)
+                    df = _dataio_load(full_input_path)
                     audit_input_rows = len(df)
                     original_df = df.copy()
                     status.write(f"[{_timestamp()}] Loaded {len(df):,} cells")

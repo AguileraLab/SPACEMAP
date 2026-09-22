@@ -55,6 +55,17 @@ _CONTINUOUS_CMAPS = [
 ]
 
 
+def _dataio_load(path, columns=None):
+    """Read a large table through the shared loader.
+
+    Uses the Parquet fast copy when one is current, otherwise the CSV. Passing
+    *columns* reads only those.
+    """
+    from spacemap import dataio
+
+    return dataio.load(path, columns=columns)
+
+
 def _classify_column(series: pd.Series, max_categories: int = 50) -> str:
     if series.dtype == object or series.dtype.name == "category":
         return "categorical"
@@ -860,7 +871,7 @@ def render_umap_explorer(
 
     if save_btn:
         try:
-            df_write = pd.read_csv(unified_csv_path, low_memory=False)
+            df_write = _dataio_load(unified_csv_path)
             if not overwrite_existing:
                 conflict = [col for col in [umap_x_save_col, umap_y_save_col] if col in df_write.columns]
                 if conflict:

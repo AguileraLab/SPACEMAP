@@ -103,16 +103,55 @@ else:
     def _get_cell_visualizer_cached(roi_dir: str, seg_dir: str):
         return None
 
-def _load_unified_csv_cached(path):
-    """Cache-safe wrapper: re-reads when the file on disk changes."""
+def _dataio_load(path, columns=None):
+    """Read a large table through the shared loader.
+
+    Uses the Parquet fast copy when one is current, otherwise the CSV. Passing
+    *columns* reads only those.
+    """
+    from spacemap import dataio
+
+    return dataio.load(path, columns=columns)
+
+
+def _load_unified_csv_cached(path, columns: list[str] | None = None):
+    """Cache-safe wrapper: re-reads when the file on disk changes.
+
+    Naming *columns* reads only those, from the Parquet fast copy when one is
+    available, which is what keeps a large table usable here.
+    """
     from spacemap_gui.ui_utils import file_signature
-    return __load_unified_csv_cached__impl(path, file_signature(path))
+    key = tuple(columns) if columns else None
+    return __load_unified_csv_cached__impl(path, file_signature(path), key)
 
 
 @st.cache_data(show_spinner=False)
-def __load_unified_csv_cached__impl(path: str, signature) -> pd.DataFrame | None:
+def __load_unified_columns__impl(
+    path: str, signature, columns: tuple[str, ...]
+) -> pd.DataFrame | None:
+    """Cache a narrow column selection, which is cheap to store."""
+    from spacemap import dataio
+
     try:
-        return pd.read_csv(path, low_memory=False)
+        return dataio.load(path, columns=list(columns))
+    except Exception:
+        return None
+
+
+def __load_unified_csv_cached__impl(
+    path: str, signature, columns: tuple[str, ...] | None = None
+) -> pd.DataFrame | None:
+    # Streamlit's cache pickles what it stores and unpickles it on every hit.
+    # That is fine for a narrow column selection and very expensive for the
+    # whole table -- twenty to thirty seconds per hit on a 15 GB frame -- so a
+    # full read bypasses the cache and is held by the caller instead.
+    if columns:
+        return __load_unified_columns__impl(path, signature, columns)
+
+    from spacemap import dataio
+
+    try:
+        return dataio.load(path)
     except Exception:
         return None
 
@@ -140,21 +179,16 @@ def _read_columns_fast(path: str, columns: list[str]) -> pd.DataFrame | None:
 
     pandas scans the whole file to pull even a single column -- about 22s on a
     4.4 GB table -- which is long enough to make the filter controls feel frozen,
-    since every column choice triggers one. pyarrow reads the same columns in
-    about 2s using multiple threads. Falls back to pandas when pyarrow is
-    unavailable, and returns None when the columns cannot be read at all.
+    since every column choice triggers one. The shared loader reads from the
+    Parquet fast copy when one exists, which skips the unwanted columns on disk
+    entirely, and otherwise uses pyarrow's threaded CSV reader. Falls back to
+    pandas if neither is available, and returns None when the columns cannot be
+    read at all.
     """
     try:
-        import pyarrow.csv as pv
+        from spacemap import dataio
 
-        table = pv.read_csv(
-            path,
-            read_options=pv.ReadOptions(use_threads=True),
-            convert_options=pv.ConvertOptions(
-                include_columns=list(columns), strings_can_be_null=True
-            ),
-        )
-        return table.to_pandas(split_blocks=True, self_destruct=True)
+        return dataio.load(path, columns=list(columns))
     except Exception:
         pass
     try:
@@ -383,7 +417,9 @@ def __get_csv_preview_grid_cached__impl(path: str, signature) -> pd.DataFrame:
 # Callers clear these caches after writing to the CSV so the next read sees the
 # new file. The public name is a plain wrapper and carries no clear() of its own,
 # so forward it to the cached implementation that actually holds the entries.
-_load_unified_csv_cached.clear = __load_unified_csv_cached__impl.clear  # type: ignore[attr-defined]
+# The cached layer is the column-subset one; the full-table path is not
+# cached, so this is where the clearable cache lives.
+_load_unified_csv_cached.clear = __load_unified_columns__impl.clear  # type: ignore[attr-defined]
 _get_unique_values_cached.clear = __get_unique_values_cached__impl.clear  # type: ignore[attr-defined]
 _get_columns_cached.clear = __get_columns_cached__impl.clear  # type: ignore[attr-defined]
 _get_column_profile_cached.clear = __get_column_profile_cached__impl.clear  # type: ignore[attr-defined]
@@ -1563,7 +1599,7 @@ def _update_visual_manual_reference_assignment(
     if clearing_label and not allow_clear:
         raise ValueError("Choose a concrete phenotype before saving; missing and Unassigned values are not written.")
 
-    unified_df = pd.read_csv(unified_csv_path, low_memory=False)
+    unified_df = _dataio_load(unified_csv_path)
     for column in (batch_column, x_column, y_column):
         if column not in unified_df.columns:
             raise KeyError(f"'{column}' column is missing from the unified CSV.")
@@ -1608,7 +1644,7 @@ def _update_visual_manual_reference_assignments(
     if not unified_csv_path or not os.path.exists(unified_csv_path):
         raise FileNotFoundError("Unified CSV not found.")
 
-    unified_df = pd.read_csv(unified_csv_path, low_memory=False)
+    unified_df = _dataio_load(unified_csv_path)
     pending_updates: list[tuple[int, str, str]] = []
     cleared_count = 0
     skipped_unassigned = 0
@@ -2287,7 +2323,7 @@ def _prepare_unified_for_prefix_match(
     if not unified_csv_path or not os.path.exists(unified_csv_path) or not prefixes:
         return unified_csv_path, batch_id_col, False
 
-    unified_df = pd.read_csv(unified_csv_path)
+    unified_df = _dataio_load(unified_csv_path)
     if batch_id_col not in unified_df.columns:
         return unified_csv_path, batch_id_col, False
 
@@ -2331,7 +2367,7 @@ def _merge_geojson_into_unified(
     if not os.path.exists(unified_csv_path):
         raise FileNotFoundError(f"Unified CSV not found: {unified_csv_path}")
 
-    unified_df = pd.read_csv(unified_csv_path)
+    unified_df = _dataio_load(unified_csv_path)
     for col in (batch_id_column, x_centroid_column, y_centroid_column):
         if col not in unified_df.columns:
             raise KeyError(f"'{col}' column missing from unified CSV.")
@@ -2527,7 +2563,7 @@ def _fast_merge_ground_truth(
     if not gt_files:
         raise FileNotFoundError("No *_ground_truth.csv files found.")
 
-    unified_df = pd.read_csv(unified_csv_path)
+    unified_df = _dataio_load(unified_csv_path)
     for col in (batch_id_column, x_centroid_column, y_centroid_column):
         if col not in unified_df.columns:
             raise KeyError(f"'{col}' column missing from unified CSV.")
@@ -5181,7 +5217,7 @@ def render_tools(project_root: Path, global_input_path: str | None) -> None:
                     with st.spinner("Reloading unified CSV from disk..."):
                         # Force reload from disk, bypassing cache
                         try:
-                            df_working = pd.read_csv(unified_csv_path)
+                            df_working = _dataio_load(unified_csv_path)
                             st.session_state["tools_edit_csv_df"] = df_working
                             st.session_state["tools_edit_csv_undo"] = []
                             st.session_state["tools_edit_csv_redo"] = []
@@ -6262,11 +6298,11 @@ def render_tools(project_root: Path, global_input_path: str | None) -> None:
                                         # 3. Apply changes to memory df_working or load full df for disk saving
                                         if save_option == "Apply to current working CSV in memory (default, allows preview/undo)":
                                             if df_working is None:
-                                                df_new = pd.read_csv(unified_csv_path)
+                                                df_new = _dataio_load(unified_csv_path)
                                             else:
                                                 df_new = df_working.copy()
                                         else:
-                                            df_new = pd.read_csv(unified_csv_path)
+                                            df_new = _dataio_load(unified_csv_path)
 
                                         for col in transfer_cols:
                                             dest = rename_map.get(col, col)

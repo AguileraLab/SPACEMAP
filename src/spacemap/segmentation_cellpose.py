@@ -1649,6 +1649,10 @@ def _segment_whole_image(ome_tiff_path, output_dir, config, segmenter,
             # time would slow every segmentation run.
             import matplotlib.pyplot as plt
 
+            # Imported here rather than at module scope: matplotlib is only
+            # needed for this optional preview.
+            import matplotlib.pyplot as plt
+
             png_subdir = os.path.join(output_dir, "png")
             os.makedirs(png_subdir, exist_ok=True)
             png_path = os.path.join(png_subdir, f"{input_image_name}_segmentation.png")

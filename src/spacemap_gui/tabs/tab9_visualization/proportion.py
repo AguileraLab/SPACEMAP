@@ -15,7 +15,7 @@ import streamlit as st
 
 from .common import (
     extract_list_from_notebook,
-    get_cached_unified_df,
+    get_columns_df,
     log_console,
     logger,
     save_cached_params,
@@ -162,12 +162,17 @@ def render_proportion(
     st.markdown("### Proportion")
     st.caption("Phenotype proportion comparison across methods (Step8 cell 5).")
 
-    cached_df: pd.DataFrame | None = None
-    if unified_csv_path and os.path.exists(unified_csv_path):
+    # Nothing is read here. Each control below asks for the one or two columns
+    # it needs, at the moment it needs them. Loading the whole table up front
+    # cost minutes on a large file before the user had chosen anything.
+    def _columns(names: list[str]) -> pd.DataFrame | None:
+        if not unified_csv_path or not os.path.exists(unified_csv_path):
+            return None
         try:
-            cached_df = get_cached_unified_df(unified_csv_path)
+            frame = get_columns_df(unified_csv_path, names)
         except Exception:
-            cached_df = None
+            return None
+        return frame if not frame.empty else None
 
     notebook_methods = extract_list_from_notebook(["columns_to_process", "PHENOTYPING_METHODS"])
     if "viz_prop_methods" not in st.session_state or st.session_state.get("viz_prop_last_file") != unified_csv_path:
@@ -191,7 +196,7 @@ def render_proportion(
     )
     st.session_state["viz_prop_methods"] = list(methods)
     phenotype_color_map = render_phenotype_color_controls(
-        category_labels_for_columns(cached_df, methods),
+        category_labels_for_columns(_columns(list(methods)), methods),
         panel_key="tab9_proportion",
         title="Phenotype colors",
     )
@@ -266,8 +271,9 @@ def render_proportion(
                     )
 
                 is_numeric_col = False
-                if cached_df is not None and sel_col in cached_df.columns:
-                    is_numeric_col = pd.api.types.is_numeric_dtype(cached_df[sel_col])
+                _sel_frame = _columns([sel_col]) if sel_col else None
+                if _sel_frame is not None and sel_col in _sel_frame.columns:
+                    is_numeric_col = pd.api.types.is_numeric_dtype(_sel_frame[sel_col])
 
                 default_type_idx = 1 if is_numeric_col else 0
                 prev_type = prev_rule.get("type", "Continuous" if is_numeric_col else "Categorical")
@@ -299,8 +305,9 @@ def render_proportion(
                         rule_dict["cat_operator"] = cat_op
 
                     unique_options: list[str] = []
-                    if cached_df is not None and sel_col in cached_df.columns:
-                        unique_options = sorted([str(v) for v in cached_df[sel_col].dropna().unique()])
+                    _opt_frame = _columns([sel_col]) if sel_col else None
+                    if _opt_frame is not None and sel_col in _opt_frame.columns:
+                        unique_options = sorted([str(v) for v in _opt_frame[sel_col].dropna().unique()])
 
                     prev_vals = [str(v) for v in prev_rule.get("cat_values", [])]
                     valid_defaults = [v for v in prev_vals if v in unique_options] if unique_options else prev_vals
@@ -396,11 +403,18 @@ def render_proportion(
         else:
             _log("Starting proportion analysis")
             methods = st.session_state.get("viz_prop_methods", [])
-            df = get_cached_unified_df(unified_csv_path).copy()
-            initial_count = len(df)
-            _log(f"Loaded data: {initial_count:,} rows")
-
             filters = st.session_state.get("viz_prop_filters", cached_params.get("viz_prop_filters", []))
+            # Read the phenotype columns plus any column a filter refers to,
+            # and nothing else.
+            needed = list(methods) + [
+                str(rule.get("column"))
+                for rule in (filters or [])
+                if isinstance(rule, dict) and rule.get("column")
+            ]
+            df = get_columns_df(unified_csv_path, needed).copy()
+            initial_count = len(df)
+            _log(f"Loaded {len(df.columns)} column(s), {initial_count:,} rows")
+
             if filters:
                 df = apply_cell_filters(df, filters)
                 _log(f"Applied {len(filters)} cell filter(s): {initial_count:,} -> {len(df):,} cells remaining")

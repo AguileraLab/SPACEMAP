@@ -32,6 +32,12 @@ def render() -> None:
     st.markdown("Publication-ready comparative visualizations and validation surfaces for phenotyping outputs.")
 
     unified_csv_path, global_input_dir = render_global_input_configuration(project_root)
+
+    # Same fast copy Tab 8 offers; both tabs read the same unified table.
+    from spacemap_gui.ui_utils import render_fast_copy_controls
+
+    render_fast_copy_controls(unified_csv_path, key_prefix="tab9")
+
     cached_params = load_cached_params(project_root)
     loaded_df = render_unified_csv_loader(unified_csv_path)
     available_columns = list(loaded_df.columns) if loaded_df is not None else get_csv_columns_fast(unified_csv_path or "")

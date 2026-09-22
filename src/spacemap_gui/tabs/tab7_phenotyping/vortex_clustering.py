@@ -111,6 +111,17 @@ VORTEX_LOW_EXPR_DEFAULT_PHENOTYPE = "Others"
 VORTEX_LOW_EXPR_LABEL = "Low expression bucket"
 
 
+def _dataio_load(path, columns=None):
+    """Read a large table through the shared loader.
+
+    Uses the Parquet fast copy when one is current, otherwise the CSV. Passing
+    *columns* reads only those.
+    """
+    from spacemap import dataio
+
+    return dataio.load(path, columns=columns)
+
+
 def _read_csv_fast(path: str) -> pd.DataFrame:
     """Multithreaded CSV read shared with the other phenotyping tabs."""
     from spacemap.ph_accel_utils import read_csv_fast
@@ -1243,7 +1254,7 @@ def render_vortex(project_root: Path, global_input_path: str | None) -> None:
         if load_existing:
             try:
                 st.session_state['vortex_fresh_assignment_mode'] = False
-                df_full = pd.read_csv(full_input_path, low_memory=False)
+                df_full = _dataio_load(full_input_path)
                 cluster_col = "vortex_cluster"
                 pheno_col = output_col_name
 

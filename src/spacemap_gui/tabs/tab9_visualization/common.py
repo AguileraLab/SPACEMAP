@@ -548,12 +548,18 @@ def render_visual_validation_settings(project_root: Path, global_input_dir: str,
 
 
 def get_csv_columns_fast(path: str) -> list[str]:
+    """Column names only; reads no rows."""
     if not path or not os.path.exists(path):
         return []
     try:
-        return list(pd.read_csv(path, nrows=0).columns)
+        from spacemap import dataio
+
+        return dataio.columns(path)
     except Exception:
-        return []
+        try:
+            return list(pd.read_csv(path, nrows=0).columns)
+        except Exception:
+            return []
 
 
 def get_loaded_visualization_df(path: str) -> pd.DataFrame | None:
@@ -588,27 +594,88 @@ def clear_loaded_visualization_df() -> None:
 
 
 @st.cache_data(show_spinner=False)
-def _cached_read_csv(path: str, mtime: float) -> pd.DataFrame:
+def _cached_read_columns(
+    path: str, mtime: float, columns: tuple[str, ...] | None = None
+) -> pd.DataFrame:
+    """Cache a *narrow* column selection.
+
+    Streamlit's cache stores values pickled and unpickles them on every hit, so
+    it only pays off for small results. Column subsets qualify; the whole table
+    does not, which is why the full-frame path below bypasses it.
+    """
     _ = mtime
-    # low_memory=False reads each column whole before inferring its type. The
-    # chunked default infers per chunk, so a sparsely populated label column --
-    # a manual reference phenotype present for ~1% of cells -- is read as float
-    # (all-NaN) in most chunks and object in the few that hold labels. Pandas
-    # then warns about mixed types, and the column's dtype depends on where the
-    # populated rows happen to fall in the file.
-    return pd.read_csv(path, low_memory=False)
+    # Each column's type is decided from the whole column, never per chunk.
+    # That matters for a sparsely populated label column -- a manual reference
+    # phenotype present for ~1% of cells -- which chunked inference reads as
+    # float (all-NaN) in most chunks and object in the few that hold labels,
+    # producing a mixed-type warning and a dtype that depends on where the
+    # populated rows happen to fall. Both paths below preserve that: Parquet
+    # carries an explicit schema, and the CSV fallback reads whole columns.
+    from spacemap import dataio
+
+    return dataio.load(path, columns=list(columns) if columns else None)
 
 
-def _get_unified_df(path: str) -> pd.DataFrame:
+def _get_unified_df(path: str, columns: list[str] | None = None) -> pd.DataFrame:
+    """Load the unified table, optionally only *columns*.
+
+    Naming the columns a screen needs turns a multi-minute read of a 13 GB
+    table into roughly a second, because the Parquet fast copy stores columns
+    separately and skips the ones not asked for.
+
+    A full-table read deliberately skips Streamlit's cache. That cache pickles
+    what it stores and unpickles it on every hit, which on a 15 GB frame costs
+    twenty to thirty seconds each time and gained nothing here: the caller
+    already keeps the frame in ``session_state``, which stores the object
+    itself.
+    """
     if not path or not os.path.exists(path):
         raise FileNotFoundError("Unified CSV file not found.")
     mtime = os.path.getmtime(path)
-    return _cached_read_csv(path, mtime)
+    if columns:
+        return _cached_read_columns(path, mtime, tuple(columns))
+
+    from spacemap import dataio
+
+    return dataio.load(path)
 
 
-def get_cached_unified_df(path: str) -> pd.DataFrame:
+def get_columns_df(path: str, columns: list[str]) -> pd.DataFrame:
+    """Return only *columns* from the unified table.
+
+    Reuses the shared in-memory frame when the user has loaded it and it
+    already holds these columns, so nothing is read twice.  Otherwise reads
+    just these columns, which on a 13 GB table is the difference between
+    minutes and about a second.
+
+    This is what lets a screen ask for what it needs at the moment it needs it,
+    rather than every screen paying for all 133 columns up front.
+    """
+    wanted = [c for c in dict.fromkeys(columns) if c]
+    if not wanted:
+        return pd.DataFrame()
+    shared = get_loaded_visualization_df(path)
+    if isinstance(shared, pd.DataFrame) and set(wanted).issubset(shared.columns):
+        return shared[wanted]
+    available = set(get_csv_columns_fast(path))
+    present = [c for c in wanted if c in available]
+    if not present:
+        return pd.DataFrame()
+    return _get_unified_df(path, columns=present)
+
+
+def get_cached_unified_df(path: str, columns: list[str] | None = None) -> pd.DataFrame:
+    """Return the unified table, or only *columns* when they are named.
+
+    Naming columns avoids reading the other 130-odd, which is what makes a
+    cold start quick. The shared in-memory frame is still reused when it is
+    already loaded and holds what is being asked for.
+    """
     if not path or not os.path.exists(path):
         raise FileNotFoundError("Unified CSV file not found.")
+
+    if columns:
+        return get_columns_df(path, list(columns))
 
     loaded_df = get_loaded_visualization_df(path)
     if isinstance(loaded_df, pd.DataFrame):

@@ -46,6 +46,10 @@ test_codes/
 data/
 outputs/
 *.ome.tiff
+
+# Generated Parquet twins that mirror a CSV for fast column reads.
+# They are derived data: deleting one only costs the time to rebuild it.
+*.parquet
 *.qptiff
 *.svs
 *.ndpi

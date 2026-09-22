@@ -178,7 +178,9 @@ def _extract_list_defaults_from_notebook(var_name: str) -> list[str]:
 
 
 @st.cache_data(show_spinner=False)
-def _cached_read_csv(path: str, mtime: float) -> pd.DataFrame:
+def _cached_read_columns(
+    path: str, mtime: float, columns: tuple[str, ...] | None = None
+) -> pd.DataFrame:
     """Load a CSV file with Streamlit caching.
 
     Parameters
@@ -194,10 +196,14 @@ def _cached_read_csv(path: str, mtime: float) -> pd.DataFrame:
         Loaded dataframe.
     """
     _ = mtime
-    return pd.read_csv(path)
+    # Reads through the shared loader so the Parquet fast copy is used when one
+    # exists, and so naming columns actually skips the rest on disk.
+    from spacemap import dataio
+
+    return dataio.load(path, columns=list(columns) if columns else None)
 
 
-def _get_unified_df(path: str) -> pd.DataFrame:
+def _get_unified_df(path: str, columns: list[str] | None = None) -> pd.DataFrame:
     """Return a cached unified dataframe for the given path.
 
     Parameters
@@ -213,7 +219,15 @@ def _get_unified_df(path: str) -> pd.DataFrame:
     if not path or not os.path.exists(path):
         raise FileNotFoundError("Unified CSV file not found.")
     mtime = os.path.getmtime(path)
-    return _cached_read_csv(path, mtime)
+    if columns:
+        return _cached_read_columns(path, mtime, tuple(columns))
+
+    # A full-table read skips Streamlit's cache on purpose: it pickles what it
+    # stores and unpickles on every hit, which costs twenty to thirty seconds
+    # on a frame this size. The caller keeps it in session_state instead.
+    from spacemap import dataio
+
+    return dataio.load(path)
 
 
 def _get_cached_unified_df(path: str) -> pd.DataFrame:

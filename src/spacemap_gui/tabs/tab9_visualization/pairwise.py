@@ -318,8 +318,14 @@ def render_pairwise(
     _excl_options: list[str] = []
     if unified_csv_path and os.path.exists(unified_csv_path):
         try:
-            _df_preview = get_cached_unified_df(unified_csv_path)
-            _sel_cols = [c for c in st.session_state.get("viz_pair_methods", []) if c in _df_preview.columns]
+            # Only the chosen phenotype columns are needed to list their values.
+            _sel_cols = list(st.session_state.get("viz_pair_methods", []))
+            _df_preview = (
+                get_cached_unified_df(unified_csv_path, columns=_sel_cols)
+                if _sel_cols
+                else None
+            )
+            _sel_cols = [c for c in _sel_cols if _df_preview is not None and c in _df_preview.columns]
             if _sel_cols:
                 _excl_options = sorted(
                     set().union(*[
@@ -363,9 +369,10 @@ def render_pairwise(
         else:
             _log("Starting pairwise similarity analysis")
             methods = st.session_state.get("viz_pair_methods", [])
-            df = get_cached_unified_df(unified_csv_path).copy()
-            _log(f"Loaded data: {len(df):,} rows")
-            df = df[methods]
+            # The next line used to read all 133 columns and then keep these.
+            df = get_cached_unified_df(unified_csv_path, columns=list(methods)).copy()
+            _log(f"Loaded {len(df.columns)} column(s), {len(df):,} rows")
+            df = df[[c for c in methods if c in df.columns]]
 
             # Apply phenotype exclusion filter
             _excluded = st.session_state.get("viz_pair_excluded_phenotypes", [])

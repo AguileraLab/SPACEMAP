@@ -92,6 +92,18 @@ LEIDEN_LOW_EXPR_DEFAULT_PHENOTYPE = "Others"
 LEIDEN_LOW_EXPR_LABEL = "Low expression bucket"
 
 
+def _dataio_load(path, columns=None):
+    """Read the unified table through the shared loader.
+
+    Uses the Parquet fast copy when one is current, so a large table loads in
+    seconds; falls back to the CSV otherwise. Passing *columns* reads only
+    those.
+    """
+    from spacemap import dataio
+
+    return dataio.load(path, columns=columns)
+
+
 def _is_leiden_low_expression_cluster(cluster_id, low_expr_cluster_id) -> bool:
     if low_expr_cluster_id is None:
         return False
@@ -820,7 +832,7 @@ def render_leiden(project_root, global_input_path):
                 st.session_state["_leiden_applied_job"] = job["job_dir"]
             try:
                 st.session_state['leiden_fresh_assignment_mode'] = False
-                df_full = pd.read_csv(full_input_path, low_memory=False)
+                df_full = _dataio_load(full_input_path)
                 cluster_col = "leiden_cluster"
                 pheno_col = output_col_name
 

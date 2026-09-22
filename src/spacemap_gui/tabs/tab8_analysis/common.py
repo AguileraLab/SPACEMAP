@@ -291,15 +291,50 @@ def queue_tab8_csv_reload(csv_path: str | None) -> None:
         pass
 
 
-def load_unified_csv(csv_path):
-    """Cache-safe wrapper: re-reads when the file on disk changes."""
+def load_unified_csv(csv_path, columns: list[str] | None = None):
+    """Cache-safe wrapper: re-reads when the file on disk changes.
+
+    Passing *columns* loads only those columns, which on the multi-gigabyte
+    batch-corrected tables is the difference between minutes and seconds.
+    Callers that genuinely need every column may omit it; the read still goes
+    through the Parquet fast copy, which is far quicker than parsing the CSV.
+    """
     from spacemap_gui.ui_utils import file_signature
-    return _load_unified_csv__impl(csv_path, file_signature(csv_path))
+    key = tuple(columns) if columns else None
+    return _load_unified_csv__impl(csv_path, file_signature(csv_path), key)
 
 
 @st.cache_data(show_spinner=False)
-def _load_unified_csv__impl(csv_path: str, signature) -> pd.DataFrame:
-    return pd.read_csv(csv_path)
+def _load_unified_columns__impl(
+    csv_path: str, signature, columns: tuple[str, ...]
+) -> pd.DataFrame:
+    """Cache a narrow column selection, which is cheap to store."""
+    from spacemap import dataio
+
+    return dataio.load(csv_path, columns=list(columns))
+
+
+def _load_unified_csv__impl(
+    csv_path: str, signature, columns: tuple[str, ...] | None = None
+) -> pd.DataFrame:
+    # Streamlit's cache pickles what it stores and unpickles it on every hit.
+    # That is fine for a narrow column selection and very expensive for the
+    # whole table -- twenty to thirty seconds per hit on a 15 GB frame -- so a
+    # full read bypasses the cache and is held by the caller instead.
+    if columns:
+        return _load_unified_columns__impl(csv_path, signature, columns)
+
+    from spacemap import dataio
+
+    return dataio.load(csv_path)
+
+
+# The callers below invoke ``load_unified_csv.clear()`` to force a re-read.
+# ``load_unified_csv`` is a plain function, so that call raised AttributeError
+# and was swallowed by the surrounding ``except``: the cache was never actually
+# cleared and a reload button did nothing. Forwarding to the cached
+# implementation makes those calls work as they read.
+load_unified_csv.clear = _load_unified_columns__impl.clear
 
 
 def _safe_unique(series: pd.Series) -> list[Any]:
@@ -408,6 +443,13 @@ def render_global_input_configuration(project_root: Path) -> tuple[str | None, p
 
         full_path = str(Path(global_input_dir) / selected_file)
         st.caption(f"Active: {full_path}")
+
+        # Offer the Parquet fast copy for this table. Large CSVs must be parsed
+        # from the beginning to reach any column, so a columnar copy is what
+        # makes a few-column screen load in seconds rather than minutes.
+        from spacemap_gui.ui_utils import render_fast_copy_controls
+
+        render_fast_copy_controls(full_path, key_prefix="tab8")
 
         # Save Project Button
         st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True)

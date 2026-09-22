@@ -580,3 +580,122 @@ def clamp_numeric_widget_state(
     if key in st.session_state and st.session_state[key] != clamped:
         st.session_state[key] = clamped
     return clamped
+
+
+def _format_bytes(value: float) -> str:
+    """Human-readable size for the fast-copy panel."""
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if value < 1024 or unit == "TB":
+            return f"{value:.0f} {unit}" if unit in ("B", "KB") else f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{value:.1f} TB"
+
+
+def render_fast_copy_controls(csv_path: str | None, *, key_prefix: str = "fastcopy") -> None:
+    """Show and manage the Parquet fast copy that mirrors a large CSV.
+
+    SPACEMAP keeps a columnar copy beside each large CSV and reads columns from
+    it, because a CSV must be parsed from the beginning to reach any column: a
+    two-column question on a 13 GB table takes minutes from the CSV and about a
+    second from the copy.
+
+    The copy is created automatically in the background the first time a large
+    CSV is used, and rebuilt whenever the CSV changes, so the two are never out
+    of step.  Reads fall back to the CSV whenever the copy is missing, stale or
+    still building, so nothing ever waits on it.  The CSV is never modified and
+    the copy can be deleted at any time.
+    """
+    import streamlit as st
+
+    if not csv_path:
+        return
+    try:
+        from spacemap import dataio
+    except Exception:
+        return
+
+    try:
+        info = dataio.fast_copy_info(csv_path)
+        building = dataio.is_building(csv_path)
+        error = dataio.build_error(csv_path)
+    except Exception:
+        return
+    if not info.get("source_bytes"):
+        return
+    if not info["enabled"]:
+        st.caption("Fast loading is switched off (`SPACEMAP_FAST_COPY=off`).")
+        return
+    if not info["worth_building"] and not info["exists"]:
+        return
+
+    if building:
+        icon, label = "⏳", "Fast loading: preparing in background"
+    elif info["current"]:
+        icon, label = "✅", "Fast loading: on"
+    elif error:
+        icon, label = "❌", "Fast loading: could not be prepared"
+    elif info["exists"]:
+        icon, label = "⚠️", "Fast loading: out of date, refreshing"
+    else:
+        icon, label = "•", "Fast loading: not prepared yet"
+
+    with st.expander(f"{icon} {label}", expanded=bool(error)):
+        st.caption(
+            f"CSV {_format_bytes(info['source_bytes'])}"
+            + (f" · fast copy {_format_bytes(info['twin_bytes'])}" if info["exists"] else "")
+            + f" · {info['twin']}"
+        )
+
+        if building:
+            st.info(
+                "Building the fast copy in the background. Everything keeps "
+                "working from the CSV meanwhile; reads get much quicker once it "
+                "finishes. Reopen this panel to check."
+            )
+        elif info["current"]:
+            st.success(
+                "Columns are read from the fast copy. It is rebuilt "
+                "automatically whenever the CSV changes, so the two always agree."
+            )
+        elif error:
+            st.error(f"{error} SPACEMAP is reading the CSV instead, so nothing is broken.")
+        elif info["exists"]:
+            st.warning("The CSV changed. The copy refreshes on next use.")
+        else:
+            st.info(
+                "A fast copy will be prepared automatically the first time this "
+                "table is read. You can start it now instead."
+            )
+
+        left, middle, right = st.columns(3)
+        build_label = "Rebuild now" if info["exists"] else "Prepare now"
+        if left.button(build_label, key=f"{key_prefix}_build", width="stretch", disabled=building):
+            status = st.empty()
+            with st.spinner("Preparing the fast copy..."):
+                built = dataio.ensure_fast_copy(
+                    csv_path, force=True, progress=lambda m: status.caption(m)
+                )
+            status.empty()
+            if built:
+                st.success("Fast copy ready.")
+            else:
+                st.error("Could not prepare the fast copy; the CSV will be used.")
+            st.rerun()
+
+        if middle.button(
+            "Check it matches", key=f"{key_prefix}_verify", width="stretch",
+            disabled=building or not info["current"],
+        ):
+            with st.spinner("Comparing the fast copy against the CSV..."):
+                report = dataio.verify_fast_copy(csv_path)
+            if report["ok"]:
+                st.success("The fast copy matches the CSV: " + "; ".join(report["checked"]) + ".")
+            else:
+                for problem in report["problems"]:
+                    st.error(problem)
+
+        if info["exists"] and right.button(
+            "Delete copy", key=f"{key_prefix}_delete", width="stretch", disabled=building
+        ):
+            dataio.clear_fast_copy(csv_path)
+            st.rerun()
