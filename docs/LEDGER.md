@@ -8,13 +8,14 @@ not edit it by hand -- run the script instead, or let CI regenerate it. The
 "Why" column comes from the `Why:` line in each commit message; see
 [CONTRIBUTING.md](../CONTRIBUTING.md) for how to write one.
 
-**17 changes** by **1 contributor**, touching **294 files**. Latest: `01ec57f` on 2026-09-22.
+**18 changes** by **1 contributor**, touching **295 files**. Latest: `f574f68` on 2026-09-22.
 
 
 ## 2026-09
 
 | Date | Change | Who | Why | Files | Lines |
 | --- | --- | --- | --- | --- | --- |
+| 2026-09-22 | `f574f68` docs: add a guide for using this version on real data | Bassel Dawod | someone adopting this version needs to know their data cannot leak and that a saved label is not yet in the CSV, and neither was written down. | 2 | +259/-0 |
 | 2026-09-22 | `01ec57f` fix: name the two save actions for what they actually do | Bassel Dawod | the previous wording described the old behaviour and quietly misled anyone relying on it. | 1 | +4/-4 |
 | 2026-09-22 | `cc428ef` fix: put the commit control where labels are saved, and say where they went | Bassel Dawod | a user finished a labelling session, was told the save was "completed and verified", and had no way to tell that the CSV on disk was unchanged or which control would change it. | 1 | +75/-2 |
 | 2026-09-22 | `0110154` perf: cache the segmentation index, and store labels without rewriting the table | Bassel Dawod | labelling fifty cells took around thirteen minutes of waiting, and two earlier attempts optimised paths that were not the bottleneck because nothing reported where the time was going. | 8 | +777/-95 |
@@ -36,6 +37,13 @@ not edit it by hand -- run the script instead, or let CI regenerate it. The
 ---
 
 ## Files changed per commit
+
+<details><summary><code>f574f68</code> docs: add a guide for using this version on real data</summary>
+
+- `README.md`
+- `docs/working-with-this-repository.md`
+
+</details>
 
 <details><summary><code>01ec57f</code> fix: name the two save actions for what they actually do</summary>
 
