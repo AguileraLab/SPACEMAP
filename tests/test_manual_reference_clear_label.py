@@ -48,6 +48,21 @@ def _target(path, **overrides):
 
 
 def _label(path, cell_id):
+    """Read a label the way the application does.
+
+    Assignments are appended to a sidecar rather than rewritten into the CSV on
+    every save, because rewriting a 13 GB table took about thirteen minutes.
+    spacemap.dataio.load merges them, so this is what any screen sees; reading
+    the CSV directly shows only what has been committed.
+    """
+    from spacemap import dataio
+
+    df = dataio.load(path)
+    return df.loc[df["cell_id"] == cell_id, "phenotype_ref1"].iloc[0]
+
+
+def _committed_label(path, cell_id):
+    """Read a label straight from the CSV, ignoring uncommitted assignments."""
     df = pd.read_csv(path)
     return df.loc[df["cell_id"] == cell_id, "phenotype_ref1"].iloc[0]
 

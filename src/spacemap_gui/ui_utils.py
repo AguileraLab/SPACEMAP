@@ -628,6 +628,45 @@ def render_fast_copy_controls(csv_path: str | None, *, key_prefix: str = "fastco
     if not info["worth_building"] and not info["exists"]:
         return
 
+    # Labels assigned in the interface live in a sidecar until they are folded
+    # into the CSV, because rewriting a multi-gigabyte table on every save took
+    # minutes. Surface how many are waiting, and let the user commit them.
+    try:
+        from spacemap import labels
+
+        pending = labels.pending_count(csv_path)
+        pending_columns = labels.pending_columns(csv_path)
+    except Exception:
+        pending, pending_columns = 0, []
+
+    if pending:
+        with st.container():
+            st.info(
+                f"**{pending} label(s) saved** in "
+                f"{', '.join(f'`{name}`' for name in pending_columns)}, not yet written "
+                "into the CSV. They are applied every time the data is read, so the "
+                "interface already shows them."
+            )
+            left, right = st.columns(2)
+            if left.button("Write labels into the CSV", key=f"{key_prefix}_commit", width="stretch"):
+                status = st.empty()
+                with st.spinner("Writing the CSV and refreshing the fast copy..."):
+                    try:
+                        report = labels.commit(csv_path, progress=lambda m: status.caption(m))
+                    except Exception as exc:
+                        status.empty()
+                        st.error(f"Could not write the labels: {exc}")
+                    else:
+                        status.empty()
+                        st.success(
+                            f"Wrote {report['applied']} label(s) into "
+                            f"{', '.join(report['columns'])}."
+                        )
+                        st.rerun()
+            if right.button("Discard saved labels", key=f"{key_prefix}_discard", width="stretch"):
+                labels.clear(csv_path)
+                st.rerun()
+
     if building:
         icon, label = "⏳", "Fast loading: preparing in background"
     elif info["current"]:

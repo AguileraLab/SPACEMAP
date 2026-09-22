@@ -557,6 +557,7 @@ def load(
     *,
     categoricals: bool = False,
     build_fast_copy: bool = True,
+    apply_labels: bool = True,
     progress: Any | None = None,
 ) -> pd.DataFrame:
     """Read *path*, loading only *columns* when given.
@@ -569,6 +570,11 @@ def load(
     Passing ``columns=None`` loads every column, which on a multi-gigabyte
     table is the slow path this module exists to avoid; prefer naming what the
     screen needs.
+
+    Labels assigned in the interface live in a small sidecar rather than being
+    written back into a multi-gigabyte table on every save, so they are merged
+    in here. Pass ``apply_labels=False`` to see the file exactly as it is on
+    disk -- which is what committing those labels needs.
 
     *categoricals* defaults to False and should stay that way for general use.
     Converting text columns to ``category`` saves a great deal of memory, but
@@ -597,6 +603,7 @@ def load(
         if twin.is_file() and _twin_matches_source(twin, source):
             try:
                 frame = pd.read_parquet(twin, columns=wanted)
+                frame = _with_labels(frame, source, wanted, apply_labels)
                 return _apply_categoricals(frame) if categoricals else frame
             except Exception as exc:
                 logger.warning("Fast copy unreadable (%s); falling back to CSV.", exc)
@@ -606,7 +613,27 @@ def load(
             start_fast_copy(source)
 
     frame = _read_csv(source, wanted)
+    frame = _with_labels(frame, source, wanted, apply_labels)
     return _apply_categoricals(frame) if categoricals else frame
+
+
+def _with_labels(
+    frame: pd.DataFrame,
+    source: Path,
+    wanted: list[str] | None,
+    enabled: bool,
+) -> pd.DataFrame:
+    """Merge any labels assigned in the interface but not yet written back."""
+    if not enabled:
+        return frame
+    try:
+        from . import labels
+
+        return labels.apply_to(frame, source, columns=wanted)
+    except Exception as exc:
+        # A label overlay must never stop data being read.
+        logger.warning("Could not apply pending labels for %s: %s", source.name, exc)
+        return frame
 
 
 def _available_columns(source: Path) -> Iterable[str]:

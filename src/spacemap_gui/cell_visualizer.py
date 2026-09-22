@@ -8,7 +8,6 @@ import tifffile
 import matplotlib.pyplot as plt
 from shapely.affinity import translate
 from shapely.geometry import Point, box, shape
-from shapely.strtree import STRtree
 import scipy.ndimage as ndi
 
 # Configure logging
@@ -169,40 +168,179 @@ class CellVisualizer:
         self.file_map = matches
         return matches
 
-    def _load_geojson_index(self, geojson_path: Path) -> dict:
-        """Load and cache polygon geometry plus a spatial index for a GeoJSON file."""
+    def _geojson_sidecar(self, geojson_path: Path) -> Path:
+        """Where the compact spatial index for a segmentation file is cached."""
+        source = Path(geojson_path)
+        beside = source.with_suffix(source.suffix + ".spatial.parquet")
+        if os.access(source.parent, os.W_OK):
+            return beside
+        from hashlib import sha1
+
+        digest = sha1(str(source.resolve()).encode("utf-8")).hexdigest()[:16]
+        return Path.home() / ".cache" / "spacemap" / "geojson_index" / f"{source.stem}.{digest}.parquet"
+
+    def _load_geojson_index(self, geojson_path) -> dict:
+        """Return bounding boxes and raw geometry for a segmentation file.
+
+        Building a shapely polygon for every cell is what made this expensive:
+        a 891 MB boundaries file holds 1,385,758 cells, and constructing them
+        all took about 48 s on top of 53 s to parse the JSON -- roughly 101 s
+        per batch, repeated for every batch, to display a handful of cells.
+
+        Instead each feature contributes only a bounding box, computed straight
+        from its coordinates, plus its geometry kept as text. Polygons are built
+        on demand for the few cells a crop actually touches. The result is
+        cached beside the file as Parquet, so the JSON is parsed once ever
+        rather than once per session.
+        """
         cache_key = str(geojson_path)
         cached = self._segmentation_cache.get(cache_key)
         if cached is not None:
             return cached
 
-        try:
-            with open(geojson_path, 'r') as f:
-                data = json.load(f)
-
-            polygons = []
-            if 'features' in data:
-                for feature in data['features']:
-                    geometry = feature.get('geometry')
-                    if not geometry:
-                        continue
-                    polygon = shape(geometry)
-                    if polygon.geom_type == 'Polygon':
-                        polygons.append(polygon)
-                    elif polygon.geom_type == 'MultiPolygon':
-                        polygons.extend(list(polygon.geoms))
-
-            index = {
-                'polygons': polygons,
-                'tree': STRtree(polygons) if polygons else None,
-            }
-            self._segmentation_cache[cache_key] = index
-            return index
-        except Exception as e:
-            logger.error(f"Failed to load GeoJSON {geojson_path}: {e}")
-            empty = {'polygons': [], 'tree': None}
+        empty = {"bboxes": np.zeros((0, 4), dtype=float), "geometries": []}
+        if not geojson_path:
             self._segmentation_cache[cache_key] = empty
             return empty
+
+        source = Path(geojson_path)
+        if not source.is_file():
+            logger.error(f"Segmentation file not found: {geojson_path}")
+            self._segmentation_cache[cache_key] = empty
+            return empty
+
+        index = self._read_geojson_sidecar(source) or self._build_geojson_sidecar(source)
+        if index is None:
+            index = empty
+        self._segmentation_cache[cache_key] = index
+        return index
+
+    def _read_geojson_sidecar(self, source: Path) -> dict | None:
+        """Load the cached index when it matches the current file."""
+        sidecar = self._geojson_sidecar(source)
+        if not sidecar.is_file():
+            return None
+        try:
+            import pyarrow.parquet as pq
+
+            schema = pq.read_schema(sidecar)
+            recorded = (schema.metadata or {}).get(b"spacemap_source")
+            stat = source.stat()
+            if recorded is None or recorded.decode() != f"{stat.st_size}:{stat.st_mtime_ns}":
+                return None
+            table = pq.read_table(sidecar)
+        except Exception as exc:
+            logger.debug(f"Spatial index unreadable for {source.name}: {exc}")
+            return None
+        return {
+            "bboxes": np.column_stack(
+                [
+                    table.column("minx").to_numpy(zero_copy_only=False),
+                    table.column("miny").to_numpy(zero_copy_only=False),
+                    table.column("maxx").to_numpy(zero_copy_only=False),
+                    table.column("maxy").to_numpy(zero_copy_only=False),
+                ]
+            ),
+            "geometries": table.column("geometry").to_pylist(),
+        }
+
+    @staticmethod
+    def _coordinate_bounds(geometry: dict) -> tuple[float, float, float, float] | None:
+        """Bounding box of a GeoJSON geometry, without constructing it."""
+        coordinates = geometry.get("coordinates")
+        if not coordinates:
+            return None
+        xs: list[float] = []
+        ys: list[float] = []
+
+        def walk(node) -> None:
+            if isinstance(node, (list, tuple)):
+                if node and isinstance(node[0], (int, float)) and len(node) >= 2:
+                    xs.append(float(node[0]))
+                    ys.append(float(node[1]))
+                    return
+                for item in node:
+                    walk(item)
+
+        walk(coordinates)
+        if not xs:
+            return None
+        return min(xs), min(ys), max(xs), max(ys)
+
+    def _build_geojson_sidecar(self, source: Path) -> dict | None:
+        """Parse the GeoJSON once and cache a compact spatial index."""
+        try:
+            with open(source, "r") as handle:
+                data = json.load(handle)
+        except Exception as exc:
+            logger.error(f"Failed to load GeoJSON {source}: {exc}")
+            return None
+
+        bounds: list[tuple[float, float, float, float]] = []
+        geometries: list[str] = []
+        for feature in data.get("features", []) or []:
+            geometry = feature.get("geometry")
+            if not geometry:
+                continue
+            box_values = self._coordinate_bounds(geometry)
+            if box_values is None:
+                continue
+            bounds.append(box_values)
+            geometries.append(json.dumps(geometry))
+
+        index = {
+            "bboxes": np.asarray(bounds, dtype=float) if bounds else np.zeros((0, 4), dtype=float),
+            "geometries": geometries,
+        }
+
+        try:
+            import pyarrow as pa
+            import pyarrow.parquet as pq
+
+            stat = source.stat()
+            array = index["bboxes"]
+            table = pa.table(
+                {
+                    "minx": array[:, 0] if len(array) else np.zeros(0),
+                    "miny": array[:, 1] if len(array) else np.zeros(0),
+                    "maxx": array[:, 2] if len(array) else np.zeros(0),
+                    "maxy": array[:, 3] if len(array) else np.zeros(0),
+                    "geometry": geometries,
+                }
+            ).replace_schema_metadata({b"spacemap_source": f"{stat.st_size}:{stat.st_mtime_ns}".encode()})
+            sidecar = self._geojson_sidecar(source)
+            sidecar.parent.mkdir(parents=True, exist_ok=True)
+            temporary = sidecar.with_name(f".{sidecar.name}.{os.getpid()}.tmp")
+            pq.write_table(table, temporary, compression="snappy")
+            os.replace(temporary, sidecar)
+        except Exception as exc:
+            logger.debug(f"Could not cache the spatial index for {source.name}: {exc}")
+
+        return index
+
+    def _polygons_near(self, index: dict, x_min: float, y_min: float, x_max: float, y_max: float) -> list:
+        """Build shapely polygons only for the cells overlapping a window."""
+        boxes = index.get("bboxes")
+        geometries = index.get("geometries") or []
+        if boxes is None or len(boxes) == 0:
+            return []
+        overlapping = (
+            (boxes[:, 0] <= x_max)
+            & (boxes[:, 2] >= x_min)
+            & (boxes[:, 1] <= y_max)
+            & (boxes[:, 3] >= y_min)
+        )
+        polygons = []
+        for position in np.flatnonzero(overlapping):
+            try:
+                geometry = shape(json.loads(geometries[position]))
+            except Exception:
+                continue
+            if geometry.geom_type == "Polygon":
+                polygons.append(geometry)
+            elif geometry.geom_type == "MultiPolygon":
+                polygons.extend(list(geometry.geoms))
+        return polygons
 
     def _get_cached_metadata(self, batch_id: str, tif: tifffile.TiffFile) -> dict:
         """Return cached OME channel metadata for a batch."""
@@ -457,21 +595,17 @@ class CellVisualizer:
 
         # 3. Extract Polygons
         seg_index = self._load_geojson_index(seg_path)
-        all_polys = seg_index['polygons']
-        tree = seg_index['tree']
-        
+
         # Create a search box for efficient filtering
         search_box = box(x_min, y_min, x_max, y_max)
-        
+
         target_poly = None
         neighbors = []
-        
-        # Find target cell (contains centroid) and neighbors (intersect box)
+
+        # Find target cell (contains centroid) and neighbors (intersect box).
+        # Only the cells whose bounding boxes overlap this crop are built.
         centroid_pt = Point(x, y)
-        candidate_polys = all_polys
-        if tree is not None:
-            candidate_indices = tree.query(search_box)
-            candidate_polys = [all_polys[idx] for idx in candidate_indices]
+        candidate_polys = self._polygons_near(seg_index, x_min, y_min, x_max, y_max)
 
         for poly in candidate_polys:
             if poly.contains(centroid_pt):

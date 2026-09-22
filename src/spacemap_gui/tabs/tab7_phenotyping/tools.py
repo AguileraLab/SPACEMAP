@@ -11,6 +11,7 @@ import math
 import os
 import re
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -888,6 +889,45 @@ def _apply_visual_normalization(
     return work_df, norm_cols
 
 
+class _Step:
+    """Print what a long operation is doing, and how long each part took.
+
+    Manual Reference can spend minutes inside a single Streamlit rerun with no
+    output, which makes it impossible to tell a slow step from a hung one.
+    Every stage announces itself on the terminal as it starts and reports its
+    own duration as it ends.  Set SPACEMAP_TRACE=0 to silence it.
+    """
+
+    _enabled = os.environ.get("SPACEMAP_TRACE", "1").strip().lower() not in {"0", "off", "false", "no"}
+
+    def __init__(self, label: str, **details: Any) -> None:
+        self.label = label
+        self.details = details
+        self.started = 0.0
+
+    @staticmethod
+    def note(message: str) -> None:
+        if _Step._enabled:
+            stamp = datetime.now().strftime("%H:%M:%S")
+            print(f"[MR {stamp}] {message}", flush=True)
+
+    def __enter__(self) -> "_Step":
+        self.started = time.perf_counter()
+        if self._enabled:
+            extra = "  ".join(f"{k}={v}" for k, v in self.details.items())
+            stamp = datetime.now().strftime("%H:%M:%S")
+            print(f"[MR {stamp}] -> {self.label}{('   ' + extra) if extra else ''}", flush=True)
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        if self._enabled:
+            elapsed = time.perf_counter() - self.started
+            stamp = datetime.now().strftime("%H:%M:%S")
+            state = "FAILED" if exc_type else "done"
+            print(f"[MR {stamp}] <- {self.label}: {state} in {elapsed:.1f}s", flush=True)
+        return False
+
+
 def _visual_normalization_stats(
     df: pd.DataFrame,
     marker_cols: list[str],
@@ -1594,57 +1634,53 @@ def _write_verified_visual_manual_reference_updates(
     unified_csv_path: str,
     expected_updates: list[tuple[int, str, str]],
 ) -> int:
-    """Write to a temporary CSV, verify exact cells, then atomically replace the source."""
+    """Record assignments in the label sidecar and verify they read back.
+
+    This used to rewrite the whole unified table for every save: measured at
+    about 13 minutes for a 13 GB CSV, plus another 2.7 minutes to rebuild the
+    Parquet copy the rewrite invalidated. Assignments now append to a small
+    sidecar beside the table, which takes well under a second, and every read
+    merges them, so the interface shows current values immediately.
+
+    Use "Write labels into the CSV" in the fast-loading panel to fold them into
+    the CSV and Parquet when a labelling session is finished.
+    """
     if not expected_updates:
         return 0
 
-    target_path = Path(unified_csv_path)
-    temp_path = target_path.with_name(
-        f".{target_path.name}.manual_reference_{os.getpid()}_{time.time_ns()}.tmp"
+    from spacemap import labels
+
+    stored = labels.append(
+        unified_csv_path,
+        [
+            {"row": row_index, "column": output_column, "value": expected_phenotype}
+            for row_index, output_column, expected_phenotype in expected_updates
+        ],
     )
-    output_columns = sorted({output_column for _, output_column, _ in expected_updates})
-    try:
-        unified_df.to_csv(temp_path, index=False)
-        try:
-            os.chmod(temp_path, target_path.stat().st_mode)
-        except OSError:
-            pass
 
-        verification_df = pd.read_csv(
-            temp_path,
-            usecols=output_columns,
-            low_memory=False,
-            keep_default_na=False,
-        )
-        if len(verification_df) != len(unified_df):
-            raise IOError(
-                "Manual Reference verification failed because the temporary CSV row count changed."
+    # Read the sidecar back and confirm every cell holds what was asked for,
+    # keeping the guarantee the previous whole-file verification provided.
+    saved = labels.load(unified_csv_path)
+    if saved.empty:
+        raise IOError("Manual Reference labels could not be read back after saving.")
+    lookup = {
+        (int(row.row), str(row.column)): _normalize_visual_phenotype_label(row.value)
+        for row in saved.itertuples(index=False)
+    }
+    verification_errors: list[str] = []
+    for row_index, output_column, expected_phenotype in expected_updates:
+        actual = lookup.get((int(row_index), str(output_column)))
+        if actual != expected_phenotype:
+            verification_errors.append(
+                f"row {row_index}, {output_column}: expected '{expected_phenotype}', "
+                f"found '{actual or '<blank>'}'"
             )
-
-        verification_errors: list[str] = []
-        for row_index, output_column, expected_phenotype in expected_updates:
-            actual_phenotype = _normalize_visual_phenotype_label(
-                verification_df.at[row_index, output_column]
-            )
-            if actual_phenotype != expected_phenotype:
-                verification_errors.append(
-                    f"row {row_index}, {output_column}: expected '{expected_phenotype}', "
-                    f"found '{actual_phenotype or '<blank>'}'"
-                )
-        if verification_errors:
-            preview = "; ".join(verification_errors[:3])
-            raise IOError(f"Manual Reference write verification failed: {preview}")
-
-        os.replace(temp_path, target_path)
-    finally:
-        try:
-            if temp_path.exists():
-                temp_path.unlink()
-        except OSError:
-            pass
+    if verification_errors:
+        preview = "; ".join(verification_errors[:3])
+        raise IOError(f"Manual Reference write verification failed: {preview}")
 
     _clear_visual_manual_reference_csv_caches()
-    return len(expected_updates)
+    return stored
 
 
 def _exclude_existing_visual_manual_reference_assignments(
@@ -3169,10 +3205,12 @@ def render_tools(project_root: Path, global_input_path: str | None) -> None:
                                         for column in dict.fromkeys(fresh_source_columns)
                                         if column and column in vv_available_columns
                                     ]
-                                    df_full = _load_manual_reference_csv_fresh(
-                                        unified_csv_path,
-                                        fresh_source_columns,
-                                    )
+                                    with _Step("load columns", n=len(fresh_source_columns)):
+                                        df_full = _load_manual_reference_csv_fresh(
+                                            unified_csv_path,
+                                            fresh_source_columns,
+                                        )
+                                    _Step.note(f"   loaded {0 if df_full is None else len(df_full):,} rows")
                                     if df_full is None or df_full.empty:
                                         st.error("Could not load the unified CSV.")
                                     else:
@@ -3184,7 +3222,9 @@ def render_tools(project_root: Path, global_input_path: str | None) -> None:
                                         elif x_render_col not in df_full.columns or y_render_col not in df_full.columns:
                                             st.error("The global X/Y columns from the Visual Validation settings are missing from the unified CSV.")
                                         else:
-                                            filtered_df = _apply_visual_filters(df_full.copy(), saved_vv_config.get("filters", []))
+                                            with _Step("apply filters", n=len(saved_vv_config.get("filters", []) or [])):
+                                                filtered_df = _apply_visual_filters(df_full.copy(), saved_vv_config.get("filters", []))
+                                            _Step.note(f"   {len(filtered_df):,} rows remain")
                                             if filtered_df.empty:
                                                 st.warning("No cells remain after applying the saved filters.")
                                             else:
@@ -3193,6 +3233,8 @@ def render_tools(project_root: Path, global_input_path: str | None) -> None:
                                                     # per-cell transform is applied further down, to the cells
                                                     # actually shown, which gives the same values without
                                                     # normalizing millions of rows nobody looks at.
+                                                    _norm_step = _Step("normalization statistics", rows=len(filtered_df))
+                                                    _norm_step.__enter__()
                                                     norm_stats = _visual_normalization_stats(
                                                         filtered_df,
                                                         saved_vv_config["markers"],
@@ -3203,13 +3245,16 @@ def render_tools(project_root: Path, global_input_path: str | None) -> None:
                                                     )
                                                     norm_cols = norm_stats["norm_cols"]
                                                     prepared_df = filtered_df
+                                                    _norm_step.__exit__(None, None, None)
                                                 except Exception as exc:
                                                     st.error(f"Normalization failed: {exc}")
                                                 else:
                                                     viz = _get_cell_visualizer_cached(viz_roi_dir, viz_seg_dir)
-                                                    matched_batches = viz.match_file_triads(
-                                                        prepared_df[batch_col].dropna().astype(str).unique().tolist()
-                                                    )
+                                                    with _Step("match ROI/segmentation files"):
+                                                        matched_batches = viz.match_file_triads(
+                                                            prepared_df[batch_col].dropna().astype(str).unique().tolist()
+                                                        )
+                                                    _Step.note(f"   {len(matched_batches)} batches matched")
                                                     valid_df = prepared_df[
                                                         prepared_df[batch_col].astype(str).isin(matched_batches.keys())
                                                     ].copy()
@@ -3249,9 +3294,13 @@ def render_tools(project_root: Path, global_input_path: str | None) -> None:
                                                             st.session_state["tools_mr_vv_results"] = []
                                                             st.warning(empty_message)
                                                         else:
-                                                            sampled_candidates = eligible_df.iloc[
-                                                                np.random.default_rng().permutation(len(eligible_df))
-                                                            ]
+                                                            with _Step("shuffle candidates", eligible=len(eligible_df)):
+                                                                sampled_candidates = eligible_df.iloc[
+                                                                    np.random.default_rng().permutation(len(eligible_df))
+                                                                ]
+                                                            _Step.note("   scanning candidates for cells to show")
+                                                            _mr_loop_started = time.perf_counter()
+                                                            _mr_examined = 0
                                                             results_to_store: list[dict[str, Any]] = []
                                                             target_marker_set = (
                                                                 {str(marker_name) for marker_name in target_markers}
@@ -3267,6 +3316,7 @@ def render_tools(project_root: Path, global_input_path: str | None) -> None:
                                                                 )
                                                                 if candidate_key in already_shown:
                                                                     continue
+                                                                _mr_examined += 1
                                                                 # Normalize this one cell now, using the statistics
                                                                 # computed over the whole filtered population.
                                                                 candidate_row = _apply_visual_normalization_rows(
@@ -3285,6 +3335,11 @@ def render_tools(project_root: Path, global_input_path: str | None) -> None:
                                                                 clean_top_markers = [marker_info[1] for marker_info in top_markers]
                                                                 if target_marker_set and not target_marker_set.issubset(set(clean_top_markers)):
                                                                     continue
+                                                                _Step.note(
+                                                                    f"   cell {len(results_to_store) + 1} ready "
+                                                                    f"({_mr_examined} examined, "
+                                                                    f"{time.perf_counter() - _mr_loop_started:.1f}s elapsed)"
+                                                                )
                                                                 results_to_store.append(
                                                                     {
                                                                         "result_key": candidate_key,
@@ -3317,13 +3372,19 @@ def render_tools(project_root: Path, global_input_path: str | None) -> None:
                                                             else:
                                                                 prewarm_fn = getattr(viz, "prewarm_batch", None)
                                                                 if callable(prewarm_fn):
-                                                                    for prewarm_batch_id in sorted({str(result["batch_value"]) for result in results_to_store}):
-                                                                        prewarm_fn(prewarm_batch_id)
+                                                                    _batches = sorted({str(result["batch_value"]) for result in results_to_store})
+                                                                    with _Step("open image files", batches=len(_batches)):
+                                                                        for prewarm_batch_id in _batches:
+                                                                            with _Step(f"   open {prewarm_batch_id}"):
+                                                                                prewarm_fn(prewarm_batch_id)
 
                                                                 rendered_results: list[dict[str, Any]] = []
-                                                                for result in results_to_store:
+                                                                _render_started = time.perf_counter()
+                                                                _Step.note(f"rendering {len(results_to_store)} cell images")
+                                                                for _cell_number, result in enumerate(results_to_store, start=1):
                                                                     try:
                                                                         top_marker_names = [marker_info[1] for marker_info in result["top_markers"]]
+                                                                        _cell_started = time.perf_counter()
                                                                         cell_ctx = viz.get_cell_context(
                                                                             batch_id=str(result["batch_value"]),
                                                                             x=float(result["x_value"]),
@@ -3369,6 +3430,11 @@ def render_tools(project_root: Path, global_input_path: str | None) -> None:
                                                                         )
                                                                         plt.close(fig)
                                                                         result["figure_path"] = figure_path
+                                                                        _Step.note(
+                                                                            f"   image {_cell_number}/{len(results_to_store)} "
+                                                                            f"in {time.perf_counter() - _cell_started:.1f}s "
+                                                                            f"({time.perf_counter() - _render_started:.1f}s total)"
+                                                                        )
                                                                         rendered_results.append(result)
                                                                     except Exception as exc:
                                                                         logger.error(f"Tools MR visual validation render failed: {exc}")
