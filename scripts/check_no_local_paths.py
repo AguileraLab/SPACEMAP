@@ -68,14 +68,39 @@ def _is_scannable(path: Path) -> bool:
     return path.suffix.lower() in EXTENSIONS or path.name in EXTRA_FILES
 
 
+def _tracked_files() -> list[Path] | None:
+    """Files Git actually tracks, or None when this is not a repository.
+
+    Scanning the working tree instead would flag the user's own data sitting
+    beside the code -- a project folder full of absolute paths is entirely
+    legitimate there, and only becomes a problem if it is committed.
+    """
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["git", "ls-files", "--cached", "--others", "--exclude-standard"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return [Path(line) for line in result.stdout.splitlines() if line.strip()]
+
+
 def main() -> int:
     root = Path(".").resolve()
     problems: list[str] = []
 
-    for path in sorted(root.rglob("*")):
+    candidates = _tracked_files()
+    if candidates is None:
+        candidates = [item.relative_to(root) for item in root.rglob("*") if item.is_file()]
+
+    for relative in sorted(candidates):
+        path = root / relative
         if not path.is_file():
             continue
-        relative = path.relative_to(root)
         if not _is_scannable(relative):
             continue
         try:

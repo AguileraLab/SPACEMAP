@@ -40,7 +40,11 @@ package_cache/
 *.pth
 
 # Data and analysis outputs are never part of the application
+# Both spellings: SPACEMAP writes analysis projects to whichever the user
+# configures, and a singular 'project/' once slipped past a rule that only
+# listed the plural.
 projects/
+project/
 docker-projects/
 test_codes/
 data/

@@ -38,6 +38,9 @@ jobs:
       - name: No absolute paths from a contributor's machine
         run: python scripts/check_no_local_paths.py
 
+      - name: No plain buttons inside Streamlit forms
+        run: python scripts/check_streamlit_forms.py
+
       - name: Notebook outputs are stripped
         run: |
           python - <<'PY'

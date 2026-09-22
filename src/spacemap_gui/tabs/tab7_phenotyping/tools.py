@@ -1496,9 +1496,6 @@ def _render_manual_reference_save_receipt(
         f"Unified CSV: {receipt.get('target_path')}"
     )
 
-    # The control for writing labels into the CSV belongs here, next to the
-    # save that produced them, rather than only in the input panel further up.
-    _render_label_commit_controls(receipt.get("target_path"), key_prefix="mr_receipt")
     receipt_details = receipt.get("details", [])
     if receipt_details:
         with st.expander(
@@ -3564,6 +3561,10 @@ def render_tools(project_root: Path, global_input_path: str | None) -> None:
                                 cached_params.get("tools_mr_vv_output_col", "phenotype_ref1"),
                             )
                         ).strip() or "phenotype_ref1"
+                        # Outside the form: Streamlit only allows form_submit_button inside one,
+                        # and this has to be a normal button.
+                        _render_label_commit_controls(unified_csv_path, key_prefix="mr_above_form")
+
                         with st.form("tools_mr_vv_assignments_form", clear_on_submit=False):
                             submitted_selections: dict[str, str] = {}
                             current_label_placeholders: dict[str, Any] = {}

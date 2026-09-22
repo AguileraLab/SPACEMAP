@@ -8,13 +8,14 @@ not edit it by hand -- run the script instead, or let CI regenerate it. The
 "Why" column comes from the `Why:` line in each commit message; see
 [CONTRIBUTING.md](../CONTRIBUTING.md) for how to write one.
 
-**18 changes** by **1 contributor**, touching **295 files**. Latest: `f574f68` on 2026-09-22.
+**19 changes** by **1 contributor**, touching **376 files**. Latest: `9726f6f` on 2026-09-22.
 
 
 ## 2026-09
 
 | Date | Change | Who | Why | Files | Lines |
 | --- | --- | --- | --- | --- | --- |
+| 2026-09-22 | `9726f6f` fix: move the label commit control out of the Streamlit form | Bassel Dawod | the feature was unreachable and the error appeared at the moment of saving, which is the worst time to lose confidence in a tool. | 83 | +7959404/-3 |
 | 2026-09-22 | `f574f68` docs: add a guide for using this version on real data | Bassel Dawod | someone adopting this version needs to know their data cannot leak and that a saved label is not yet in the CSV, and neither was written down. | 2 | +259/-0 |
 | 2026-09-22 | `01ec57f` fix: name the two save actions for what they actually do | Bassel Dawod | the previous wording described the old behaviour and quietly misled anyone relying on it. | 1 | +4/-4 |
 | 2026-09-22 | `cc428ef` fix: put the commit control where labels are saved, and say where they went | Bassel Dawod | a user finished a labelling session, was told the save was "completed and verified", and had no way to tell that the CSV on disk was unchanged or which control would change it. | 1 | +75/-2 |
@@ -37,6 +38,94 @@ not edit it by hand -- run the script instead, or let CI regenerate it. The
 ---
 
 ## Files changed per commit
+
+<details><summary><code>9726f6f</code> fix: move the label commit control out of the Streamlit form</summary>
+
+- `.github/workflows/ci.yml`
+- `project/INNATE_all_083120206/.restore_points/20260907_153039_autosave.json`
+- `project/INNATE_all_083120206/.restore_points/20260907_153405_autosave.json`
+- `project/INNATE_all_083120206/.restore_points/20260907_153429_autosave.json`
+- `project/INNATE_all_083120206/.restore_points/20260907_164854_autosave.json`
+- `project/INNATE_all_083120206/.restore_points/20260907_170357_autosave.json`
+- `project/INNATE_all_083120206/INNATE_all_083120206.json`
+- `project/INNATE_all_083120206/logs/process_logs/tab4_process_log.csv`
+- `project/INNATE_all_083120206/tab4_debug.txt`
+- `project/PDAC_09072026/.restore_points/20260922_183029_autosave.json`
+- `project/PDAC_09072026/.restore_points/20260922_183043_autosave.json`
+- `project/PDAC_09072026/.restore_points/20260922_184421_autosave.json`
+- `project/PDAC_09072026/.restore_points/20260922_184435_autosave.json`
+- `project/PDAC_09072026/.restore_points/20260922_184528_autosave.json`
+- `project/PDAC_09072026/.tab8_cache/settings_tab8_project.json`
+- `project/PDAC_09072026/PDAC_09072026.json`
+- `project/PDAC_09072026/PDAC_Project/.temp_threshold_data/s1r1.ome.tiff_-_Merged_Image.csv`
+- `project/PDAC_09072026/PDAC_Project/classification annotations/s1r1.ome.tiff - Merged Image.geojson`
+- `project/PDAC_09072026/PDAC_Project/classifiers/classes.json`
+- `project/PDAC_09072026/PDAC_Project/classifiers/pixel_classifiers/PDAC_classification_v2.json`
+- `project/PDAC_09072026/PDAC_Project/classifiers/pixel_classifiers/TLS_classifier.json`
+- `project/PDAC_09072026/PDAC_Project/classifiers/pixel_classifiers/all_annotations.json`
+- `project/PDAC_09072026/PDAC_Project/classifiers/pixel_classifiers/beta_v1.json`
+- `project/PDAC_09072026/PDAC_Project/classifiers/pixel_classifiers/beta_v2.json`
+- `project/PDAC_09072026/PDAC_Project/classifiers/pixel_classifiers/beta_v3.json`
+- `project/PDAC_09072026/PDAC_Project/classifiers/pixel_classifiers/blurr_v1.json`
+- `project/PDAC_09072026/PDAC_Project/classifiers/pixel_classifiers/blurry.json`
+- `project/PDAC_09072026/PDAC_Project/classifiers/pixel_classifiers/classifier_v1.json`
+- `project/PDAC_09072026/PDAC_Project/classifiers/pixel_classifiers/classifier_v2.json`
+- `project/PDAC_09072026/PDAC_Project/classifiers/pixel_classifiers/classifier_v3.json`
+- `project/PDAC_09072026/PDAC_Project/classifiers/pixel_classifiers/classifier_v4.json`
+- `project/PDAC_09072026/PDAC_Project/classifiers/pixel_classifiers/classifier_v5.json`
+- `project/PDAC_09072026/PDAC_Project/classifiers/pixel_classifiers/classifier_v6.json`
+- `project/PDAC_09072026/PDAC_Project/classifiers/pixel_classifiers/classifier_v7.json`
+- `project/PDAC_09072026/PDAC_Project/classifiers/pixel_classifiers/classifier_v8.json`
+- `project/PDAC_09072026/PDAC_Project/classifiers/pixel_classifiers/endothelia_classifier.json`
+- `project/PDAC_09072026/PDAC_Project/classifiers/pixel_classifiers/epithelia.json`
+- `project/PDAC_09072026/PDAC_Project/classifiers/pixel_classifiers/epithelia_classifier.json`
+- `project/PDAC_09072026/PDAC_Project/classifiers/pixel_classifiers/epithelia_classifier_2.json`
+- `project/PDAC_09072026/PDAC_Project/classifiers/pixel_classifiers/muscle_classifier.json`
+- `project/PDAC_09072026/PDAC_Project/classifiers/pixel_classifiers/pck+.json`
+- `project/PDAC_09072026/PDAC_Project/classifiers/pixel_classifiers/pdac_classifier_v1.json`
+- `project/PDAC_09072026/PDAC_Project/classifiers/pixel_classifiers/s3r1_epithelia.json`
+- `project/PDAC_09072026/PDAC_Project/classifiers/pixel_classifiers/tissue_s8r1.json`
+- `project/PDAC_09072026/PDAC_Project/classifiers/pixel_classifiers/vessel_v1.json`
+- `project/PDAC_09072026/PDAC_Project/individual_thresholds/s1r1.ome.tiff_-_Merged_Image.csv`
+- `project/PDAC_09072026/PDAC_Project/log/Screenshot from 2025-09-26 14-40-56.png`
+- `project/PDAC_09072026/PDAC_Project/project.qpproj`
+- `project/PDAC_09072026/PDAC_Project/project.qpproj.backup`
+- `project/PDAC_09072026/PDAC_Project/resources/display/CODEX.json`
+- `project/PDAC_09072026/PDAC_Project/resources/display/Epithelia.json`
+- `project/PDAC_09072026/PDAC_Project/resources/display/HE.json`
+- `project/PDAC_09072026/PDAC_Project/resources/display/Phenotyping_markers.json`
+- `project/PDAC_09072026/PDAC_Project/s10r3_all_annotations.ome.tiff - Merged Image.geojson`
+- `project/PDAC_09072026/PDAC_Project/s1r1_blurr.ome.tiff - Merged Image.geojson`
+- `project/PDAC_09072026/PDAC_Project/s3r1_all_annotations_from_classifierv5.ome.tiff - Merged Image.geojson`
+- `project/PDAC_09072026/PDAC_Project/s3r1_all_annotations_v1.ome.tiff - Merged Image.geojson`
+- `project/PDAC_09072026/PDAC_Project/s3r1_all_annotations_v2.ome.tiff - Merged Image.geojson`
+- `project/PDAC_09072026/PDAC_Project/s3r1_epithelial.ome.tiff - Merged Image.geojson`
+- `project/PDAC_09072026/PDAC_Project/s4r2_epithelia.ome.tiff - Merged Image.geojson`
+- `project/PDAC_09072026/PDAC_Project/s6r1_all_annotations.ome.tiff - Merged Image.geojson`
+- `project/PDAC_09072026/PDAC_Project/s8r1_acinar_annotations.ome.tiff - Merged Image.geojson`
+- `project/PDAC_09072026/PDAC_Project/s8r1_all_annotations.ome.tiff - Merged Image.geojson`
+- `project/PDAC_09072026/PDAC_Project/s8r1_all_v2_annotations.ome.tiff - Merged Image.geojson`
+- `project/PDAC_09072026/PDAC_Project/s8r1_all_v3_annotations.ome.tiff - Merged Image.geojson`
+- `project/PDAC_09072026/PDAC_Project/s8r1_all_v4_annotations.ome.tiff - Merged Image.geojson`
+- `project/PDAC_09072026/PDAC_Project/s8r1_all_v5_annotations.ome.tiff - Merged Image.geojson`
+- `project/PDAC_09072026/PDAC_Project/s8r1_beta_acinar.ome.tiff - Merged Image.geojson`
+- `project/PDAC_09072026/PDAC_Project/s8r1_islet_annotation.ome.tiff - Merged Image.geojson`
+- `project/PDAC_09072026/PDAC_Project/scripts/Annotate_by_markers_v1.groovy`
+- `project/PDAC_09072026/PDAC_Project/scripts/Neck_detection_valid_tissue.groovy`
+- `project/PDAC_09072026/PDAC_Project/scripts/expand_polygons.groovy`
+- `project/PDAC_09072026/blurriness/s10r1_blur_zones_balanced (copy).geojson`
+- `project/PDAC_09072026/blurriness/s10r1_blur_zones_balanced.geojson`
+- `project/PDAC_09072026/logs/process_logs/tab2_process_log.csv`
+- `project/PDAC_09072026/logs/process_logs/tab4_process_log.csv`
+- `project/PDAC_09072026/logs/process_logs/tab6_process_log.csv`
+- `project/PDAC_09072026/logs/process_logs/tab7_process_log.csv`
+- `project/PDAC_09072026/logs/process_logs/tab8_process_log.csv`
+- `project/PDAC_09072026/logs/process_logs/tab9_process_log.csv`
+- `project/PDAC_09072026/tab4_debug.txt`
+- `scripts/check_streamlit_forms.py`
+- `src/spacemap_gui/tabs/tab7_phenotyping/tools.py`
+
+</details>
 
 <details><summary><code>f574f68</code> docs: add a guide for using this version on real data</summary>
 
