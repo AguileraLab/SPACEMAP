@@ -8,13 +8,14 @@ not edit it by hand -- run the script instead, or let CI regenerate it. The
 "Why" column comes from the `Why:` line in each commit message; see
 [CONTRIBUTING.md](../CONTRIBUTING.md) for how to write one.
 
-**13 changes** by **1 contributor**, touching **291 files**. Latest: `dd094d7` on 2026-09-22.
+**14 changes** by **1 contributor**, touching **292 files**. Latest: `64a4808` on 2026-09-22.
 
 
 ## 2026-09
 
 | Date | Change | Who | Why | Files | Lines |
 | --- | --- | --- | --- | --- | --- |
+| 2026-09-22 | `64a4808` fix: correct loader dtypes, and normalize only the cells shown | Bassel Dawod | a reviewer waited thirteen minutes to label fifty cells, and the screen errored when they tried. Both costs were avoidable work rather than anything inherent to the analysis. | 3 | +235/-2 |
 | 2026-09-22 | `dd094d7` perf: read only the columns a screen needs, from a columnar copy | Bassel Dawod | the pipeline became unusable on real cohort-sized data, and the cost was entirely avoidable work rather than anything inherent to the analysis. | 21 | +1268/-145 |
 | 2026-09-19 | `7335961` docs: record the submitted manuscript's author list | Bassel Dawod | capturing the order now means the citation is a two-line edit on acceptance rather than a reconstruction from memory. | 1 | +71/-0 |
 | 2026-09-19 | `1784367` docs: add ORCID identifiers to the citation metadata | Bassel Dawod | an ORCID is what lets indexers and reference managers attribute the software to the right people when names are ambiguous or change. | 1 | +6/-3 |
@@ -32,6 +33,14 @@ not edit it by hand -- run the script instead, or let CI regenerate it. The
 ---
 
 ## Files changed per commit
+
+<details><summary><code>64a4808</code> fix: correct loader dtypes, and normalize only the cells shown</summary>
+
+- `src/spacemap/dataio.py`
+- `src/spacemap_gui/tabs/tab7_phenotyping/tools.py`
+- `tests/test_dataio_dtypes.py`
+
+</details>
 
 <details><summary><code>dd094d7</code> perf: read only the columns a screen needs, from a columnar copy</summary>
 
