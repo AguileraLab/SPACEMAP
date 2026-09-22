@@ -8,13 +8,14 @@ not edit it by hand -- run the script instead, or let CI regenerate it. The
 "Why" column comes from the `Why:` line in each commit message; see
 [CONTRIBUTING.md](../CONTRIBUTING.md) for how to write one.
 
-**15 changes** by **1 contributor**, touching **294 files**. Latest: `0110154` on 2026-09-22.
+**16 changes** by **1 contributor**, touching **294 files**. Latest: `cc428ef` on 2026-09-22.
 
 
 ## 2026-09
 
 | Date | Change | Who | Why | Files | Lines |
 | --- | --- | --- | --- | --- | --- |
+| 2026-09-22 | `cc428ef` fix: put the commit control where labels are saved, and say where they went | Bassel Dawod | a user finished a labelling session, was told the save was "completed and verified", and had no way to tell that the CSV on disk was unchanged or which control would change it. | 1 | +75/-2 |
 | 2026-09-22 | `0110154` perf: cache the segmentation index, and store labels without rewriting the table | Bassel Dawod | labelling fifty cells took around thirteen minutes of waiting, and two earlier attempts optimised paths that were not the bottleneck because nothing reported where the time was going. | 8 | +777/-95 |
 | 2026-09-22 | `64a4808` fix: correct loader dtypes, and normalize only the cells shown | Bassel Dawod | a reviewer waited thirteen minutes to label fifty cells, and the screen errored when they tried. Both costs were avoidable work rather than anything inherent to the analysis. | 3 | +235/-2 |
 | 2026-09-22 | `dd094d7` perf: read only the columns a screen needs, from a columnar copy | Bassel Dawod | the pipeline became unusable on real cohort-sized data, and the cost was entirely avoidable work rather than anything inherent to the analysis. | 21 | +1268/-145 |
@@ -34,6 +35,12 @@ not edit it by hand -- run the script instead, or let CI regenerate it. The
 ---
 
 ## Files changed per commit
+
+<details><summary><code>cc428ef</code> fix: put the commit control where labels are saved, and say where they went</summary>
+
+- `src/spacemap_gui/tabs/tab7_phenotyping/tools.py`
+
+</details>
 
 <details><summary><code>0110154</code> perf: cache the segmentation index, and store labels without rewriting the table</summary>
 
