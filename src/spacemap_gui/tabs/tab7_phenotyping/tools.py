@@ -888,6 +888,138 @@ def _apply_visual_normalization(
     return work_df, norm_cols
 
 
+def _visual_normalization_stats(
+    df: pd.DataFrame,
+    marker_cols: list[str],
+    method: str | list[str] | tuple[str, ...],
+    group_col: str | None,
+    *,
+    apply_arcsinh: bool = False,
+    arcsinh_cofactor: float = 5.0,
+) -> dict[str, Any]:
+    """Compute only the population statistics that normalization needs.
+
+    Manual Reference shows a few dozen cells but used to normalize the entire
+    table first -- measured at about 1044 s for 8.6M rows, to produce values
+    that take 16 ms for the cells actually displayed.
+
+    Only the Z1 step looks across cells: it subtracts each marker's mean and
+    divides by its standard deviation, computed over the population (or over
+    each group when a grouping column is set). Z2, the CDF and the negative-log
+    steps are per-cell or per-value. So the population pass can be done once,
+    here, and the per-cell transform applied to just the rows on screen, which
+    gives byte-identical results to normalizing everything.
+    """
+    valid_markers = [column for column in marker_cols if column in df.columns]
+    if not valid_markers:
+        raise ValueError("None of the selected markers were found in the unified CSV.")
+    if apply_arcsinh and float(arcsinh_cofactor) <= 0:
+        raise ValueError("The arcsinh cofactor must be greater than zero.")
+
+    apply_z1, apply_z2, apply_cdf, apply_nlog = _get_visual_normalization_flags(method)
+    selected_steps = [
+        name
+        for name, enabled in zip(
+            ("z1", "z2", "cdf", "nlog"),
+            (apply_z1, apply_z2, apply_cdf, apply_nlog),
+            strict=True,
+        )
+        if enabled
+    ]
+    suffix_parts = (["asinh"] if apply_arcsinh else []) + selected_steps
+    suffix = f"_mrvv_{'_'.join(suffix_parts) or 'identity'}"
+    norm_cols = [f"{column}{suffix}" for column in valid_markers]
+
+    def population_stats(frame: pd.DataFrame) -> dict[str, Any]:
+        data = frame[valid_markers].apply(pd.to_numeric, errors="coerce").astype(float).to_numpy(copy=True)
+        if apply_arcsinh:
+            data = np.arcsinh(data / float(arcsinh_cofactor))
+        if not apply_z1:
+            return {"rows": int(frame.shape[0]), "means": None, "stds": None}
+        means = np.nanmean(data, axis=0)
+        stds = np.nanstd(data, axis=0)
+        stds[~np.isfinite(stds) | (stds == 0)] = 1e-9
+        return {"rows": int(frame.shape[0]), "means": means, "stds": stds}
+
+    groups: dict[Any, dict[str, Any]] = {}
+    if group_col and group_col in df.columns:
+        keys = df[group_col].fillna("__missing__").astype(str)
+        for key, frame in df.groupby(keys, group_keys=False):
+            groups[str(key)] = population_stats(frame)
+    else:
+        groups[None] = population_stats(df)
+
+    return {
+        "markers": valid_markers,
+        "norm_cols": norm_cols,
+        "suffix": suffix,
+        "flags": (apply_z1, apply_z2, apply_cdf, apply_nlog),
+        "group_col": group_col if (group_col and group_col in df.columns) else None,
+        "groups": groups,
+        "apply_arcsinh": bool(apply_arcsinh),
+        "arcsinh_cofactor": float(arcsinh_cofactor),
+    }
+
+
+def _apply_visual_normalization_rows(
+    rows: pd.DataFrame,
+    stats: dict[str, Any],
+) -> pd.DataFrame:
+    """Add normalized columns to a handful of rows, using precomputed statistics.
+
+    Produces the same values ``_apply_visual_normalization`` would for these
+    rows, without touching the rest of the table.
+    """
+    valid_markers = stats["markers"]
+    norm_cols = stats["norm_cols"]
+    apply_z1, apply_z2, apply_cdf, apply_nlog = stats["flags"]
+    epsilon = 1e-9
+
+    work = rows.copy()
+    data = work[valid_markers].apply(pd.to_numeric, errors="coerce").astype(float).to_numpy(copy=True)
+    if stats["apply_arcsinh"]:
+        data = np.arcsinh(data / stats["arcsinh_cofactor"])
+    missing = ~np.isfinite(data)
+
+    group_col = stats["group_col"]
+    if group_col:
+        keys = work[group_col].fillna("__missing__").astype(str).to_numpy()
+    else:
+        keys = np.array([None] * len(work), dtype=object)
+
+    processed = data.copy()
+    if apply_z1:
+        for index, key in enumerate(keys):
+            entry = stats["groups"].get(key if group_col else None)
+            if entry is None or entry["means"] is None:
+                continue
+            processed[index] = (processed[index] - entry["means"]) / entry["stds"]
+        processed = np.clip(processed, -10, 10)
+    if apply_z2:
+        row_means = np.nanmean(processed, axis=1, keepdims=True)
+        row_stds = np.nanstd(processed, axis=1, keepdims=True)
+        row_stds[~np.isfinite(row_stds) | (row_stds == 0)] = epsilon
+        processed = (processed - row_means) / row_stds
+    if apply_cdf:
+        processed = _normal_cdf_array(processed)
+    if apply_nlog:
+        processed = -np.log(np.maximum(1.0 - processed, epsilon))
+
+    final = np.asarray(processed, dtype=float)
+    final[missing] = np.nan
+
+    # A group with fewer than two cells has no usable spread, which the
+    # whole-table path represented as zeros.
+    if apply_z1 or apply_z2:
+        for index, key in enumerate(keys):
+            entry = stats["groups"].get(key if group_col else None)
+            if entry is not None and entry["rows"] < 2:
+                final[index] = np.where(missing[index], np.nan, 0.0)
+
+    work[norm_cols] = pd.DataFrame(final, index=work.index, columns=norm_cols)
+    return work
+
+
 def _sanitize_visual_filters(
     criteria: list[dict[str, Any]],
     available_columns: list[str],
@@ -3057,7 +3189,11 @@ def render_tools(project_root: Path, global_input_path: str | None) -> None:
                                                 st.warning("No cells remain after applying the saved filters.")
                                             else:
                                                 try:
-                                                    prepared_df, norm_cols = _apply_visual_normalization(
+                                                    # Only the population statistics are computed here. The
+                                                    # per-cell transform is applied further down, to the cells
+                                                    # actually shown, which gives the same values without
+                                                    # normalizing millions of rows nobody looks at.
+                                                    norm_stats = _visual_normalization_stats(
                                                         filtered_df,
                                                         saved_vv_config["markers"],
                                                         saved_vv_config["normalization_steps"],
@@ -3065,6 +3201,8 @@ def render_tools(project_root: Path, global_input_path: str | None) -> None:
                                                         apply_arcsinh=saved_vv_config.get("apply_arcsinh", False),
                                                         arcsinh_cofactor=saved_vv_config.get("arcsinh_cofactor", 5.0),
                                                     )
+                                                    norm_cols = norm_stats["norm_cols"]
+                                                    prepared_df = filtered_df
                                                 except Exception as exc:
                                                     st.error(f"Normalization failed: {exc}")
                                                 else:
@@ -3129,6 +3267,11 @@ def render_tools(project_root: Path, global_input_path: str | None) -> None:
                                                                 )
                                                                 if candidate_key in already_shown:
                                                                     continue
+                                                                # Normalize this one cell now, using the statistics
+                                                                # computed over the whole filtered population.
+                                                                candidate_row = _apply_visual_normalization_rows(
+                                                                    candidate_row.to_frame().T, norm_stats
+                                                                ).iloc[0]
                                                                 top_markers = _compute_top_markers_for_row(
                                                                     candidate_row,
                                                                     saved_vv_config["markers"],

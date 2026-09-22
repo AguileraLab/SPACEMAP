@@ -555,7 +555,7 @@ def load(
     path: str | Path,
     columns: Sequence[str] | None = None,
     *,
-    categoricals: bool = True,
+    categoricals: bool = False,
     build_fast_copy: bool = True,
     progress: Any | None = None,
 ) -> pd.DataFrame:
@@ -569,6 +569,14 @@ def load(
     Passing ``columns=None`` loads every column, which on a multi-gigabyte
     table is the slow path this module exists to avoid; prefer naming what the
     screen needs.
+
+    *categoricals* defaults to False and should stay that way for general use.
+    Converting text columns to ``category`` saves a great deal of memory, but
+    it is a real dtype change, and callers that later assign a value outside
+    the existing categories fail with "Cannot setitem on a Categorical with a
+    new category". Several screens do exactly that -- assigning a phenotype
+    label to an unlabelled cell, for one -- so the conversion is opt-in and
+    belongs only where the frame is known to be read-only.
     """
     source = Path(path).expanduser()
     if not source.is_file():
