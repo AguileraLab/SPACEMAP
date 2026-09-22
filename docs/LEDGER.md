@@ -8,13 +8,14 @@ not edit it by hand -- run the script instead, or let CI regenerate it. The
 "Why" column comes from the `Why:` line in each commit message; see
 [CONTRIBUTING.md](../CONTRIBUTING.md) for how to write one.
 
-**12 changes** by **1 contributor**, touching **290 files**. Latest: `7335961` on 2026-09-19.
+**13 changes** by **1 contributor**, touching **291 files**. Latest: `dd094d7` on 2026-09-22.
 
 
 ## 2026-09
 
 | Date | Change | Who | Why | Files | Lines |
 | --- | --- | --- | --- | --- | --- |
+| 2026-09-22 | `dd094d7` perf: read only the columns a screen needs, from a columnar copy | Bassel Dawod | the pipeline became unusable on real cohort-sized data, and the cost was entirely avoidable work rather than anything inherent to the analysis. | 21 | +1268/-145 |
 | 2026-09-19 | `7335961` docs: record the submitted manuscript's author list | Bassel Dawod | capturing the order now means the citation is a two-line edit on acceptance rather than a reconstruction from memory. | 1 | +71/-0 |
 | 2026-09-19 | `1784367` docs: add ORCID identifiers to the citation metadata | Bassel Dawod | an ORCID is what lets indexers and reference managers attribute the software to the right people when names are ambiguous or change. | 1 | +6/-3 |
 | 2026-09-19 | `3291334` docs: record UTSW copyright and named authorship | Bassel Dawod | copyright ownership, software authorship and paper authorship are three different things, and a single lab name in every slot recorded none of them correctly. | 3 | +74/-9 |
@@ -31,6 +32,32 @@ not edit it by hand -- run the script instead, or let CI regenerate it. The
 ---
 
 ## Files changed per commit
+
+<details><summary><code>dd094d7</code> perf: read only the columns a screen needs, from a columnar copy</summary>
+
+- `.gitignore`
+- `src/spacemap/dataio.py`
+- `src/spacemap/ph_accel_utils.py`
+- `src/spacemap/segmentation_cellpose.py`
+- `src/spacemap_gui/cell_visualizer.py`
+- `src/spacemap_gui/tabs/tab7_phenotyping/__init__.py`
+- `src/spacemap_gui/tabs/tab7_phenotyping/leiden_clustering.py`
+- `src/spacemap_gui/tabs/tab7_phenotyping/mr_ml_phenotyping.py`
+- `src/spacemap_gui/tabs/tab7_phenotyping/resolve_clustering.py`
+- `src/spacemap_gui/tabs/tab7_phenotyping/scimap_clustering.py`
+- `src/spacemap_gui/tabs/tab7_phenotyping/tools.py`
+- `src/spacemap_gui/tabs/tab7_phenotyping/visualization.py`
+- `src/spacemap_gui/tabs/tab7_phenotyping/vortex_clustering.py`
+- `src/spacemap_gui/tabs/tab8_analysis/common.py`
+- `src/spacemap_gui/tabs/tab9_visualization/__init__.py`
+- `src/spacemap_gui/tabs/tab9_visualization/common.py`
+- `src/spacemap_gui/tabs/tab9_visualization/pairwise.py`
+- `src/spacemap_gui/tabs/tab9_visualization/proportion.py`
+- `src/spacemap_gui/tabs/tab9_visualization/umap_explorer.py`
+- `src/spacemap_gui/tabs/tab9_visualization/visual_validation.py`
+- `src/spacemap_gui/ui_utils.py`
+
+</details>
 
 <details><summary><code>7335961</code> docs: record the submitted manuscript's author list</summary>
 
