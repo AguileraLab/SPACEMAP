@@ -1412,7 +1412,7 @@ def _build_manual_reference_save_receipt(
         f"{changed_count} assigned/changed, {cleared_count} label(s) removed, "
         f"and {unchanged_count} unchanged value(s) verified. "
         f"{total_pending} label(s) are now held alongside the CSV and shown "
-        "everywhere in SPACEMAP; use \"Write labels into the CSV\" below to put "
+        "everywhere in SPACEMAP; use **Write Labels Into CSV** below to put "
         "them into the file itself."
     )
     return {
@@ -1453,7 +1453,7 @@ def _render_label_commit_controls(table_path: str | None, *, key_prefix: str) ->
     )
     left, right = st.columns([2, 1])
     if left.button(
-        "Write labels into the CSV",
+        "📄 Write Labels Into CSV (several minutes)",
         key=f"{key_prefix}_commit_labels",
         type="primary",
         width="stretch",
@@ -3724,13 +3724,13 @@ def render_tools(project_root: Path, global_input_path: str | None) -> None:
 
                             st.markdown("###### Save Assigned Cells")
                             st.caption(
-                                "Save reads the staged dropdown values only when clicked. Get More "
+                                "**Save Labels** records your dropdown choices instantly, beside the CSV. They appear everywhere in SPACEMAP straight away and survive restarting. The CSV file itself is only changed by **Write Labels Into CSV**, which appears once you have saved. Get More "
                                 "uses the same sampling criteria and skips cells already shown in this run."
                             )
 
                             c_batch_save, c_fetch_more = st.columns([2, 1])
                             batch_save = c_batch_save.form_submit_button(
-                                "Save Assigned Cells To Unified CSV",
+                                "💾 Save Labels (instant)",
                                 type="primary",
                             )
                             get_more_cells = c_fetch_more.form_submit_button(
