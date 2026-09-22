@@ -8,13 +8,14 @@ not edit it by hand -- run the script instead, or let CI regenerate it. The
 "Why" column comes from the `Why:` line in each commit message; see
 [CONTRIBUTING.md](../CONTRIBUTING.md) for how to write one.
 
-**14 changes** by **1 contributor**, touching **292 files**. Latest: `64a4808` on 2026-09-22.
+**15 changes** by **1 contributor**, touching **294 files**. Latest: `0110154` on 2026-09-22.
 
 
 ## 2026-09
 
 | Date | Change | Who | Why | Files | Lines |
 | --- | --- | --- | --- | --- | --- |
+| 2026-09-22 | `0110154` perf: cache the segmentation index, and store labels without rewriting the table | Bassel Dawod | labelling fifty cells took around thirteen minutes of waiting, and two earlier attempts optimised paths that were not the bottleneck because nothing reported where the time was going. | 8 | +777/-95 |
 | 2026-09-22 | `64a4808` fix: correct loader dtypes, and normalize only the cells shown | Bassel Dawod | a reviewer waited thirteen minutes to label fifty cells, and the screen errored when they tried. Both costs were avoidable work rather than anything inherent to the analysis. | 3 | +235/-2 |
 | 2026-09-22 | `dd094d7` perf: read only the columns a screen needs, from a columnar copy | Bassel Dawod | the pipeline became unusable on real cohort-sized data, and the cost was entirely avoidable work rather than anything inherent to the analysis. | 21 | +1268/-145 |
 | 2026-09-19 | `7335961` docs: record the submitted manuscript's author list | Bassel Dawod | capturing the order now means the citation is a two-line edit on acceptance rather than a reconstruction from memory. | 1 | +71/-0 |
@@ -33,6 +34,19 @@ not edit it by hand -- run the script instead, or let CI regenerate it. The
 ---
 
 ## Files changed per commit
+
+<details><summary><code>0110154</code> perf: cache the segmentation index, and store labels without rewriting the table</summary>
+
+- `.gitignore`
+- `src/spacemap/dataio.py`
+- `src/spacemap/labels.py`
+- `src/spacemap_gui/cell_visualizer.py`
+- `src/spacemap_gui/tabs/tab7_phenotyping/tools.py`
+- `src/spacemap_gui/ui_utils.py`
+- `tests/test_label_cell_identity.py`
+- `tests/test_manual_reference_clear_label.py`
+
+</details>
 
 <details><summary><code>64a4808</code> fix: correct loader dtypes, and normalize only the cells shown</summary>
 
