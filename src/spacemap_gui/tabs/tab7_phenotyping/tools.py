@@ -1397,10 +1397,23 @@ def _build_manual_reference_save_receipt(
             }
         )
 
+    # The old wording said "CSV row(s)", which was true when every save rewrote
+    # the table. Assignments are now held beside it until they are written in,
+    # so the message has to say where they actually are.
+    try:
+        from spacemap import labels
+
+        total_pending = labels.pending_count(target_path)
+    except Exception:
+        total_pending = 0
+
     message = (
-        f"Save completed and verified: {int(verified_count)} CSV row(s). "
+        f"Saved and verified: {int(verified_count)} cell(s). "
         f"{changed_count} assigned/changed, {cleared_count} label(s) removed, "
-        f"and {unchanged_count} unchanged value(s) verified."
+        f"and {unchanged_count} unchanged value(s) verified. "
+        f"{total_pending} label(s) are now held alongside the CSV and shown "
+        "everywhere in SPACEMAP; use \"Write labels into the CSV\" below to put "
+        "them into the file itself."
     )
     return {
         "message": message,
@@ -1412,6 +1425,62 @@ def _build_manual_reference_save_receipt(
         "unchanged_count": unchanged_count,
         "details": details,
     }
+
+
+def _render_label_commit_controls(table_path: str | None, *, key_prefix: str) -> None:
+    """Offer to fold saved labels into the CSV, and say what is outstanding.
+
+    Assignments are held beside the table so a save takes under a second
+    instead of rewriting a multi-gigabyte file. They are applied to everything
+    SPACEMAP reads, but the CSV itself only changes when this is used.
+    """
+    if not table_path:
+        return
+    try:
+        from spacemap import labels
+
+        pending = labels.pending_count(table_path)
+        columns = labels.pending_columns(table_path)
+    except Exception:
+        return
+    if not pending:
+        return
+
+    st.info(
+        f"**{pending} label(s)** are stored alongside the CSV in "
+        f"{', '.join(f'`{name}`' for name in columns)}. Every SPACEMAP screen "
+        "already shows them. The CSV file itself does not contain them yet."
+    )
+    left, right = st.columns([2, 1])
+    if left.button(
+        "Write labels into the CSV",
+        key=f"{key_prefix}_commit_labels",
+        type="primary",
+        width="stretch",
+        help="Rewrites the unified CSV and refreshes the fast copy. On a large "
+             "table this takes several minutes; the labels are safe until then.",
+    ):
+        status = st.empty()
+        with st.spinner("Writing the CSV and refreshing the fast copy..."):
+            try:
+                from spacemap import labels as label_store
+
+                report = label_store.commit(table_path, progress=lambda m: status.caption(m))
+            except Exception as exc:
+                status.empty()
+                st.error(f"Could not write the labels: {exc}")
+            else:
+                status.empty()
+                st.success(
+                    f"Wrote {report['applied']} label(s) into "
+                    f"{', '.join(report['columns'])} in the CSV."
+                )
+                st.rerun()
+    if right.button("Discard", key=f"{key_prefix}_discard_labels", width="stretch"):
+        from spacemap import labels as label_store
+
+        label_store.clear(table_path)
+        st.rerun()
 
 
 def _render_manual_reference_save_receipt(
@@ -1426,6 +1495,10 @@ def _render_manual_reference_save_receipt(
         f"Saved at {receipt.get('timestamp')} | "
         f"Unified CSV: {receipt.get('target_path')}"
     )
+
+    # The control for writing labels into the CSV belongs here, next to the
+    # save that produced them, rather than only in the input panel further up.
+    _render_label_commit_controls(receipt.get("target_path"), key_prefix="mr_receipt")
     receipt_details = receipt.get("details", [])
     if receipt_details:
         with st.expander(
