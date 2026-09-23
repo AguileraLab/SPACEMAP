@@ -8,13 +8,14 @@ not edit it by hand -- run the script instead, or let CI regenerate it. The
 "Why" column comes from the `Why:` line in each commit message; see
 [CONTRIBUTING.md](../CONTRIBUTING.md) for how to write one.
 
-**21 changes** by **1 contributor**, touching **296 files**. Latest: `d7cc4eb` on 2026-09-22.
+**22 changes** by **1 contributor**, touching **298 files**. Latest: `252ad0e` on 2026-09-22.
 
 
 ## 2026-09
 
 | Date | Change | Who | Why | Files | Lines |
 | --- | --- | --- | --- | --- | --- |
+| 2026-09-22 | `252ad0e` docs: add a handover document and a publishing procedure | Bassel Dawod | everything here was learned once, at cost, and lived only in one conversation. Someone starting tomorrow would have rediscovered all of it. | 4 | +551/-0 |
 | 2026-09-22 | `d7cc4eb` feat: rank a cell's top markers by percentile, not normalized score | Bassel Dawod | the top five markers steer a human's phenotype call, so a ranking that systematically favours rare markers biases the reference set that downstream models are trained and validated against. | 1 | +94/-8 |
 | 2026-09-22 | `11ed7ce` fix: recognise button keys that begin and end with a placeholder | Bassel Dawod | a saved project could make the tab unopenable, and the cause was invisible because the widget key never appeared in any list the scanner produced. | 1 | +42/-4 |
 | 2026-09-22 | `2426062` fix: move the label commit control out of the form, and stop project data being committed | Bassel Dawod | the feature was unreachable, and the repository was one push away from publishing analysis project files. | 6 | +211/-6 |
@@ -40,6 +41,15 @@ not edit it by hand -- run the script instead, or let CI regenerate it. The
 ---
 
 ## Files changed per commit
+
+<details><summary><code>252ad0e</code> docs: add a handover document and a publishing procedure</summary>
+
+- `README.md`
+- `docs/handover.md`
+- `docs/publishing-changes.md`
+- `docs/working-with-this-repository.md`
+
+</details>
 
 <details><summary><code>d7cc4eb</code> feat: rank a cell's top markers by percentile, not normalized score</summary>
 
