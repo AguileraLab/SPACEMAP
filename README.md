@@ -138,6 +138,8 @@ Your imaging data stays wherever you keep it; SPACEMAP only records the paths.
 | [AI assistant](docs/ai-assistant.md) | Enabling it, installing models, no-GPU setups, privacy |
 | [Architecture](docs/architecture.md) | How the packages fit together and why the assistant is removable |
 | [Troubleshooting](docs/troubleshooting.md) | Common failures and their fixes |
+| [Handover](docs/handover.md) | What SPACEMAP is, what has been done to it, and the lessons behind it |
+| [Publishing changes](docs/publishing-changes.md) | The exact procedure for getting an edit onto GitHub safely |
 | [Working with this repository](docs/working-with-this-repository.md) | Using it on your own data, keeping data out of Git, sending changes back |
 | [Contributing](CONTRIBUTING.md) | The Git workflow, in plain language |
 | [Change ledger](docs/LEDGER.md) | Every change ever made, who made it, and why |

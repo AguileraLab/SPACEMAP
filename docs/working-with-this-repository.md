@@ -248,6 +248,8 @@ their output rather than summarising them.
 
 | | |
 | --- | --- |
+| [handover.md](handover.md) | What SPACEMAP is, what was done to it, and the lessons |
+| [publishing-changes.md](publishing-changes.md) | The exact steps to get an edit onto GitHub |
 | [README.md](../README.md) | What SPACEMAP is, and the quick start |
 | [installation.md](installation.md) | Conda, pip, Docker, and where files live |
 | [ai-assistant.md](ai-assistant.md) | The optional assistant and local models |
