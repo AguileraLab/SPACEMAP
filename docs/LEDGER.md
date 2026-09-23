@@ -8,13 +8,14 @@ not edit it by hand -- run the script instead, or let CI regenerate it. The
 "Why" column comes from the `Why:` line in each commit message; see
 [CONTRIBUTING.md](../CONTRIBUTING.md) for how to write one.
 
-**20 changes** by **1 contributor**, touching **296 files**. Latest: `11ed7ce` on 2026-09-22.
+**21 changes** by **1 contributor**, touching **296 files**. Latest: `d7cc4eb` on 2026-09-22.
 
 
 ## 2026-09
 
 | Date | Change | Who | Why | Files | Lines |
 | --- | --- | --- | --- | --- | --- |
+| 2026-09-22 | `d7cc4eb` feat: rank a cell's top markers by percentile, not normalized score | Bassel Dawod | the top five markers steer a human's phenotype call, so a ranking that systematically favours rare markers biases the reference set that downstream models are trained and validated against. | 1 | +94/-8 |
 | 2026-09-22 | `11ed7ce` fix: recognise button keys that begin and end with a placeholder | Bassel Dawod | a saved project could make the tab unopenable, and the cause was invisible because the widget key never appeared in any list the scanner produced. | 1 | +42/-4 |
 | 2026-09-22 | `2426062` fix: move the label commit control out of the form, and stop project data being committed | Bassel Dawod | the feature was unreachable, and the repository was one push away from publishing analysis project files. | 6 | +211/-6 |
 | 2026-09-22 | `f574f68` docs: add a guide for using this version on real data | Bassel Dawod | someone adopting this version needs to know their data cannot leak and that a saved label is not yet in the CSV, and neither was written down. | 2 | +259/-0 |
@@ -39,6 +40,12 @@ not edit it by hand -- run the script instead, or let CI regenerate it. The
 ---
 
 ## Files changed per commit
+
+<details><summary><code>d7cc4eb</code> feat: rank a cell's top markers by percentile, not normalized score</summary>
+
+- `src/spacemap_gui/tabs/tab7_phenotyping/tools.py`
+
+</details>
 
 <details><summary><code>11ed7ce</code> fix: recognise button keys that begin and end with a placeholder</summary>
 
