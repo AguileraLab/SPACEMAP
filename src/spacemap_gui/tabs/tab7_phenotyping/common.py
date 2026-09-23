@@ -2980,7 +2980,9 @@ def begin_phenotyping_run_audit(
     event_type: str = "analysis_run",
 ) -> dict | None:
     """Capture the immutable start of a method run when logging is enabled."""
-    if not bool(st.session_state.get(f"{method_key}_create_log", True)):
+    from spacemap_gui import run_log
+
+    if not run_log.enabled("tab7"):
         return None
     now = datetime.now().astimezone()
     return {
@@ -3138,28 +3140,14 @@ def render_phenotyping_run_log_controls(
 ) -> bool:
     """Render a persisted log checkbox and an explicit settings snapshot action."""
     label = method_name or PHENOTYPING_METHOD_LABELS.get(method_key, method_key)
-    state_key = f"{method_key}_create_log"
-    if state_key not in st.session_state:
-        st.session_state[state_key] = True
+    # The method's detail log follows Tab 7's single "Record run log" switch at
+    # the top of the page; there is no second box to keep in step with it.
+    from spacemap_gui import run_log
 
-    def _save_log_preference() -> None:
-        try:
-            from spacemap_gui.persistence import save_active_project_state
-
-            save_active_project_state("tab7_phenotyping")
-        except Exception as exc:
-            logger.warning(f"Could not save {label} log preference: {exc}")
-
-    enabled = st.checkbox(
-        "Create reproducibility processing log (CSV)",
-        key=state_key,
-        on_change=_save_log_preference,
-        help=(
-            "Append run duration, markers, method settings, phenotype assignments, "
-            "input/output identity, CPU, GPU, RAM, host, Python, and code revision."
-        ),
-    )
-    with st.expander("Log details and settings snapshots", expanded=False):
+    enabled = run_log.enabled("tab7")
+    with st.expander(f"{label} run details and settings snapshots", expanded=False):
+        if not enabled:
+            st.caption(f"'{run_log.LABEL}' is off for this tab, so {label} runs are not being recorded.")
         log_path = get_phenotyping_audit_log_path(Path(project_root), method_key)
         st.caption(f"{label} log: `{log_path}`")
         if log_path.exists():
@@ -5632,6 +5620,79 @@ def render_unified_csv_export_options(
     return checkbox_values
 
 
+class PendingSaveBlocked(RuntimeError):
+    """Saved-but-unwritten changes must be resolved before another save."""
+
+
+def _save_assignments_as_pending(
+    input_path: Path,
+    df_results_linkable: pd.DataFrame,
+    result_anchor_col: str,
+    using_internal_anchor: bool,
+    update_cols: list,
+    cluster_col: str,
+    output_col: str,
+    get_pheno,
+    *,
+    source_note: str = "",
+) -> list[str] | None:
+    """Save assignments as pending columns instead of rewriting the whole CSV.
+
+    Same result as the full rewrite: cells present in the results get the new
+    value, every other cell keeps its current one, matched through the cell ID
+    column. Returns the columns saved, or None when the fast path does not apply
+    (no real cell ID column, or duplicate IDs), in which case the caller rewrites
+    the CSV as before.
+    """
+    from spacemap import dataio, pending_columns
+
+    if using_internal_anchor or result_anchor_col == TAB7_INTERNAL_CELL_ID_COL:
+        return None
+    anchor = result_anchor_col
+    available = dataio.columns(input_path)
+    if anchor not in available:
+        return None
+    if pending_columns.has_stale(input_path):
+        raise PendingSaveBlocked(
+            "Changes saved earlier no longer match the CSV (it was rewritten since). Open the "
+            "file panel at the top of the tab and re-apply or discard them, then save again."
+        )
+    targets = [column for column in update_cols if column in df_results_linkable.columns]
+    write_phenotype = cluster_col in df_results_linkable.columns
+    wanted = [anchor] + [
+        column for column in dict.fromkeys(targets + ([output_col] if write_phenotype else []))
+        if column in available and column != anchor
+    ]
+    base = dataio.load(input_path, columns=wanted)
+    if base[anchor].duplicated().any():
+        return None
+    result_ids = df_results_linkable[result_anchor_col]
+    mask = base[anchor].isin(result_ids.values)
+    ids_in_analysis = base.loc[mask, anchor]
+
+    new_columns: dict[str, pd.Series] = {}
+    for column in targets:
+        id_to_value = dict(zip(result_ids, df_results_linkable[column]))
+        series = base[column].copy() if column in base.columns else pd.Series(np.nan, index=base.index)
+        series.loc[mask] = ids_in_analysis.map(id_to_value)
+        new_columns[column] = series
+    if write_phenotype:
+        id_to_pheno = dict(zip(result_ids, df_results_linkable[cluster_col].apply(get_pheno)))
+        series = (base[output_col].copy() if output_col in base.columns
+                  else pd.Series(np.nan, index=base.index)).astype(object)
+        series.loc[mask] = ids_in_analysis.map(id_to_pheno)
+        new_columns[output_col] = series
+    if not new_columns:
+        return None
+    return pending_columns.save(
+        input_path,
+        new_columns,
+        anchor_column=anchor,
+        anchor_values=base[anchor],
+        source_note=source_note,
+    )
+
+
 def render_save_assignments(
     df_results: pd.DataFrame,
     phenotype_map: dict,
@@ -5710,7 +5771,32 @@ def render_save_assignments(
 
             updated_input = False
 
+            fast_saved = None
             if input_path and input_path.exists():
+                try:
+                    fast_saved = _save_assignments_as_pending(
+                        input_path,
+                        df_results_linkable,
+                        result_anchor_col,
+                        using_internal_anchor,
+                        selected_update_cols,
+                        cluster_col,
+                        output_col,
+                        get_pheno,
+                        source_note=f"Tab 7 {PHENOTYPING_METHOD_LABELS.get(key_prefix, key_prefix)}",
+                    )
+                except PendingSaveBlocked as blocked:
+                    st.error(str(blocked))
+                    return
+            if fast_saved:
+                st.success(
+                    f"Saved {', '.join(f'`{name}`' for name in fast_saved)} in seconds. Tabs 7, 8 and 9 "
+                    "already show the new values. They are written into the CSV itself when you press "
+                    "**Write pending changes into the CSV** in the file panel at the top of the tab."
+                )
+                saved_output_path = input_path
+                updated_input = True
+            elif input_path and input_path.exists():
                 st.info(f"Reading input file: {input_path}")
                 df_in = pd.read_csv(input_path)
                 df_in_linkable, input_anchor_col, _ = ensure_cell_id_anchor(df_in, cell_id_col)

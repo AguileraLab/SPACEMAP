@@ -1311,7 +1311,10 @@ def get_all_system_defaults(project_root_str: str) -> dict:
         "tab9_actual_save_svg": True,
         "tab9_actual_marker_legend_colored_labels": False,
     })
-    
+
+    # Every tab's single "Record run log" switch starts on (see spacemap_gui.run_log).
+    defaults.update({f"tab{index}_create_log": True for index in range(10)})
+
     return defaults
 
 
@@ -1761,6 +1764,19 @@ def ensure_threshold_directory_mapping(config: dict, project_root: str) -> tuple
                 pass
 
     return current, changed
+
+
+def is_action_widget_key(key) -> bool:
+    """Whether ``key`` belongs to a button (a one-shot event, never a setting)."""
+    if not isinstance(key, str):
+        return False
+    if key in _discover_action_widget_keys() or key.startswith(_discover_action_widget_prefixes()):
+        return True
+    if key.endswith(_discover_action_widget_suffixes()):
+        return True
+    if any(infix in key for infix in _discover_action_widget_infixes()):
+        return True
+    return key.lower().endswith(("_btn", "_button"))
 
 
 def is_logging_switch(key) -> bool:

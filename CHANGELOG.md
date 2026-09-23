@@ -22,9 +22,32 @@ Tabs 7 and 9, and a Z1 option for Resolve. Grouped by tab.
   their values were lost on reload; they now save and restore. A new test
   (`tests/test_widget_keys_persist.py`) scans every tab and fails if a setting
   control could not be saved.
-- **Log boxes start on.** "Create Processing Log" and "Record process events"
-  are switched on whenever a project is loaded, so every run is recorded. A
-  box can still be switched off for the current session.
+- **One run log for every tab.** Each tab has a single box, **Record run
+  log**, in the same place under the page guidance, on by default and switched
+  back on whenever a project is loaded. It replaces the separate "Create
+  Processing Log (CSV)", "Create Log", "Create reproducibility processing log"
+  (one per Tab 7 method) and "Record process events" boxes. While it is on,
+  every button pressed on the tab -- and any page update that takes longer than
+  2 s -- adds a row to `<project>/logs/run_log.csv` with the start and end
+  time, duration, CPU time and cores used, peak RAM, peak GPU memory, the tab's
+  settings and which of them changed since the previous run, and the machine,
+  Python, SPACEMAP version and code revision (`spacemap_gui/run_log.py`). The
+  Leiden background worker writes its own row for the whole run. The detail
+  logs a tab already kept (per-sample registration logs, per-method phenotyping
+  logs) follow the same box. A "Run log" panel at the foot of each page shows
+  the tab's recent runs.
+- **Saving phenotypes no longer rewrites the CSV.** "Save All Assignments to
+  Disk" in Leiden, SOM, Vortex, Resolve and SCIMAP stores only the changed
+  columns beside the unified table (`<table>.csv.pending/`,
+  `spacemap/pending_columns.py`), in seconds instead of minutes. Tabs 7, 8 and 9
+  read them at once. The file panel in those tabs shows what is waiting and a
+  **Write pending changes into the CSV** button that writes columns and Manual
+  Reference labels in one pass, in its own process, so it finishes even if the
+  interface is closed or restarted; the old CSV stays until the new one is
+  complete, and nothing saved is lost if the interface crashes. If the CSV is
+  rewritten by something else first, the saved columns are not applied by row
+  position: the panel offers **Re-apply by cell ID** or **Discard**. Saving and
+  then writing produces the same CSV as the old full rewrite (tested).
 - **One terminal format.** Every tab now prints
   `2026-09-22 14:03:11 | Tab 7 Phenotyping | Resolve | message`, with
   `Started:` / `Finished: ... (3.0 s)` lines around timed steps and `ERROR:` /
@@ -93,8 +116,15 @@ Tabs 7 and 9, and a Z1 option for Resolve. Grouped by tab.
   `spacemap/ph_scimap_utils.py` were defined twice with different signatures;
   only the second copy was ever used, and the first is gone.
 - Plain-language help for Leiden's GPU option and the UMAP subsample size.
-- Leiden, SOM and Vortex column pickers no longer log Streamlit's "value set
-  twice" warning on every render.
+- Leiden, SOM and Vortex column pickers, and Tab 0's project fields, no
+  longer log Streamlit's "value set twice" warning on every render.
+- **Leiden while a run is in progress:** the page says when the run started and
+  that the Run button returns when it finishes, and offers **Stop this run**.
+  The previous run's terminal output is hidden during a new run and labelled
+  as the previous run otherwise. Leiden run times were checked against earlier
+  runs and are unchanged (about 22 min for 8.6 M cells: 2.7 min reading the
+  CSV, 11.5 min clustering the 941 k-cell sample).
+- Removed leftover "Professional ... synchronized with notebook" captions.
 
 ### Tab 8 — Spatial Analysis
 
@@ -105,7 +135,8 @@ Tabs 7 and 9, and a Z1 option for Resolve. Grouped by tab.
 
 - **Fixed:** Paper Figures cached the unified table by path only, so an edited
   or re-exported table kept showing the old rows until restart. The cache now
-  follows the file, and reads use the Parquet fast copy.
+  follows the file. Column lookups use the Parquet fast copy; the whole-table
+  read that feeds model training keeps the pandas reader.
 
 ### Notebooks
 

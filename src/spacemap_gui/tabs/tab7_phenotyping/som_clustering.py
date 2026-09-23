@@ -1476,7 +1476,6 @@ def render_som(project_root, global_input_path):
     if 'som_temp_file' in st.session_state and Path(st.session_state['som_temp_file']).exists():
         st.divider()
         st.subheader("Results & Phenotype Assignment")
-        st.caption("Professional phenotype assignment interface synchronized with notebook workflow (Step6B)")
         
         # Load results
         temp_file = st.session_state['som_temp_file']
@@ -1508,7 +1507,6 @@ def render_som(project_root, global_input_path):
         # TAB 1: HEATMAP & ASSIGNMENT
         with tab_heatmap:
             st.markdown("### Interactive Meta-Cluster Expression Heatmap")
-            st.caption("Professional heatmap interface for phenotype assignment")
             
             # Initialize session state (filter NaN values from meta_cluster)
             valid_meta_clusters = sorted(

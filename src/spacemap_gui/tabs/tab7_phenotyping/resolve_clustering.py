@@ -1,6 +1,6 @@
 """
 Resolve (Threshold-Based) Phenotyping Subtab
-Professional rule-based phenotyping with offline phenotype definition table.
+Rule-based phenotyping from marker thresholds and a phenotype definition table.
 Synchronized with Step6C_phenotype_threshold.ipynb notebook.
 """
 
@@ -1219,7 +1219,7 @@ RESOLVE_GUIDE = """\
 def render_resolve(project_root, global_input_path):
     """
     Resolve Clustering (Threshold-based Phenotyping) Subtab
-    Professional interface matching Leiden/SOM patterns with notebook-synchronized parameters.
+    Same layout as the other methods; parameters match notebook Step6C.
     """
     render_method_intro(
         project_root, "resolve", "Resolve Threshold Phenotyping",

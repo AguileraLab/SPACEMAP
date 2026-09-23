@@ -1,6 +1,6 @@
 """
 Leiden Clustering Subtab
-Professional Leiden clustering with notebook-synchronized parameters.
+Leiden clustering, with the same parameters as notebook Step6A.
 """
 
 import streamlit as st
@@ -134,8 +134,24 @@ def _render_running_leiden_job(job_dir: str):
     job = read_job(job_dir)
     if job["status"] not in {"starting", "running"}:
         st.rerun()
-    st.info("Leiden is running. You can refresh this page or return later; the run will continue.")
-    st.code(read_log(job_dir) or "Starting Leiden…", language=None)
+    started = Path(job_dir).name.split("-", 1)[0]
+    try:
+        started = datetime.strptime(started, "%Y%m%dT%H%M%S").strftime("%H:%M on %d %b")
+    except ValueError:
+        pass
+    st.info(
+        f"A Leiden run started at {started} is still in progress. The Run button comes back when "
+        "it finishes. You can leave or refresh this page; the run continues on its own. "
+        "Results appear below when it is done."
+    )
+    if st.button("Stop this run", key="leiden_stop_job_btn",
+                 help="Cancel the run in progress so a new one can be started."):
+        from spacemap_workflows.leiden_job import stop_job
+
+        st.warning(stop_job(job_dir))
+        st.rerun()
+    st.markdown("**Progress of the current run**")
+    st.code(read_log(job_dir) or "Starting Leiden...", language=None)
     st.caption(f"Run files: {job_dir}")
 
 
@@ -904,13 +920,19 @@ def render_leiden(project_root, global_input_path):
         st.warning("Please select at least one marker to proceed")
 
     existing_run_log = logger.get_streamlit_buffer("leiden_run_log_lines")
-    if existing_run_log:
-        with st.expander("Last Leiden Tab Terminal", expanded=False):
-            st.caption("Timestamped messages mirrored from the shell terminal during the last Leiden run.")
+    if existing_run_log and not job_running:
+        with st.expander("Terminal output of the previous run", expanded=False):
+            st.caption("Messages from the last Leiden run that finished.")
             st.code("\n".join(existing_run_log), language=None)
-    
+
     st.markdown("### 5. Run Leiden Clustering")
-    if st.button("Run Leiden Clustering", type="primary", disabled=(n_markers == 0 or job_running)):
+    if st.button(
+        "Run Leiden Clustering",
+        type="primary",
+        disabled=(n_markers == 0 or job_running),
+        help=("Unavailable while a run is in progress; see below, where it can be stopped."
+              if job_running else "Start clustering in the background with the settings above."),
+    ):
         if not full_input_path or not os.path.exists(full_input_path):
             st.error("Please select a valid input file.")
             return
@@ -979,7 +1001,6 @@ def render_leiden(project_root, global_input_path):
     if 'leiden_temp_file' in st.session_state and Path(st.session_state['leiden_temp_file']).exists():
         st.divider()
         st.subheader("Results & Phenotype Assignment")
-        st.caption("Professional phenotype assignment interface synchronized with notebook workflow")
         
         temp_file = st.session_state['leiden_temp_file']
         df_results = read_dataframe_parquet_safe(

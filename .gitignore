@@ -65,3 +65,6 @@ outputs/
 .DS_Store
 .vscode/
 .idea/
+
+# Saved-but-unwritten phenotype columns beside a unified table (spacemap.pending_columns)
+*.csv.pending/

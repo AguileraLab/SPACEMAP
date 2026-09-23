@@ -130,6 +130,46 @@ def start_job(project_root, settings, audit=None):
         return read_job(job_dir)
 
 
+def stop_job(job_dir, wait_s=10.0):
+    """Ask a running worker to stop; returns a message for the user.
+
+    The worker runs in its own process group (``start_new_session=True``), so
+    SIGINT reaches it and any helper processes. It then records the run as
+    interrupted and exits, which re-enables the Run button. A worker on another
+    machine cannot be stopped from here.
+    """
+    import signal
+
+    import psutil
+
+    job_dir = Path(job_dir)
+    process_path = job_dir / "process.json"
+    if not process_path.exists():
+        return "This run has no process record, so it cannot be stopped from here."
+    process = json.loads(process_path.read_text())
+    if process.get("hostname") != socket.gethostname():
+        return (
+            f"This run is on {process.get('hostname')}. Stop it from a SPACEMAP session "
+            "on that machine."
+        )
+    try:
+        worker = psutil.Process(process["pid"])
+        if worker.create_time() != process["create_time"]:
+            return "The run has already finished."
+        os.killpg(os.getpgid(worker.pid), signal.SIGINT)
+        try:
+            worker.wait(timeout=wait_s)
+        except psutil.TimeoutExpired:
+            os.killpg(os.getpgid(worker.pid), signal.SIGTERM)
+    except (psutil.NoSuchProcess, ProcessLookupError):
+        return "The run has already finished."
+    status = json.loads((job_dir / "status.json").read_text())
+    if status.get("status") in {"starting", "running"}:
+        status.update(status="interrupted", error="Stopped by the user.")
+        write_json(job_dir / "status.json", status)
+    return "The run was stopped. You can start a new one."
+
+
 def read_log(job_dir, max_bytes=80000):
     path = Path(job_dir) / "terminal.log"
     if not path.exists():
@@ -174,6 +214,15 @@ def run_job(job_dir):
     logger.propagate = False
     status = {"job_id": job_dir.name, "status": "running"}
     write_json(job_dir / "status.json", status)
+    request = {}
+    monitor = None
+    started_at = datetime.now().astimezone()
+    try:
+        from spacemap_gui import run_log
+
+        monitor = run_log.ResourceMonitor().start()
+    except Exception:
+        monitor = None
     try:
         request = json.loads((job_dir / "request.json").read_text())
         logger.info("Loading Leiden dependencies in the background worker...")
@@ -194,6 +243,31 @@ def run_job(job_dir):
         )
     finally:
         write_json(job_dir / "status.json", status)
+        # One row in the project run log for the whole background run. The
+        # request carries an audit record only when Tab 7's log switch is on.
+        if monitor is not None and request.get("audit") is not None:
+            try:
+                from spacemap_gui import run_log
+
+                usage = monitor.stop()
+                row_path = run_log.record_run(
+                    request.get("project_root", ""),
+                    "tab7:leiden",
+                    "Leiden clustering (background run)",
+                    started_at=started_at,
+                    usage=usage,
+                    status="completed" if status["status"] == "success" else status["status"],
+                    error=str(status.get("error", "")),
+                    settings=request.get("settings"),
+                    details={"job_id": job_dir.name},
+                )
+                if row_path:
+                    logger.info(
+                        "Run log: %.0f s, CPU %.0f s, peak RAM %.1f GB -> %s",
+                        usage["duration_s"], usage["cpu_time_s"], usage["peak_ram_gb"] or 0.0, row_path,
+                    )
+            except Exception as exc:
+                logger.warning("Could not write the run log row: %s", exc)
         logger.removeHandler(handler)
         handler.close()
     return 0 if status["status"] == "success" else 1

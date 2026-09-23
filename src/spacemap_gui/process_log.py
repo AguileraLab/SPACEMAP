@@ -32,9 +32,10 @@ def get_process_log_context(context: str) -> str:
 
 
 def process_logging_enabled(context: str) -> bool:
-    """Return whether recording is enabled for the containing pipeline page."""
-    page_context = get_process_log_context(context)
-    return bool(st.session_state.get(f"{page_context}_process_log_enabled", True))
+    """Events follow the tab's single "Record run log" switch."""
+    from spacemap_gui import run_log
+
+    return run_log.enabled(get_process_log_context(context))
 
 
 def get_process_log_path(project_root: Path, context: str) -> Path:
@@ -131,37 +132,50 @@ def _records_to_csv(records: list[Mapping[str, str]]) -> str:
 
 
 def render_process_log_panel(context: str, project_root: Path | None = None) -> None:
-    """Render the default-on process log box for a pipeline page."""
+    """The tab's run log: recent runs with their time and resources, then events."""
+    from spacemap_gui import run_log
+
     page_context = get_process_log_context(context)
-    with st.expander("Process Log", expanded=False):
-        enabled = st.checkbox(
-            "Record process events",
-            value=process_logging_enabled(page_context),
-            key=f"{page_context}_process_log_enabled",
-            help="Records timestamped processing events in this page and saves them to the project log folder.",
-        )
-        if not enabled:
-            st.caption("Recording is paused for this page. Existing records remain available.")
+    resolved_project_root = project_root or st.session_state.get("active_project_root")
+    with st.expander("Run log", expanded=False):
+        if not run_log.enabled(page_context):
+            st.caption(f"'{run_log.LABEL}' is off for this tab, so new runs are not being recorded.")
+        if resolved_project_root:
+            runs = run_log.read_rows(resolved_project_root, page_context, limit=50)
+            if runs:
+                st.markdown("**Recent runs on this tab**")
+                shown = ["started_at", "action", "status", "duration_s", "cpu_time_s",
+                         "peak_ram_gb", "peak_gpu_memory_gb", "settings_changed_json"]
+                st.dataframe([{k: row.get(k, "") for k in shown} for row in reversed(runs)],
+                             hide_index=True, width="stretch")
+            path = run_log.log_path(resolved_project_root)
+            st.caption(f"All tabs, full detail: `{path}`")
+            if path.exists():
+                st.download_button(
+                    "Download Run Log CSV",
+                    data=path.read_bytes(),
+                    file_name=path.name,
+                    mime="text/csv",
+                    key=f"{page_context}_run_log_download",
+                    width="stretch",
+                )
 
         records = _get_page_records(page_context)
         if not records:
-            st.caption("No process events have been recorded in this session yet.")
+            st.caption("No step events have been recorded in this session yet.")
             return
-
+        st.markdown("**Step events in this session**")
         st.dataframe(records[-200:], hide_index=True, width="stretch")
         st.download_button(
-            "Download Process Log CSV",
+            "Download Step Events CSV",
             data=_records_to_csv(records),
             file_name=f"{page_context}_process_log.csv",
             mime="text/csv",
             key=f"{page_context}_process_log_download",
             width="stretch",
         )
-
-        resolved_project_root = project_root or st.session_state.get("active_project_root")
         if resolved_project_root:
             st.caption(f"Project copy: {get_process_log_path(Path(resolved_project_root), page_context)}")
-
-        if st.button("Clear Current Page Log", key=f"{page_context}_process_log_clear", width="stretch"):
+        if st.button("Clear Step Events Shown Here", key=f"{page_context}_process_log_clear", width="stretch"):
             st.session_state.setdefault(PROCESS_LOGS_KEY, {})[page_context] = []
             st.rerun()

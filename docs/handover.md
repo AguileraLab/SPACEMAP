@@ -169,6 +169,12 @@ Every tab prints in this format through `spacemap_gui/terminal.py`; use
 `terminal.say(tab, message, step=...)` and `terminal.timed(...)` rather than
 `print`.
 
+**Run log.** `spacemap_gui/run_log.py` records every action around `pg.run()`
+in `app.py` into `<project>/logs/run_log.csv` (time, CPU, peak RAM and GPU,
+settings changed). A tab needs no wiring; a job in its own process calls
+`run_log.record_run` itself, as the Leiden worker does. There is one switch per
+tab, `tabN_create_log`; do not add another log checkbox.
+
 **An isolated benchmark is not the user's experience.** "This function is 200×
 faster" is not "the screen is fast". Say which you measured.
 
@@ -227,11 +233,19 @@ within the batch" (`ph_thres_utils.apply_z1_positivity`). Abundant markers and
 markers with a few very bright cells are under-called. It is a fallback for
 projects without threshold tables; it has not been validated against images.
 
-**Parquet as the write format (proposal, not built).** Reads already prefer the
-Parquet fast copy. Making phenotype saves write a Parquet column overlay
-(like `spacemap.labels`) and rewriting the CSV only on request would make
-saves instant. It is safe only once every reader, notebooks included, reads
-through `dataio`; until then a CSV reader would miss unsaved columns.
+**Saved-but-unwritten columns.** Phenotype saves go to
+`spacemap.pending_columns` (whole columns beside the CSV, keyed by table
+fingerprint, with the cell IDs kept for re-applying) and reach the CSV only
+when the user presses "Write pending changes into the CSV". Anything that
+reads the CSV directly -- notebooks, `pd.read_csv` in older code -- does not
+see them until then; the file panel says so. Reads through `dataio` do.
+
+**Why the Leiden worker still reads the CSV with pandas.** pyarrow (which
+`dataio` and the Parquet copy use) differs from pandas in the last binary digit
+for about 1 value in 10 million, and types an all-blank column as text where
+pandas reads float. Switching the worker would save about 2.5 of its 22 minutes
+but could shift cluster assignments against earlier runs. It is a decision for
+the lab, not a silent change.
 
 **Tab 9 `heatmap.py` still reads broadly**, deliberately — it scans many columns
 for low-cardinality filter columns. Narrowing it needs care.
@@ -366,6 +380,6 @@ from spacemap import dataio;  dataio.load(path, columns=["phenotype_leiden"])
 from spacemap import labels;  labels.pending_count(path)
 ```
 
-Test baseline: **771 passed, 13 skipped** in the published repo (2026-09-22);
+Test baseline: **786 passed, 13 skipped** in the published repo (2026-09-22);
 **760 passed, 2 skipped** in `SPACEMAP_AI` (which has assistant tests the
 published repo skips without the AI extras).

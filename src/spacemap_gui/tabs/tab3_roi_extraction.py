@@ -413,13 +413,9 @@ def render_single_image(project_root):
             start_dir_fallback=str(project_root),
         )
 
-        if "tab3_create_log" not in st.session_state:
-            st.session_state["tab3_create_log"] = True
-        create_log = st.checkbox(
-            "Create Processing Log (CSV)",
-            help="If enabled, wrote CSV logs.",
-            key="tab3_create_log",
-        )
+        # Detail logs follow the tab's single "Record run log" switch at the top of the page.
+        from spacemap_gui import run_log
+        create_log = run_log.enabled("tab3")
         if not input_dir:
             st.info("Please select an input directory to start.")
             return
@@ -1763,9 +1759,9 @@ def render_multiple_images(project_root):
             browser_key_prefix="tab3_multi_output_dir", start_dir_fallback=str(project_root)
         )
         st.session_state["tab3_output_dir"] = output_dir
-        if "tab3_multi_create_log" not in st.session_state:
-            st.session_state["tab3_multi_create_log"] = True
-        create_log = st.checkbox("Create Log", key="tab3_multi_create_log")
+        # Detail logs follow the tab's single "Record run log" switch at the top of the page.
+        from spacemap_gui import run_log
+        create_log = run_log.enabled("tab3")
         
 
         

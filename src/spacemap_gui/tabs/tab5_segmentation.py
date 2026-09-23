@@ -2064,9 +2064,9 @@ def _render_segmentation_pipeline():
             browser_key_prefix="tab4_output_dir",
             start_dir_fallback=str(project_root),
         )
-        if "tab4_create_log" not in st.session_state:
-            st.session_state["tab4_create_log"] = True
-        create_log = st.checkbox("Create Processing Log (CSV)", key="tab4_create_log")
+        # Detail logs follow the tab's single "Record run log" switch at the top of the page.
+        from spacemap_gui import run_log
+        create_log = run_log.enabled("tab5")
         
 
             

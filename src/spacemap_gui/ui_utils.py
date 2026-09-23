@@ -516,20 +516,44 @@ def render_heavy_tab_gate(tab_key: str, label: str) -> bool:
     return False
 
 
-def file_signature(path) -> tuple[int, int]:
-    """Return a cheap change token for a file: (mtime_ns, size).
+def file_signature(path) -> tuple[int, int, int]:
+    """Return a cheap change token for a file: (mtime_ns, size, saved changes).
 
     ``st.cache_data`` keys on argument values, so a function cached only on a
     path keeps serving the first version it read - editing that file in QuPath,
     Excel or an earlier pipeline step has no effect until the whole session is
     restarted. Passing this token as an extra argument ties the cache entry to
     the file's content instead of just its name.
+
+    For a table, the third part changes whenever a column or label is saved
+    beside it without rewriting the CSV (``spacemap.pending_columns``,
+    ``spacemap.labels``), so cached reads pick those saves up too.
     """
     try:
         status = os.stat(str(path))
     except OSError:
-        return (0, -1)
-    return (int(status.st_mtime_ns), int(status.st_size))
+        return (0, -1, 0)
+    return (int(status.st_mtime_ns), int(status.st_size), _saved_changes_token(path))
+
+
+def _saved_changes_token(path) -> int:
+    """Newest modification time of a table's saved-but-unwritten changes (0 if none)."""
+    text = str(path)
+    if not text.lower().endswith((".csv", ".tsv", ".txt")):
+        return 0
+    try:
+        from spacemap import labels, pending_columns
+
+        candidates = [pending_columns.store_dir(text), labels.sidecar_path(text)]
+    except Exception:
+        return 0
+    newest = 0
+    for candidate in candidates:
+        try:
+            newest = max(newest, int(os.stat(candidate).st_mtime_ns))
+        except OSError:
+            continue
+    return newest
 
 
 def clamp_numeric_widget_state(
@@ -644,6 +668,9 @@ def render_fast_copy_controls(csv_path: str | None, *, key_prefix: str = "fastco
 
     if not csv_path:
         return
+    # Saved-but-unwritten changes are shown for every table, large or small,
+    # whether or not fast loading is on.
+    render_pending_changes(csv_path, key_prefix=key_prefix)
     try:
         from spacemap import dataio
     except Exception:
@@ -662,45 +689,6 @@ def render_fast_copy_controls(csv_path: str | None, *, key_prefix: str = "fastco
         return
     if not info["worth_building"] and not info["exists"]:
         return
-
-    # Labels assigned in the interface live in a sidecar until they are folded
-    # into the CSV, because rewriting a multi-gigabyte table on every save took
-    # minutes. Surface how many are waiting, and let the user commit them.
-    try:
-        from spacemap import labels
-
-        pending = labels.pending_count(csv_path)
-        pending_columns = labels.pending_columns(csv_path)
-    except Exception:
-        pending, pending_columns = 0, []
-
-    if pending:
-        with st.container():
-            st.info(
-                f"**{pending} label(s) saved** in "
-                f"{', '.join(f'`{name}`' for name in pending_columns)}, not yet written "
-                "into the CSV. They are applied every time the data is read, so the "
-                "interface already shows them."
-            )
-            left, right = st.columns(2)
-            if left.button("Write labels into the CSV", key=f"{key_prefix}_commit", width="stretch"):
-                status = st.empty()
-                with st.spinner("Writing the CSV and refreshing the fast copy..."):
-                    try:
-                        report = labels.commit(csv_path, progress=lambda m: status.caption(m))
-                    except Exception as exc:
-                        status.empty()
-                        st.error(f"Could not write the labels: {exc}")
-                    else:
-                        status.empty()
-                        st.success(
-                            f"Wrote {report['applied']} label(s) into "
-                            f"{', '.join(report['columns'])}."
-                        )
-                        st.rerun()
-            if right.button("Discard saved labels", key=f"{key_prefix}_discard", width="stretch"):
-                labels.clear(csv_path)
-                st.rerun()
 
     if building:
         icon, label = ":material/hourglass_top:", "Fast loading: preparing in background"
@@ -772,4 +760,101 @@ def render_fast_copy_controls(csv_path: str | None, *, key_prefix: str = "fastco
             "Delete copy", key=f"{key_prefix}_delete", width="stretch", disabled=building
         ):
             dataio.clear_fast_copy(csv_path)
+            st.rerun()
+
+
+def render_pending_changes(csv_path: str | None, *, key_prefix: str = "pending") -> None:
+    """Changes saved in the interface but not yet written into the CSV.
+
+    Saving a phenotype column or a Manual Reference label stores only what
+    changed, beside the CSV, so a save takes seconds instead of rewriting a
+    multi-gigabyte table. Every read in Tabs 7, 8 and 9 already includes these
+    changes. This panel shows what is waiting and writes it into the CSV on
+    request, in a separate process that finishes even if the interface is closed
+    or restarted. Until then the changes stay on disk; nothing is lost if the
+    interface crashes.
+    """
+    import streamlit as st
+
+    if not csv_path:
+        return
+    try:
+        from spacemap import labels, pending_columns
+    except Exception:
+        return
+    try:
+        columns = pending_columns.pending(csv_path)
+        label_count = labels.pending_count(csv_path)
+        label_columns = labels.pending_columns(csv_path)
+        status = pending_columns.commit_status(csv_path)
+    except Exception as exc:
+        st.warning(f"Could not check for saved changes: {exc}")
+        return
+
+    writing = status.get("state") == "writing"
+    current = [item for item in columns if not item["stale"]]
+    stale = [item for item in columns if item["stale"]]
+
+    if writing:
+        st.info(
+            f"**Writing saved changes into the CSV** (started {status.get('started_at', '')}). "
+            f"{status.get('message', '')} This continues even if you close SPACEMAP; the CSV is "
+            "replaced only when the new one is complete."
+        )
+        if st.button("Check progress", key=f"{key_prefix}_pending_refresh"):
+            st.rerun()
+        return
+    if status.get("state") == "failed":
+        st.error(f"The last write into the CSV did not finish: {status.get('message', '')} "
+                 "The saved changes are still here; you can try again.")
+    elif status.get("state") == "done" and not (current or stale or label_count):
+        st.success(f"Saved changes were written into the CSV ({status.get('finished_at', '')}). "
+                   f"{status.get('message', '')}")
+
+    if stale:
+        names = ", ".join(f"`{item['column']}`" for item in stale)
+        st.warning(
+            f"**Saved changes that no longer match the CSV:** {names}. The CSV was rewritten after "
+            "they were saved, so they are not being shown. Re-apply them to the matching cells "
+            "(by cell ID), or discard them."
+        )
+        left, right = st.columns(2)
+        if left.button("Re-apply by cell ID", key=f"{key_prefix}_pending_reapply", width="stretch"):
+            with st.spinner("Matching saved changes to the cells in the current CSV..."):
+                try:
+                    count = pending_columns.reapply_by_id(csv_path)
+                except Exception as exc:
+                    st.error(f"Could not re-apply: {exc}")
+                else:
+                    st.success(f"Re-applied {count} column(s).")
+                    st.rerun()
+        if right.button("Discard these changes", key=f"{key_prefix}_pending_discard_stale", width="stretch"):
+            pending_columns.discard(csv_path, [item["column"] for item in stale])
+            st.rerun()
+
+    if not current and not label_count:
+        return
+    parts = []
+    if current:
+        parts.append(", ".join(f"`{item['column']}`" for item in current))
+    if label_count:
+        parts.append(f"{label_count} Manual Reference label(s) in {', '.join(f'`{c}`' for c in label_columns)}")
+    st.info(
+        ":material/pending_actions: **Saved but not yet written into the CSV:** "
+        + "; ".join(parts)
+        + ". SPACEMAP already shows these values. Write them into the CSV before using it "
+        "outside SPACEMAP (notebooks, other software)."
+    )
+    left, right = st.columns(2)
+    if left.button("Write pending changes into the CSV", key=f"{key_prefix}_pending_commit",
+                   type="primary", width="stretch",
+                   help="Rewrites the CSV once with every saved change. Runs in the background and "
+                        "survives an interface restart; the old CSV stays until the new one is complete."):
+        pending_columns.start_commit(csv_path)
+        st.rerun()
+    with right.popover("Discard saved changes", width="stretch"):
+        st.caption("Removes changes that have not been written into the CSV. This cannot be undone.")
+        if st.button("Discard them", key=f"{key_prefix}_pending_discard", type="primary"):
+            pending_columns.discard(csv_path)
+            labels.clear(csv_path)
             st.rerun()

@@ -1633,13 +1633,9 @@ def render_batch_registration(project_root: Path):
             help="Subfolder name under the Output Directory where intermediate/temporary files (resized H&E, anchor channel, registered H&E) will be saved."
         )
 
-        if "tab1_create_log" not in st.session_state:
-            st.session_state["tab1_create_log"] = True
-        create_log = st.checkbox(
-            "Create Processing Log (CSV)",
-            help="If enabled, writes detailed CSV logs under Output Directory/log/session_YYMMDD_HHMMSS",
-            key="tab1_create_log",
-        )
+        # Detail logs follow the tab's single "Record run log" switch at the top of the page.
+        from spacemap_gui import run_log
+        create_log = run_log.enabled("tab1")
 
         # Scan for candidates (cached in session state)
         scan_cache_key = (codex_dir, he_dir, codex_prefix, suffix_codex, he_prefix, suffix_he)

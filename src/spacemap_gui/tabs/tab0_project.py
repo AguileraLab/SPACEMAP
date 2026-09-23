@@ -870,17 +870,30 @@ def render():
             
             with col_meta:
                 st.subheader("Project Metadata")
-                st.text_input("Principal Investigator (PI)", value=st.session_state.get("proj_pi", ""), key="proj_pi")
-                st.text_input("Institution / Lab", value=st.session_state.get("proj_institution", ""), key="proj_institution")
-                st.text_area("Project Description / Notes", value=st.session_state.get("proj_description", ""), key="proj_description")
+                # Values come from the loaded project through each key; passing
+                # value= as well made Streamlit warn that it was set twice.
+                for meta_key, meta_default in (
+                    ("proj_pi", ""), ("proj_institution", ""), ("proj_description", ""),
+                    ("proj_mpp_codex", 0.377), ("proj_mpp_he", 0.220), ("proj_use_gpu", True),
+                    ("proj_gpu_id", 0), ("proj_num_workers", 4),
+                ):
+                    if st.session_state.get(meta_key) is None:
+                        st.session_state[meta_key] = meta_default
+                for float_key in ("proj_mpp_codex", "proj_mpp_he"):
+                    st.session_state[float_key] = float(st.session_state[float_key])
+                for int_key, lowest in (("proj_gpu_id", 0), ("proj_num_workers", 1)):
+                    st.session_state[int_key] = max(int(st.session_state[int_key]), lowest)
+                st.text_input("Principal Investigator (PI)", key="proj_pi")
+                st.text_input("Institution / Lab", key="proj_institution")
+                st.text_area("Project Description / Notes", key="proj_description")
 
             with col_hardware:
                 st.subheader("Computational & Image Parameters")
-                st.number_input("CODEX Pixel Size (Microns per pixel - MPP)", value=float(st.session_state.get("proj_mpp_codex", 0.377)), format="%.4f", key="proj_mpp_codex")
-                st.number_input("H&E Pixel Size (MPP)", value=float(st.session_state.get("proj_mpp_he", 0.220)), format="%.4f", key="proj_mpp_he")
-                st.checkbox("Enable GPU Acceleration (Cellpose/Deepcell)", value=st.session_state.get("proj_use_gpu", True), key="proj_use_gpu")
-                st.number_input("CUDA Device ID", value=int(st.session_state.get("proj_gpu_id", 0)), min_value=0, key="proj_gpu_id")
-                st.number_input("Parallel Workers (CPU Multiprocessing)", value=int(st.session_state.get("proj_num_workers", 4)), min_value=1, key="proj_num_workers")
+                st.number_input("CODEX Pixel Size (Microns per pixel - MPP)", format="%.4f", key="proj_mpp_codex")
+                st.number_input("H&E Pixel Size (MPP)", format="%.4f", key="proj_mpp_he")
+                st.checkbox("Enable GPU Acceleration (Cellpose/Deepcell)", key="proj_use_gpu")
+                st.number_input("CUDA Device ID", min_value=0, key="proj_gpu_id")
+                st.number_input("Parallel Workers (CPU Multiprocessing)", min_value=1, key="proj_num_workers")
 
         with proj_tabs[2]:
             st.markdown("### Customize Pipeline Directories")

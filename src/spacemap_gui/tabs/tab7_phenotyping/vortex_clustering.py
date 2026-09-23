@@ -1,7 +1,7 @@
 """
 Vortex (X-shift) Clustering Subtab.
 
-Professional Vortex clustering with notebook-synchronized parameters from
+Vortex clustering, with the same parameters as the notebook
 Step6E_phenotype_vortex.ipynb.
 """
 
@@ -1700,7 +1700,6 @@ def render_vortex(project_root: Path, global_input_path: str | None) -> None:
     if has_vortex_results:
         st.divider()
         st.subheader("Results & Phenotype Assignment")
-        st.caption("Professional phenotype assignment interface synchronized with the Vortex notebook workflow")
 
         temp_file = Path(str(vortex_temp_file))
         df_results = read_dataframe_parquet_safe(

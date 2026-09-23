@@ -258,13 +258,9 @@ def _render_blank_subtraction(project_root):
                     help_text="Directory where processed images will be saved."
                 )
 
-                if "tab2_create_log" not in st.session_state:
-                    st.session_state["tab2_create_log"] = True
-                create_log = st.checkbox(
-                    "Create Processing Log (CSV)",
-                    help="If enabled, writes detailed CSV logs under Output Directory/log/bg_session_YYMMDD_HHMMSS",
-                    key="tab2_create_log",
-                )
+                # Detail logs follow the tab's single "Record run log" switch at the top of the page.
+                from spacemap_gui import run_log
+                create_log = run_log.enabled("tab2")
                 
                 if st.button("Run Background Subtraction", type="primary", help="Execute background subtraction process."):
                     status_container = st.status("Processing...", expanded=True)

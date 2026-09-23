@@ -839,10 +839,16 @@ st.session_state["_currently_rendering_tab"] = active_tab
 from spacemap_gui.workflow_guidance import render_workflow_guidance
 render_workflow_guidance(active_tab)
 
-# Run the page
-pg.run()
+# One run-log switch per tab, in the same place on every page. Every action the
+# page runs is recorded (time, CPU, RAM, GPU, settings changed) while it is on.
+from spacemap_gui import run_log
+run_log.render_switch(active_tab)
 
-# Shared timestamped log for the current pipeline page and any of its subtabs.
+# Run the page
+with run_log.page_run(active_tab):
+    pg.run()
+
+# The tab's recent runs and events.
 from spacemap_gui.process_log import render_process_log_panel
 render_process_log_panel(active_tab)
 
