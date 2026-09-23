@@ -8,13 +8,14 @@ not edit it by hand -- run the script instead, or let CI regenerate it. The
 "Why" column comes from the `Why:` line in each commit message; see
 [CONTRIBUTING.md](../CONTRIBUTING.md) for how to write one.
 
-**24 changes** by **1 contributor**, touching **301 files**. Latest: `1cd78dd` on 2026-09-22.
+**25 changes** by **1 contributor**, touching **305 files**. Latest: `dcd8d79` on 2026-09-22.
 
 
 ## 2026-09
 
 | Date | Change | Who | Why | Files | Lines |
 | --- | --- | --- | --- | --- | --- |
+| 2026-09-22 | `dcd8d79` feat: one run log per tab, and phenotype saves without rewriting the CSV | Bassel Dawod | the user found Leiden's log box off and asked for one consistently named, always-on log that records settings changes, time and compute; and asked for fast Parquet-backed saves that survive an interface crash. | 24 | +1893/-167 |
 | 2026-09-22 | `1cd78dd` fix: save every setting, unify Tab 7 layout and terminal output | Bassel Dawod | preparing SPACEMAP for publication. Users lost settings on reload, Tab 7 methods looked and read differently, terminal output could not be followed, and two notebooks silently did not run what they describe. | 67 | +1746/-1270 |
 | 2026-09-22 | `324de8b` fix: allowlist the docs that describe the path rule | Bassel Dawod | a check that fires on its own documentation trains people to ignore it. | 1 | +5/-0 |
 | 2026-09-22 | `252ad0e` docs: add a handover document and a publishing procedure | Bassel Dawod | everything here was learned once, at cost, and lived only in one conversation. Someone starting tomorrow would have rediscovered all of it. | 4 | +551/-0 |
@@ -43,6 +44,35 @@ not edit it by hand -- run the script instead, or let CI regenerate it. The
 ---
 
 ## Files changed per commit
+
+<details><summary><code>dcd8d79</code> feat: one run log per tab, and phenotype saves without rewriting the CSV</summary>
+
+- `.gitignore`
+- `CHANGELOG.md`
+- `docs/handover.md`
+- `src/spacemap/dataio.py`
+- `src/spacemap/pending_columns.py`
+- `src/spacemap_gui/app.py`
+- `src/spacemap_gui/persistence.py`
+- `src/spacemap_gui/process_log.py`
+- `src/spacemap_gui/run_log.py`
+- `src/spacemap_gui/tabs/tab0_project.py`
+- `src/spacemap_gui/tabs/tab1_registration.py`
+- `src/spacemap_gui/tabs/tab2_background_subtraction.py`
+- `src/spacemap_gui/tabs/tab3_roi_extraction.py`
+- `src/spacemap_gui/tabs/tab5_segmentation.py`
+- `src/spacemap_gui/tabs/tab7_phenotyping/common.py`
+- `src/spacemap_gui/tabs/tab7_phenotyping/leiden_clustering.py`
+- `src/spacemap_gui/tabs/tab7_phenotyping/resolve_clustering.py`
+- `src/spacemap_gui/tabs/tab7_phenotyping/som_clustering.py`
+- `src/spacemap_gui/tabs/tab7_phenotyping/vortex_clustering.py`
+- `src/spacemap_gui/tabs/tab9_visualization/f1_paper_figures.py`
+- `src/spacemap_gui/ui_utils.py`
+- `src/spacemap_workflows/leiden_job.py`
+- `tests/test_pending_columns.py`
+- `tests/test_run_log.py`
+
+</details>
 
 <details><summary><code>1cd78dd</code> fix: save every setting, unify Tab 7 layout and terminal output</summary>
 
