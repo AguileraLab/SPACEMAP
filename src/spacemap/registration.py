@@ -62,19 +62,15 @@ except Exception:
 
 import palom
 import dask.array as da
-import traceback
-import json
 import re
 from pathlib import Path
 import xml.etree.ElementTree as ET
 from spacemap.utils import (
-    log_time, check_file_exists, hex_to_rgb, create_ome_metadata, rgb_to_color_int,
-    parse_qptiff, load_geojson, extract_bboxes_from_geojson, extract_rois_with_labels_from_geojson,
-    extract_rois_with_geometry_from_geojson
+    log_time, check_file_exists, create_ome_metadata, rgb_to_color_int,
+    load_geojson, extract_rois_with_geometry_from_geojson
 )
 from spacemap.background_subtraction_utils import (
-    get_channel_info, read_channel_image, read_channel_from_open_tif, get_image_mpp,
-    normalize_image_stem, is_supported_image_file, io_worker_count,
+    get_channel_info, read_channel_image, read_channel_from_open_tif, normalize_image_stem, is_supported_image_file, io_worker_count,
 )
 
 try:

@@ -16,7 +16,6 @@ import pandas as pd
 import streamlit as st
 
 from spacemap_gui.ui_utils import directory_input_with_browse
-from spacemap.background_subtraction_utils import normalize_image_stem
 
 from .roi_explorer_core import (
     apply_cell_filters,
@@ -109,7 +108,7 @@ def _render_filter_rules(
             ["— pick column —"] + all_cols,
             key=f"{fk}_addcol",
         )
-    if st.button("➕ Add filter", key=f"{fk}_addbtn") and add_col != "— pick column —":
+    if st.button("Add filter", key=f"{fk}_addbtn") and add_col != "— pick column —":
         is_num = pd.api.types.is_numeric_dtype(analysis_df[add_col]) if add_col in analysis_df.columns else False
         rules.append({
             "column": add_col,
@@ -163,7 +162,7 @@ def _render_filter_rules(
                 value=bool(rule.get("include_missing", True)),
                 key=f"{fk}_r{ri}_miss",
             )
-            if st.button("🗑 Remove filter", key=f"{fk}_r{ri}_del"):
+            if st.button("Remove filter", key=f"{fk}_r{ri}_del"):
                 to_delete.append(ri)
 
     if to_delete:
@@ -198,7 +197,6 @@ def _render_layer_card(
     """
     lid = layer["id"]
     ltype = str(layer.get("type", ""))
-    icons = {"markers": "🎨", "annotations": "🗺️", "cells": "🔬", "scatter": "⚬"}
 
     # ── Header row ──────────────────────────────────────────────────────────
     hc, uc, dc, xc = st.columns([6, 1, 1, 1])
@@ -218,10 +216,10 @@ def _render_layer_card(
         if idx < total - 1 and st.button("↓", key=f"{prefix}_dn_{lid}", help="Move down"):
             return {"_action": "move_dn", "idx": idx}
     with xc:
-        if st.button("🗑", key=f"{prefix}_del_{lid}", help="Remove layer"):
+        if st.button(":material/delete:", key=f"{prefix}_del_{lid}", help="Remove layer"):
             return {"_action": "delete", "idx": idx}
 
-    st.caption(f"{icons.get(ltype, '📄')} **{ltype}**")
+    st.caption(f"**{ltype}**")
 
     # ── Common controls ─────────────────────────────────────────────────────
     cc1, cc2 = st.columns(2)
@@ -717,7 +715,7 @@ def _do_render_and_show(
         plt.close(fig)
         safe = re.sub(r"[^\w\-.]", "_", f"{batch_id}_{roi_id}_roi_explorer.png")
         st.download_button(
-            f"⬇ Download {safe}",
+            f"Download {safe}",
             data=buf, file_name=safe, mime="image/png",
             key=f"{prefix}_dl_{abs(hash(safe)) % 99999}",
         )
@@ -765,7 +763,7 @@ def _render_roi_explorer(
         return
 
     # ── Data Sources ──────────────────────────────────────────────────────────
-    with st.expander("📁 Data Sources", expanded=False):
+    with st.expander("Data Sources", expanded=False):
         c1, c2, c3 = st.columns(3)
         with c1:
             st.markdown("**Raw image directory**")
@@ -919,7 +917,7 @@ def _render_roi_explorer(
         st.rerun()
 
     # ── Figure Settings ───────────────────────────────────────────────────────
-    with st.expander("⚙️ Figure Settings", expanded=False):
+    with st.expander("Figure Settings", expanded=False):
         fs1, fs2, fs3 = st.columns(3)
         with fs1:
             show_legend = st.checkbox("Show legend", value=bool(st.session_state.get(_sk(p, "show_legend"), True)),
@@ -966,9 +964,9 @@ def _render_roi_explorer(
     st.markdown("#### Preview")
     pb1, pb2 = st.columns(2)
     with pb1:
-        render_btn = st.button("🖼 Render / Update", key=_sk(p, "render_btn"), type="primary")
+        render_btn = st.button("Render / Update", key=_sk(p, "render_btn"), type="primary")
     with pb2:
-        export_btn = st.button("⬇ Export high-DPI PNG", key=_sk(p, "export_btn"))
+        export_btn = st.button("Export high-DPI PNG", key=_sk(p, "export_btn"))
 
     if render_btn or export_btn:
         if roi_df.empty:

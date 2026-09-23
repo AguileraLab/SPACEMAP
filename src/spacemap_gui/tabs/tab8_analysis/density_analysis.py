@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from spacemap_gui import terminal
 import json
 import os
 import shutil
@@ -55,20 +56,11 @@ def default_method_color(method: str, index: int = 0) -> str:
 
 
 def log_density(message: str):
-    """Print timestamped log for Density Analysis when tab logging is enabled."""
-    legacy = os.getenv("SPACEMAP_CONSOLE_LOGS")
-    if legacy is not None:
-        if legacy != "1":
-            return
-    elif os.getenv("SPACEMAP_TAB_LOGS", "1") != "1":
-        return
-
+    """Density Analysis progress line, printed only while the user is on Tab 8."""
     user_tab = os.environ.get("_spacemap_user_tab", "")
     if user_tab and user_tab != "tab8":
         return
-
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-    print(f"[{timestamp}] TAB8 Density: {message}", flush=True)
+    terminal.say("tab8", message, step="Density")
 
 
 def _holm_adjust(p_values: list[float] | np.ndarray) -> np.ndarray:
@@ -1579,7 +1571,7 @@ def render_panel1_fragment(
                 help="Linear, log₁₀, or log₂ scale. Log scales clip non-positive densities to a small visible floor.",
             )
         with y2:
-            st.caption("ℹ️ Auto-adapts range to keep all data and significance labels visible.")
+            st.caption("Auto-adapts range to keep all data and significance labels visible.")
 
         y3, y4, y5 = st.columns(3)
         p1_manual_y_min = y3.checkbox(
@@ -2496,7 +2488,7 @@ def render_panel2_fragment(
         )
 
         st.markdown("**Inclusion thresholds**")
-        p2e1, p2e2, p2e3 = st.columns(3)
+        p2e1, p2e2 = st.columns(2)
         min_cells_per_zone = p2e1.number_input(
             "Min cells per zone",
             min_value=0,
@@ -2514,14 +2506,6 @@ def render_panel2_fragment(
             step=1,
             key="tab8_density_p2_min_rois",
             help="How many connected tissues must contribute to each zone point.",
-        )
-        p2_percentile = p2e3.slider(
-            "Zone area buffer percentile",
-            min_value=90.0,
-            max_value=99.9,
-            value=99.0,
-            step=0.1,
-            key="tab8_density_p2_percentile",
         )
         st.caption("Panel 2 uses the exact connected virtual tissue area, so the density metric matches Panel 1.")
 
@@ -3626,7 +3610,7 @@ def render_density_analysis(project_root: Path, df: pd.DataFrame):
     if _DENSITY_CORE_STATE_KEY not in st.session_state:
         st.session_state[_DENSITY_CORE_STATE_KEY] = default_core_state.copy()
 
-    with st.expander("⚙️ Shared Configuration · Connected Virtual Tissue Units", expanded=True):
+    with st.expander("Shared Configuration · Connected Virtual Tissue Units", expanded=True):
         st.caption(
             "Applies to every panel. Settings take effect when you click Apply Core Configuration; "
             "each panel then recomputes only when you run that panel."
@@ -3820,7 +3804,7 @@ def render_density_analysis(project_root: Path, df: pd.DataFrame):
         f"after filtering {context['filtered_rows']} candidate rows."
     )
 
-    with st.expander("🔍 Connected Tissue Preview (quality check for the shared configuration)", expanded=False):
+    with st.expander("Connected Tissue Preview (quality check for the shared configuration)", expanded=False):
         st.caption(
             "Shows the virtual tissue geometry and the nearest-neighbour distance histogram for a single "
             "connected tissue, so you can confirm the buffer percentile and hole size before running a panel."
@@ -3861,7 +3845,7 @@ def render_density_analysis(project_root: Path, df: pd.DataFrame):
     phenotype_cols = [c for c in run_df.columns if "phenotype" in c.lower()]
     default_methods = [c for c in ["phenotype_leiden", "phenotype_som", "phenotype_threshold", "phenotype_scimap"] if c in phenotype_cols]
 
-    with st.expander("🎨 Shared Figure Settings · methods, display names and colors", expanded=True):
+    with st.expander("Shared Figure Settings · methods, display names and colors", expanded=True):
         shared = _render_shared_figure_settings(phenotype_cols, default_methods)
 
     st.markdown("### Panels")

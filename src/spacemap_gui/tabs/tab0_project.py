@@ -1,11 +1,9 @@
 import os
 import re
-import time
 from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
 import streamlit as st
-from spacemap_gui.file_browser import render_file_browser
 from spacemap_gui.ui_utils import directory_input_with_browse
 from spacemap_gui.persistence import (
     load_projects_index,
@@ -15,6 +13,7 @@ from spacemap_gui.persistence import (
     save_project_config,
     save_active_project_state,
 )
+from spacemap_gui import terminal
 
 # Global list of all directory keys used across all pipeline tabs.
 # This is the SINGLE SOURCE OF TRUTH for directory-style session keys.
@@ -74,6 +73,11 @@ PIPELINE_STATUS_STAGES = (
 )
 
 
+def _log_console(message: str, level: str = "info") -> None:
+    """One timestamped terminal line for this tab (see spacemap_gui.terminal)."""
+    terminal.say('tab0', message, step=None, level=level)
+
+
 def get_pipeline_status(directory_state: Mapping[str, object]) -> list[dict[str, object]]:
     """Summarize configured pipeline outputs without recursively scanning project data."""
     rows: list[dict[str, object]] = []
@@ -128,7 +132,7 @@ def discover_image_pairs(codex_dir: str, he_dir: str) -> list:
         try:
             codex_files = sorted([f for f in os.listdir(codex_path) if f.lower().endswith(extensions)])
         except Exception as e:
-            print(f"Error listing CODEX dir: {e}")
+            _log_console(f"Error listing CODEX dir: {e}", level="error")
 
     # List H&E files
     he_files = []
@@ -136,7 +140,7 @@ def discover_image_pairs(codex_dir: str, he_dir: str) -> list:
         try:
             he_files = sorted([f for f in os.listdir(he_path) if f.lower().endswith(extensions)])
         except Exception as e:
-            print(f"Error listing H&E dir: {e}")
+            _log_console(f"Error listing H&E dir: {e}", level="error")
 
     # Helper to extract core stem
     def get_stem(filename):
@@ -603,7 +607,6 @@ def generate_interactive_tree_html() -> str:
     html += textwrap.dedent(f"""
     <details open>
         <summary class="folder-summary">
-            <span style="color: #60A5FA; font-size: 1.2rem;">📁</span>
             <span style="font-size: 1.05rem; color: #F3F4F6;">{active_proj_name}</span>
             <span style="font-size: 0.8rem; background: #374151; padding: 2px 8px; border-radius: 10px; color: #60A5FA; margin-left: auto;">Root Workspace</span>
         </summary>
@@ -631,7 +634,6 @@ def generate_interactive_tree_html() -> str:
                 
         return textwrap.dedent(f"""
         <div class="tree-leaf">
-            <span style="color: #FBBF24;">📁</span>
             <span style="font-weight: 500; color: #E5E9F0;">{label}</span>
             <span class="path-text">{path_display}</span>
             <span class="{status_class}">{status_text}</span>
@@ -642,7 +644,6 @@ def generate_interactive_tree_html() -> str:
     html += textwrap.dedent("""
     <details open style="margin-top: 8px;">
         <summary class="folder-summary">
-            <span style="color: #60A5FA;">📁</span>
             <span style="color: #D1D5DB; font-size: 0.9rem;">Registration & Inputs</span>
         </summary>
         <div class="tree-node">
@@ -659,7 +660,6 @@ def generate_interactive_tree_html() -> str:
     html += textwrap.dedent("""
     <details open style="margin-top: 6px;">
         <summary class="folder-summary">
-            <span style="color: #60A5FA;">📁</span>
             <span style="color: #D1D5DB; font-size: 0.9rem;">Background Subtraction</span>
         </summary>
         <div class="tree-node">
@@ -676,7 +676,6 @@ def generate_interactive_tree_html() -> str:
     html += textwrap.dedent("""
     <details open style="margin-top: 6px;">
         <summary class="folder-summary">
-            <span style="color: #60A5FA;">📁</span>
             <span style="color: #D1D5DB; font-size: 0.9rem;">ROI Extraction</span>
         </summary>
         <div class="tree-node">
@@ -693,7 +692,6 @@ def generate_interactive_tree_html() -> str:
     html += textwrap.dedent("""
     <details open style="margin-top: 6px;">
         <summary class="folder-summary">
-            <span style="color: #60A5FA;">📁</span>
             <span style="color: #D1D5DB; font-size: 0.9rem;">Cell Segmentation</span>
         </summary>
         <div class="tree-node">
@@ -710,7 +708,6 @@ def generate_interactive_tree_html() -> str:
     html += textwrap.dedent("""
     <details open style="margin-top: 6px;">
         <summary class="folder-summary">
-            <span style="color: #60A5FA;">📁</span>
             <span style="color: #D1D5DB; font-size: 0.9rem;">Annotation & Zones</span>
         </summary>
         <div class="tree-node">
@@ -728,7 +725,6 @@ def generate_interactive_tree_html() -> str:
     html += textwrap.dedent("""
     <details open style="margin-top: 6px;">
         <summary class="folder-summary">
-            <span style="color: #60A5FA;">📁</span>
             <span style="color: #D1D5DB; font-size: 0.9rem;">Batch Correction</span>
         </summary>
         <div class="tree-node">
@@ -744,7 +740,6 @@ def generate_interactive_tree_html() -> str:
     html += textwrap.dedent("""
     <details open style="margin-top: 6px;">
         <summary class="folder-summary">
-            <span style="color: #60A5FA;">📁</span>
             <span style="color: #D1D5DB; font-size: 0.9rem;">Phenotyping & Spatial Analysis</span>
         </summary>
         <div class="tree-node">
@@ -1259,7 +1254,7 @@ def render():
                     st.warning(
                         "These are not caches. Deleting them resets each tab to its defaults; "
                         "your data and results are untouched.",
-                        icon="⚠️",
+                        icon=":material/warning:",
                     )
                 for entry in group:
                     size_col, info_col, action_col = st.columns([1, 4, 1])
@@ -1327,7 +1322,7 @@ def render():
                 )
                 for path in outside:
                     inside_other_project = "/project/" in path
-                    (st.error if inside_other_project else st.warning)(f"`{path}`", icon="⚠️")
+                    (st.error if inside_other_project else st.warning)(f"`{path}`", icon=":material/warning:")
             else:
                 st.success("Every configured directory lives inside this project - fully portable.")
 

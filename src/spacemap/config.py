@@ -87,7 +87,6 @@ def get_config(base_dir=None, create_directories=False):
 
 def setup_logging(name, level='INFO'):
     """Setup logging for pipeline components."""
-    import logging
     
     logger = logging.getLogger(name)
     

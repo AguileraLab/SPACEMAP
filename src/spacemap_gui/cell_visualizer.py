@@ -8,7 +8,7 @@ import tifffile
 import matplotlib.pyplot as plt
 from shapely.affinity import translate
 from shapely.geometry import Point, box, shape
-import scipy.ndimage as ndi
+from spacemap_gui import terminal
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -17,6 +17,11 @@ try:
     import zarr
 except ImportError:
     zarr = None
+
+def _log_console(message: str, level: str = "info") -> None:
+    """One timestamped terminal line for this tab (see spacemap_gui.terminal)."""
+    terminal.say('tab7', message, step='Cell Visualizer', level=level)
+
 
 class CellVisualizer:
     def __init__(self, roi_dir: str | Path, seg_dir: str | Path):
@@ -541,7 +546,7 @@ class CellVisualizer:
                 'channels': list of channel names (if available in metadata) or None
         """
         if batch_id not in self.file_map:
-            print(f"[CellVisualizer] Batch {batch_id} not found in matched files.")
+            _log_console(f"Batch {batch_id} not found in matched files.")
             raise FileNotFoundError(f"No matched files for batch {batch_id}")
 
         paths = self.file_map[batch_id]

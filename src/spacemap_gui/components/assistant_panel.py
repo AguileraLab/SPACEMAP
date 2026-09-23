@@ -2955,7 +2955,7 @@ def _render_conversation_controls(
     with columns[0]:
         if st.button(
             "New Chat",
-            icon="➕",
+            icon=":material/add:",
             width="stretch",
             key=f"assistant_new_chat_{page_id}_{'compact' if compact else 'full'}",
         ):
@@ -4096,7 +4096,7 @@ def render_assistant_launcher(page_id: str, assistant_page: Any) -> None:
         """,
         unsafe_allow_html=True,
     )
-    with st.popover("AI Assistant", icon="💬", width="stretch"):
+    with st.popover("AI Assistant", icon=":material/chat:", width="stretch"):
         st.caption(f"Current context: {context.get('page_title', page_id)} · Planning mode")
         _render_compact_live_action_status()
         quick = st.columns(2)
@@ -4111,7 +4111,7 @@ def render_assistant_launcher(page_id: str, assistant_page: Any) -> None:
                 _submit_prompt("What should I do next?", page_id, store, conversation_id)
                 st.rerun()
         _render_chat(page_id, compact=True)
-        st.page_link(assistant_page, label="Open Full Assistant Workspace", icon="🤖", width="stretch")
+        st.page_link(assistant_page, label="Open Full Assistant Workspace", icon=":material/smart_toy:", width="stretch")
 
 
 def render_assistant_workspace() -> None:

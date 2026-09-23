@@ -15,7 +15,6 @@ from pathlib import Path
 from typing import Any
 
 from .paths import (
-    AI_ROOT,
     SOURCE_ROOT,
     ASSISTANT_DATA_DIR,
     action_workspace_root,

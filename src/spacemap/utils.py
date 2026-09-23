@@ -6,12 +6,9 @@ and file operations used throughout the SPACEMAP pipeline.
 """
 
 import os
-import sys
 import json
-import time
 import tifffile
 import numpy as np
-import matplotlib.pyplot as plt
 import xml.etree.ElementTree as ET
 from datetime import datetime
 import itertools
@@ -502,7 +499,6 @@ def anchor_and_update_unified(existing, new_data, id_col='id', columns_to_update
     pd.DataFrame
         Updated unified dataframe with properly anchored results.
     """
-    import pandas as pd
     
     # Validate inputs
     if id_col not in new_data.columns:

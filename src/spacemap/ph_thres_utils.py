@@ -17,7 +17,6 @@ helper routines accept phenotype definitions / hierarchy as parameters.
 
 from __future__ import annotations
 
-import os
 import re
 import warnings
 from typing import Dict, List, Sequence, Tuple, Optional
@@ -94,6 +93,7 @@ def _transform_threshold_distance(
 __all__ = [
         # Core functions used by notebook
         "apply_thresholds_per_batch",
+        "apply_z1_positivity",
         "assign_phenotypes_binary_tiebreak", 
         "apply_threshold_phenotypes",
         "generate_threshold_heatmap",
@@ -808,6 +808,58 @@ def apply_thresholds_per_batch(
         raise ValueError("Threshold application left cells without binary marker coverage")
     return df_binary, df_norm
 
+
+DEFAULT_Z1_CUTOFF = 1.5
+
+
+def apply_z1_positivity(
+    df_main: pd.DataFrame,
+    markers: Sequence[str],
+    batch_col: Optional[str] = None,
+    method_tag: str = "resolve",
+    cutoff: float = DEFAULT_Z1_CUTOFF,
+    cofactor: float = 5.0,
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Call a marker positive where its Z1 score is above ``cutoff``.
+
+    For projects without threshold tables. Each raw marker is transformed with
+    ``arcsinh(value / cofactor)`` and turned into a Z1 score (marker-wise z-score)
+    within each batch; values above ``cutoff`` count as positive. Z2, CDF and
+    NLog are not applied because each rescales the score and would change what
+    the cutoff means. The Z1 scores are returned as the tie-break scores.
+
+    This is a relative rule: markers carried by a large share of cells, or with a
+    few extremely bright cells, tend to be under-called. Prefer image-based
+    thresholds when they exist.
+
+    Returns ``(binary, scores)`` with columns ``<marker>_bin_<tag>`` and
+    ``<marker>_norm_<tag>``, the same layout as ``apply_thresholds_per_batch``.
+    """
+    markers_present = [marker for marker in markers if marker in df_main.columns]
+    raw = df_main[markers_present].apply(pd.to_numeric, errors="coerce")
+    transformed = np.arcsinh(raw / float(cofactor))
+    group_cols = [batch_col] if batch_col and batch_col in df_main.columns else []
+    norm_input = pd.concat([transformed, df_main[group_cols]], axis=1) if group_cols else transformed
+    scores = apply_flexible_normalization(
+        norm_input,
+        markers_present,
+        group_cols or None,
+        f"_norm_{method_tag}",
+        apply_z1=True,
+        apply_z2=False,
+        apply_cdf=False,
+        apply_nlog=False,
+        order=["Z1"],
+    )
+    # Cells with no batch value are left out of every batch group; they are
+    # scored 0 (not positive) rather than dropped, so the output covers every cell.
+    scores = scores.reindex(df_main.index, fill_value=0.0)
+    binary = pd.DataFrame(index=df_main.index)
+    for marker in markers_present:
+        binary[f"{marker}_bin_{method_tag}"] = (scores[f"{marker}_norm_{method_tag}"] > float(cutoff)).astype(int)
+    return binary, scores
+
+
 def generate_threshold_heatmap(df, assignment_col, markers, marker_suffix, figsize, save_path):
     """
     Generates a heatmap of mean marker expression for each phenotype.
@@ -894,7 +946,6 @@ def apply_threshold_phenotypes(
     """
     from pathlib import Path
     import pandas as pd
-    import numpy as np
     
     if output_base_dir is None:
         raise ValueError("output_base_dir must be provided")

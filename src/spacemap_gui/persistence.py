@@ -337,11 +337,10 @@ def get_default_bc_config() -> dict:
     }
 
 def log_persistence(msg: str):
-    """Print timestamped log for persistence tracking."""
-    if os.getenv("SPACEMAP_APP_LOGS", "0") != "1" and os.getenv("SPACEMAP_CONSOLE_LOGS") != "1":
-        return
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-    print(f"[{timestamp}] PERSISTENCE: {msg}", flush=True)
+    """Project-file messages (shown when SPACEMAP_APP_LOGS=1)."""
+    from spacemap_gui import terminal
+
+    terminal.say("project", msg, channel="app")
 
 # ============================================================================
 # DIRECTORY-SPECIFIC SETTINGS PERSISTENCE
@@ -1764,6 +1763,11 @@ def ensure_threshold_directory_mapping(config: dict, project_root: str) -> tuple
     return current, changed
 
 
+def is_logging_switch(key) -> bool:
+    """Run-log and process-log checkboxes, which always start switched on."""
+    return isinstance(key, str) and key.endswith(("_create_log", "_process_log_enabled"))
+
+
 def sync_project_state() -> None:
     """Centralized State Sync Manager to keep st.session_state aligned with the active project's config.
     Ensures that loaded project settings override defaults and are restored when Streamlit deletes them.
@@ -1867,7 +1871,13 @@ def sync_project_state() -> None:
                 st.session_state[k] = pd.DataFrame(stored_val) if stored_val else pd.DataFrame(columns=["Process", "Filename"])
             else:
                 st.session_state[k] = stored_val
-                
+
+        # Logging switches start on in every session so every run is recorded.
+        # A user can still switch one off, but only for the current session.
+        for k in list(st.session_state.keys()):
+            if is_logging_switch(k):
+                st.session_state[k] = True
+
         st.session_state["_project_just_hydrated"] = False
         log_persistence("Forced initial configuration state sync (hydration) and bypassed change detection.")
         if pruned_transient_keys or threshold_mapping_migrated:

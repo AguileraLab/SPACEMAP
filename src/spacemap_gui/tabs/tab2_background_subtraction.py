@@ -2,17 +2,23 @@ import streamlit as st
 import os
 from pathlib import Path
 import re
-import pandas as pd
 import time
 import csv
 from datetime import datetime
-from typing import Dict, Optional, List, TextIO
-from spacemap.utils import log_time, hex_to_rgb
+from typing import Dict, Optional
+from spacemap.utils import hex_to_rgb
 from spacemap.background_subtraction_utils import get_channel_info, subtract_background_and_save, is_supported_image_file, normalize_image_stem
-from spacemap_gui.file_browser import render_file_browser
 from spacemap_gui.ui_utils import directory_input_with_browse
 from spacemap_gui.process_log import record_process_event
 from spacemap_gui.tabs.tab1_registration import get_image_metadata_log, _prefix_keys
+
+from spacemap_gui import terminal
+
+
+def _log_console(message: str, level: str = "info") -> None:
+    """One timestamped terminal line for this tab (see spacemap_gui.terminal)."""
+    terminal.say('tab2', message, step=None, level=level)
+
 
 def render():
     from spacemap_gui.ui_utils import require_active_project
@@ -56,6 +62,7 @@ def _render_blank_subtraction(project_root):
             "Select Input Source",
             ["Registered Images (OME-TIFF)", "Raw CODEX Images (QPTIFF)"],
             horizontal=True,
+            key="tab2_blank_input_source",
             help="Choose between processed OME-TIFFs (from Tab 1) or raw QPTIFFs."
         )
         
@@ -90,7 +97,11 @@ def _render_blank_subtraction(project_root):
         if input_path.exists():
             files = sorted([f for f in os.listdir(input_path) if f.lower().endswith(suffixes) and is_supported_image_file(f)])
             if files:
-                selected_file = st.selectbox("Select Image", files, help="Choose the image to process.")
+                if st.session_state.get("tab2_blank_selected_file") not in files:
+                    st.session_state["tab2_blank_selected_file"] = files[0]
+                selected_file = st.selectbox(
+                    "Select Image", files, key="tab2_blank_selected_file", help="Choose the image to process."
+                )
             else:
                 st.warning(f"No supported files found for the selected source in directory.")
         else:
@@ -298,7 +309,7 @@ def _render_blank_subtraction(project_root):
                 except Exception as e:
                     st.error(f"Error inspecting metadata: {e}")
 
-        st.info("ℹ️ **Help:** Select an image, detect channels, identify 'Blank' channels, and assign them to specific markers for subtraction.")
+        st.info("**Help:** Select an image, detect channels, identify 'Blank' channels, and assign them to specific markers for subtraction.")
         st.caption(
             "No blank cycles in this panel? Use Detect Background to estimate it from the image "
             "and export the threshold table RESOLVE reads."
@@ -315,7 +326,7 @@ def run_subtraction(input_path, output_dir_str, mapping, channel_names, channel_
         ts = datetime.now().strftime("[%Y-%m-%d %H:%M:%S]")
         full_msg = f"{ts} {msg}"
         status_container.write(full_msg)
-        print(full_msg) # Terminal log
+        _log_console(msg)
         record_process_event("tab2", "Background subtraction step", message=msg)
 
     # Logging Setup
@@ -370,7 +381,7 @@ def run_subtraction(input_path, output_dir_str, mapping, channel_names, channel_
         
         status_container.update(label="Complete!", state="complete", expanded=False)
         st.success(f"Saved to {output_path}")
-        st.toast("Background Subtraction Complete!", icon="✅")
+        st.toast("Background Subtraction Complete!", icon=":material/check_circle:")
         st.session_state['bg_subtraction_output_dir'] = str(output_dir) # Sync legacy key if needed
         output_metadata = get_image_metadata_log(str(output_path)) if output_path.exists() else {}
         record_process_event(

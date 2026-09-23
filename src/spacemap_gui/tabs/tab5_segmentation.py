@@ -12,9 +12,9 @@ Image.MAX_IMAGE_PIXELS = None  # Disable DecompressionBombError for large images
 import json
 import pandas as pd
 import torch
-from spacemap_gui.file_browser import render_file_browser
 from spacemap_gui.ui_utils import (
     directory_input_with_browse,
+    seed_widget_state,
     show_preflight_errors,
     validate_run_directories,
     validate_selected_files,
@@ -23,7 +23,7 @@ from spacemap_gui.process_log import record_process_event
 from spacemap_gui.tabs import segmentation_spatial_ui as spatial_ui
 from spacemap_gui.tabs import cell_tagging_ui
 
-from spacemap.segmentation_cellpose import SegmentationConfig, segment_image_cellpose, get_channel_names
+from spacemap.segmentation_cellpose import SegmentationConfig, segment_image_cellpose
 from spacemap.background_subtraction_utils import get_channel_info
 from spacemap.utils import hex_to_rgb
 import base64
@@ -32,12 +32,20 @@ from shapely.geometry import shape, Polygon
 import matplotlib.pyplot as plt
 from PIL import ImageDraw
 import seaborn as sns
-from typing import Any, Dict, List, cast, Optional
+from typing import Any, Dict, cast, Optional
 import xml.etree.ElementTree as ET
 
 # -----------------------------------------------------------------------------
 # Logging utilities (similar to Tab1 registration)
 # -----------------------------------------------------------------------------
+
+from spacemap_gui import terminal
+
+
+def _log_console(message: str, level: str = "info") -> None:
+    """One timestamped terminal line for this tab (see spacemap_gui.terminal)."""
+    terminal.say('tab5', message, step=None, level=level)
+
 
 def get_segmentation_metadata_log(file_path: str) -> Dict[str, Any]:
     """
@@ -513,7 +521,7 @@ def save_drawn_segmentation_mask(
     Subtracts exclusion (removal) polygons from inclusion (mask) polygons.
     """
     from shapely.ops import unary_union
-    from shapely.geometry import shape, Polygon, MultiPolygon, mapping
+    from shapely.geometry import Polygon, MultiPolygon, mapping
 
     out_dir = Path(geojson_dir) / "new_mask"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -620,7 +628,7 @@ def get_cached_channel_image(file_path, channel_index, mtime: float = 0.0):
                     return ch_data, full_shape
 
     except Exception as e:
-        print(f"Error loading channel {channel_index}: {e}")
+        _log_console(f"Error loading channel {channel_index}: {e}", level="error")
     
     return None, (0, 0)
 
@@ -671,10 +679,10 @@ def request_batch_stop(output_dir) -> bool:
         path = stop_sentinel_path(output_dir)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(datetime.now().isoformat(), encoding="utf-8")
-        print(f"[TAB5-SEGMENTATION] stop requested -> {path}", flush=True)
+        _log_console(f"stop requested -> {path}")
         return True
     except Exception as error:
-        print(f"[TAB5-SEGMENTATION] could not request stop: {error}", flush=True)
+        _log_console(f"could not request stop: {error}", level="error")
         return False
 
 
@@ -712,7 +720,7 @@ def clear_preview_caches(reason: str = "") -> None:
     ]:
         st.session_state.pop(key, None)
     if reason:
-        print(f"[TAB5-SEGMENTATION] preview cache cleared ({reason})", flush=True)
+        _log_console(f"preview cache cleared ({reason})")
 
 
 def sync_preview_to_input_dir(input_dir: str, image_files: list) -> Optional[str]:
@@ -803,7 +811,7 @@ def load_preview_channels(file_path, indices_to_load):
                 full_shape = shape
 
     except Exception as e:
-        print(f"Error load_preview_channels: {e}")
+        _log_console(f"Error load_preview_channels: {e}", level="error")
     return loaded_data, full_shape, is_rgb
 
 def find_matched_mask_file(image_name: str, mask_save_dir: str) -> tuple[Optional[Path], bool]:
@@ -2192,7 +2200,7 @@ def _render_segmentation_pipeline():
                         if loaded_objs:
                             st.session_state['tab4_seg_canvas_objects'][str(img_full_path)] = loaded_objs
                     except Exception as e:
-                        print(f"Error auto-loading mask for {active_img}: {e}")
+                        _log_console(f"Error auto-loading mask for {active_img}: {e}", level="error")
 
             # Defaults.
             # Selections are stored per image as {channel index: bool}. Indices are
@@ -3456,7 +3464,7 @@ def _render_segmentation_pipeline():
             # Real-time state synchronization with change-detection to prevent blinking loops
             ignore_sync_key = f"tab4_canvas_ignore_sync_{file_key}"
             if st.session_state.pop(ignore_sync_key, False):
-                print(f"[TAB5 CANVAS LOG] Canvas reset frame for {active_img}: skipping stale browser state sync.", flush=True)
+                _log_console(f"Canvas reset frame for {active_img}: skipping stale browser state sync.")
             elif canvas_result is not None and canvas_result.json_data is not None:
                 raw_objects = canvas_result.json_data.get('objects', [])
                 objs = [o for o in raw_objects if isinstance(o, dict) and o.get('type') != 'image']
@@ -3473,7 +3481,7 @@ def _render_segmentation_pipeline():
                         valid.append(o)
                 curr_stored = st.session_state['tab4_seg_canvas_objects'].get(str(img_full_path), [])
                 if json.dumps(valid, sort_keys=True) != json.dumps(curr_stored, sort_keys=True):
-                    print(f"[TAB5 CANVAS LOG] Syncing {len(valid)} valid canvas shape(s) for {active_img} into session state.", flush=True)
+                    _log_console(f"Syncing {len(valid)} valid canvas shape(s) for {active_img} into session state.")
                     st.session_state['tab4_seg_canvas_objects'][str(img_full_path)] = valid
 
             stored = st.session_state['tab4_seg_canvas_objects'].get(str(img_full_path), [])
@@ -3486,10 +3494,10 @@ def _render_segmentation_pipeline():
             with btn_col1:
                 if st.button("Merge / Subtract", help="Subtract red artifact holes from tissue and merge overlapping tissue polygons offline", width="stretch", key=f"tab4_sub_btn_{file_key}"):
                     if stored:
-                        print(f"[TAB5 CANVAS LOG] 'Merge / Subtract' clicked. Processing {len(stored)} shape(s) offline for {active_img}...", flush=True)
+                        _log_console(f"'Merge / Subtract' clicked. Processing {len(stored)} shape(s) offline for {active_img}...")
                         subtracted = subtract_canvas_polygons(stored, 1.0, 1.0)
                         st.session_state.setdefault('tab4_seg_subtracted_preview', {})[str(img_full_path)] = subtracted
-                        print(f"[TAB5 CANVAS LOG] 'Merge / Subtract' complete. Output: {len(subtracted)} clean tissue shape(s).", flush=True)
+                        _log_console(f"'Merge / Subtract' complete. Output: {len(subtracted)} clean tissue shape(s).")
                         st.session_state[action_message_key] = f"Merge & Subtraction Preview updated! {incls} inclusion shape(s) - {excls} artifact removal shape(s) = {len(subtracted)} clean tissue polygon(s) in preview panel. Canvas polygons stay locked in place."
                         st.rerun()
                     else:
@@ -3498,7 +3506,7 @@ def _render_segmentation_pipeline():
             with btn_col2:
                 if st.button("Delete Selected", help="Remove the selected or last drawn polygon from canvas", width="stretch", key=f"tab4_del_sel_btn_{file_key}"):
                     if stored:
-                        print(f"[TAB5 CANVAS LOG] 'Delete Selected' clicked. Current stored shapes count: {len(stored)}", flush=True)
+                        _log_console(f"'Delete Selected' clicked. Current stored shapes count: {len(stored)}")
                         target_idx = -1
                         for idx_s, obj_s in enumerate(stored):
                             if isinstance(obj_s, dict) and (obj_s.get("active") or obj_s.get("selected") or obj_s.get("isEditing")):
@@ -3506,10 +3514,10 @@ def _render_segmentation_pipeline():
                                 break
                         if target_idx != -1:
                             deleted_obj = stored.pop(target_idx)
-                            print(f"[TAB5 CANVAS LOG] Deleted ACTIVE selected shape at index {target_idx}: {deleted_obj.get('type')}", flush=True)
+                            _log_console(f"Deleted ACTIVE selected shape at index {target_idx}: {deleted_obj.get('type')}")
                         else:
                             deleted_obj = stored.pop()
-                            print(f"[TAB5 CANVAS LOG] No active flag found; deleted LAST shape at index {len(stored)}: {deleted_obj.get('type')}", flush=True)
+                            _log_console(f"No active flag found; deleted LAST shape at index {len(stored)}: {deleted_obj.get('type')}")
                         st.session_state['tab4_seg_canvas_objects'][str(img_full_path)] = stored
                         st.session_state[f"tab4_canvas_ignore_sync_{file_key}"] = True
                         st.session_state['tab4_seg_canvas_reset'][str(img_full_path)] = reset_count + 1
@@ -3523,7 +3531,7 @@ def _render_segmentation_pipeline():
                     if not stored:
                         st.warning("No tissue polygons on canvas to save.")
                     else:
-                        print(f"[TAB5 CANVAS LOG] 'Save Tissue Mask' clicked for {active_img}.", flush=True)
+                        _log_console(f"'Save Tissue Mask' clicked for {active_img}.")
                         out_file = save_drawn_segmentation_mask(
                             stored,
                             final_scale_x,
@@ -3531,13 +3539,13 @@ def _render_segmentation_pipeline():
                             img_full_path,
                             save_dir
                         )
-                        print(f"[TAB5 CANVAS LOG] Tissue mask saved successfully to {out_file}.", flush=True)
+                        _log_console(f"Tissue mask saved successfully to {out_file}.")
                         st.session_state[action_message_key] = f"Saved full high-resolution tissue mask with subtractions applied to `{out_file}`."
                         st.rerun()
 
             with btn_col4:
                 if st.button("Clear Canvas", help="Remove all shapes from current image canvas", width="stretch", key=f"tab4_clear_btn_{file_key}"):
-                    print(f"[TAB5 CANVAS LOG] 'Clear Canvas' clicked for {active_img}. Clearing all shapes.", flush=True)
+                    _log_console(f"'Clear Canvas' clicked for {active_img}. Clearing all shapes.")
                     st.session_state['tab4_seg_canvas_objects'][str(img_full_path)] = []
                     st.session_state[f"tab4_canvas_ignore_sync_{file_key}"] = True
                     st.session_state['tab4_seg_canvas_reset'][str(img_full_path)] = reset_count + 1
@@ -3649,7 +3657,7 @@ def _render_segmentation_pipeline():
                     with open(config_file, 'w') as f:
                         json.dump(cfg, f, indent=4)
                 except Exception as e:
-                    print(f"Error saving config: {e}")
+                    _log_console(f"Error saving config: {e}", level="error")
 
         st.markdown("##### Select Features CSV")
         prev_csv_dir = st.session_state.get('tab4_csv_dir', '')
@@ -3722,9 +3730,11 @@ def _render_segmentation_pipeline():
             with an_tab1:
                 st.subheader("Generate Segmentation Map")
                 if geojson_path.exists() and geojson_path.is_file():
+                    seed_widget_state("seg_qc_map_poly_color", "#FF0000")
+                    seed_widget_state("seg_qc_map_bg_color", "#000000")
                     c_map1, c_map2 = st.columns(2)
-                    poly_color = c_map1.color_picker("Polygon Fill Color", "#FF0000")
-                    bg_color = c_map2.color_picker("Background Color", "#000000")
+                    poly_color = c_map1.color_picker("Polygon Fill Color", key="seg_qc_map_poly_color")
+                    bg_color = c_map2.color_picker("Background Color", key="seg_qc_map_bg_color")
                     
                     if st.button("Generate Map"):
                         try:
@@ -3794,13 +3804,23 @@ def _render_segmentation_pipeline():
                     numeric_cols = [c for c in numeric_cols if c not in ['label', 'roi_id']]
                     
                     with st.expander("Histogram Settings", expanded=True):
+                        seed_widget_state("seg_qc_hist_bins", 50)
+                        seed_widget_state("seg_qc_hist_scale", "Linear", options=["Linear", "Log"])
+                        seed_widget_state("seg_qc_hist_color", "#87CEEB")
+                        seed_widget_state("seg_qc_hist_plot_type", "Histogram", options=["Histogram", "Smooth (KDE)", "Both"])
                         c_h1, c_h2, c_h3, c_h4 = st.columns(4)
-                        bins = c_h1.slider("Number of Bins", min_value=5, max_value=200, value=50)
-                        scale_type = c_h2.selectbox("X-Axis Scale", ["Linear", "Log"], index=0)
-                        hist_color = c_h3.color_picker("Color", "#87CEEB")
-                        plot_type = c_h4.selectbox("Plot Type", ["Histogram", "Smooth (KDE)", "Both"], index=0)
-                    
-                    selected_cols = st.multiselect("Select Variables", numeric_cols, default=['area'] if 'area' in numeric_cols else numeric_cols[:1])
+                        bins = c_h1.slider("Number of Bins", min_value=5, max_value=200, key="seg_qc_hist_bins")
+                        scale_type = c_h2.selectbox("X-Axis Scale", ["Linear", "Log"], key="seg_qc_hist_scale")
+                        hist_color = c_h3.color_picker("Color", key="seg_qc_hist_color")
+                        plot_type = c_h4.selectbox("Plot Type", ["Histogram", "Smooth (KDE)", "Both"], key="seg_qc_hist_plot_type")
+
+                    seed_widget_state(
+                        "seg_qc_hist_columns",
+                        ['area'] if 'area' in numeric_cols else numeric_cols[:1],
+                        options=numeric_cols,
+                        multi=True,
+                    )
+                    selected_cols = st.multiselect("Select Variables", numeric_cols, key="seg_qc_hist_columns")
                     
                     if selected_cols:
                         for col in selected_cols:
@@ -3842,7 +3862,8 @@ def _render_segmentation_pipeline():
                 st.write(f"Total Cells: {len(df)}")
                 
                 numeric_cols = df.select_dtypes(include=np.number).columns.tolist()
-                selected_stats = st.multiselect("Select Variables for Table", numeric_cols, default=numeric_cols[:5])
+                seed_widget_state("seg_qc_table_columns", numeric_cols[:5], options=numeric_cols, multi=True)
+                selected_stats = st.multiselect("Select Variables for Table", numeric_cols, key="seg_qc_table_columns")
                 
                 if selected_stats:
                     desc = df[selected_stats].describe()

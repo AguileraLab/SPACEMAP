@@ -51,9 +51,8 @@ def render():
     st.session_state["_currently_rendering_tab"] = "tab7"
     
     import time
-    from datetime import datetime
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-    print(f"[{timestamp}] TAB7: Loading Phenotyping Tab...", flush=True)
+    from spacemap_gui import terminal
+    terminal.say("tab7", "Opening the Phenotyping tab")
 
     col_title, col_save = st.columns([3, 1])
     with col_title:

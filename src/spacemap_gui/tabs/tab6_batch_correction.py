@@ -75,12 +75,17 @@ from spacemap_gui.persistence import (
     save_directory_settings,
     get_default_bc_config,
 )
+from spacemap_gui import terminal
+
+def _log_console(message: str, level: str = "info") -> None:
+    """One timestamped terminal line for this tab (see spacemap_gui.terminal)."""
+    terminal.say('tab6', message, step=None, level=level)
+
 
 # Logging helper
 def log_step(step_name: str):
-    """Print timestamped log to stdout for debugging."""
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-    print(f"[{timestamp}] TAB6: {step_name}", flush=True)
+    """Tab 6 progress line, also recorded in the page process log."""
+    terminal.say("tab6", step_name)
     record_process_event("tab6", "Batch correction step", message=step_name)
 
 
@@ -263,7 +268,6 @@ def _write_csv_atomic(df: pd.DataFrame, output_path: str | Path) -> Path:
 def render():
     """Main render function for Tab 6."""
     import streamlit as st
-    from pathlib import Path
     from spacemap_gui.ui_utils import require_active_project
     project_root = require_active_project()
     if project_root is None:
@@ -290,7 +294,7 @@ def render():
             apply_post_correction_qc_filters = _APQ
             BATCH_UTILS_AVAILABLE = True
         except ImportError as e:
-            print(f"Error importing batch_correction_utils: {e}")
+            _log_console(f"Error importing batch_correction_utils: {e}", level="error")
             BATCH_UTILS_AVAILABLE = False
             BatchCorrector = None  # type: ignore[assignment]
 
@@ -370,7 +374,7 @@ def render_setup(project_root: Path):
         updated = True
         
     if updated:
-        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] TAB6: Initialized default configuration values", flush=True)
+        _log_console(f"Initialized default configuration values")
         st.rerun()
     
     # 1. Directories
@@ -981,7 +985,7 @@ def render_setup(project_root: Path):
     scan_label = "Scan Batches" if unified_mode else "Scan Files"
     if col_scan.button(scan_label):
         source_label = st.session_state.bc_unified_csv_path if unified_mode else st.session_state.bc_input_dir
-        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] BATCH_CORRECTION: Scanning '{source_label}'", flush=True)
+        _log_console(f"Scanning '{source_label}'")
         source_is_valid = False
         files: list[str] = []
         if unified_mode:
@@ -1536,7 +1540,7 @@ def render_setup(project_root: Path):
             cols = ["Process", "Filename"] + [c for c in df_editor.columns if c not in ["Process", "Filename"]]
             df_editor = df_editor[cols]
 
-        st.info("💡 You can copy-paste from Excel directly into this table.")
+        st.info("You can copy-paste from Excel directly into this table.")
         
         with st.form("bc_file_list_form"):
             edited_df = st.data_editor(
@@ -1943,7 +1947,7 @@ def render_setup(project_root: Path):
         current_batch_col = st.session_state.bc_config.get('batch_id_col', 'batch_id')
         if current_batch_col in st.session_state.bc_metadata_cols:
             st.warning(
-                f"⚠️ Conflict detected: The Batch ID column '{current_batch_col}' is also defined in your "
+                f"Conflict detected: The Batch ID column '{current_batch_col}' is also defined in your "
                 "Metadata columns (File List). The calculator above might overwrite your manual metadata values, "
                 "or vice-versa. Please rename the Batch ID column or remove it from the metadata list if you intend "
                 "to use the auto-calculation."
@@ -2064,7 +2068,7 @@ def render_setup(project_root: Path):
         """Helper to calculate and render step-by-step filtration statistics."""
         loaded_df = st.session_state.get('bc_loaded_data')
         if loaded_df is None:
-            st.info("💡 **Tip**: Click **'Load and Apply Filters'** below to import the dataset and view the step-by-step cell loss report.")
+            st.info("**Tip**: Click **'Load and Apply Filters'** below to import the dataset and view the step-by-step cell loss report.")
             return
 
         summary = st.session_state.get('bc_filter_summary')
@@ -2077,7 +2081,7 @@ def render_setup(project_root: Path):
                 summary = _get_filtration_summary(loaded_df, st.session_state.bc_config, markers, files_with_filter_col)
                 st.session_state.bc_filter_summary = summary
             
-        st.markdown("### 📊 Active Filter Impact Analysis")
+        st.markdown("### Active Filter Impact Analysis")
         st.markdown("This report shows how many cells will be retained for batch correction after applying each filter:")
         
         col_stat1, col_stat2, col_stat3, col_stat4 = st.columns(4)
@@ -2555,7 +2559,7 @@ def render_setup(project_root: Path):
             summary = st.session_state.get('bc_filter_summary')
             if summary:
                 st.success(
-                    f"🎉 **Data Load & Filtration Complete!**\n\n"
+                    f"**Data Load & Filtration Complete!**\n\n"
                     f"Here is the step-by-step breakdown of cells retained:\n"
                     f"- **1. Total Loaded Cells**: `{summary['total_loaded']:,}` cells from `{total_files}` files.\n"
                     f"- **2. Filter Column (`{t_col}={t_val}`)**: `{summary['tissue_kept']:,}` cells retained (lost `{summary['tissue_lost']:,}`).\n"
@@ -3142,7 +3146,7 @@ def render_qc_correction(project_root: Path):
         })
                 
         if run_btn:
-            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] BATCH_CORRECTION: Running Batch Correction cyCombine mode", flush=True)
+            _log_console(f"Running Batch Correction cyCombine mode")
             correction_started_at = time.perf_counter()
             record_process_event(
                 "tab6",
@@ -3699,10 +3703,10 @@ def render_visualization(project_root: Path):
 
     # Layout using Tabs
     vis_tab1, vis_tab2, vis_tab3, vis_tab4 = st.tabs([
-        "📊 Marker Distributions",
-        "🌀 PCA & UMAP Batch Mixing",
-        "📈 Correction Distance & Variance",
-        "📊 Batch Integration Metrics (EMD & Silhouette)"
+        "Marker Distributions",
+        "PCA & UMAP Batch Mixing",
+        "Correction Distance & Variance",
+        "Batch Integration Metrics (EMD & Silhouette)"
     ])
     
     unique_batches = sorted(df[batch_col].dropna().unique())

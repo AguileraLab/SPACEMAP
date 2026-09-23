@@ -40,6 +40,7 @@ from spacemap_gui.tabs.segmentation_spatial_ui import (
     normalize_rule_records,
 )
 from spacemap_gui.ui_utils import directory_input_with_browse, file_signature
+from spacemap_gui import terminal
 
 # Session-state keys. ``persistence.get_tab_affected_from_key`` maps the ``seg_``
 # prefix to the Segmentation page, so everything here is saved into
@@ -88,6 +89,11 @@ RESULT_KEY = "_seg_tag_last_run"
 # ==========================================================================
 # Discovery and matching
 # ==========================================================================
+
+def _log_console(message: str, level: str = "info") -> None:
+    """One timestamped terminal line for this tab (see spacemap_gui.terminal)."""
+    terminal.say('tab5', message, step='Cell Tagging', level=level)
+
 
 def list_csv_files(directory: str) -> list[str]:
     """CSV file names in ``directory``, sorted, hidden files skipped."""
@@ -303,7 +309,7 @@ def run_per_image(
 
     rules, edge_config, tissue_label, minimum_bed_cells, require_clean_path = build_engine_inputs()
     method = _validate_distance_engine(require_clean_path)
-    print(f"Spatial cell tagging engine: {method}", flush=True)
+    _log_console(f"Spatial cell tagging engine: {method}")
     bed_labels = selected_bed_labels()
     overwrite_existing = bool(st.session_state.get(OVERWRITE_COLUMNS_KEY, True))
     os.makedirs(output_dir, exist_ok=True)
@@ -371,7 +377,7 @@ def run_merged(
 
     rules, edge_config, tissue_label, minimum_bed_cells, require_clean_path = build_engine_inputs()
     method = _validate_distance_engine(require_clean_path)
-    print(f"Spatial cell tagging engine: {method}", flush=True)
+    _log_console(f"Spatial cell tagging engine: {method}")
     bed_labels = selected_bed_labels()
     overwrite_existing = bool(st.session_state.get(OVERWRITE_COLUMNS_KEY, True))
     frame = pd.read_csv(csv_path)

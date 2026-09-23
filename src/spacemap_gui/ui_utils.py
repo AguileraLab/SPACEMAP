@@ -6,7 +6,6 @@ from collections.abc import Iterable, Mapping
 from io import BytesIO
 from pathlib import Path
 from typing import Optional, Callable, Any
-from datetime import datetime
 
 # ============================================================================
 # st.rerun() POLICY (P2 guidance — 2026-07-20)
@@ -285,8 +284,9 @@ def directory_input_with_browse(
     if st.session_state.get(text_key) is None and default_value:
         st.session_state[text_key] = default_value
         if os.getenv("SPACEMAP_DEBUG") == "1":
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-            print(f"[{timestamp}] [UI_UTILS] Auto-populated key '{text_key}' with default '{default_value}'", flush=True)
+            from spacemap_gui import terminal
+
+            terminal.say("app", f"Auto-populated '{text_key}' with default '{default_value}'", channel="app")
 
     # Apply pending selection BEFORE creating the text_input widget.
     if pending_key in st.session_state:
@@ -307,8 +307,9 @@ def directory_input_with_browse(
         elif sel_dir:
             st.session_state[pending_key] = sel_dir
             st.session_state[show_key] = False
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-            print(f"[{timestamp}] [UI_UTILS] Browser selected folder '{sel_dir}' for key '{text_key}'", flush=True)
+            from spacemap_gui import terminal
+
+            terminal.say("app", f"Folder browser selected '{sel_dir}' for '{text_key}'", channel="app")
             st.rerun()
 
     # Move label outside to ensure vertical alignment of input and button
@@ -384,7 +385,7 @@ def st_directory_selector(path_key, label="Select Directory", key_prefix=""):
     with col1:
         st.code(str(current_path), language="text")
     with col2:
-        if st.button("⬆️ Up", key=f"{key_prefix}_up"):
+        if st.button("Up", key=f"{key_prefix}_up"):
             st.session_state[nav_key] = str(current_path.parent)
             st.rerun()
 
@@ -456,7 +457,7 @@ def st_file_selector(path_key, label="Select File", key_prefix="", extensions=No
     with col1:
         st.code(str(current_path), language="text")
     with col2:
-        if st.button("⬆️ Up", key=f"{key_prefix}_up"):
+        if st.button("Up", key=f"{key_prefix}_up"):
             st.session_state[nav_key] = str(current_path.parent)
             st.rerun()
 
@@ -508,8 +509,9 @@ def render_heavy_tab_gate(tab_key: str, label: str) -> bool:
     st.info(f"{label} is deferred for faster app startup.")
     if st.button(f"Load {label}", key=f"{tab_key}_load_top"):
         st.session_state["_spacemap_loaded_top_tabs"][tab_key] = True
-        from datetime import datetime
-        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] TAB: Loading deferred tab '{label}'", flush=True)
+        from spacemap_gui import terminal
+
+        terminal.say("app", f"Loading '{label}'")
         st.rerun()
     return False
 
@@ -580,6 +582,39 @@ def clamp_numeric_widget_state(
     if key in st.session_state and st.session_state[key] != clamped:
         st.session_state[key] = clamped
     return clamped
+
+
+def seed_widget_state(key: str, default, *, options=None, multi: bool = False):
+    """Give a keyed widget its first value, and keep a restored value valid.
+
+    A widget only reaches the project file when it has a ``key``; a keyed widget
+    restored from the project must then be created *without* ``value=`` or
+    ``default=``, or Streamlit warns that the value was set twice. Call this just
+    before creating the widget and omit those arguments.
+
+    With ``options`` the stored value is also checked against what the widget
+    can currently show: a restored choice that no longer exists (a column absent
+    from the newly loaded CSV) makes Streamlit raise instead of rendering, so it
+    falls back to ``default``, and a multiselect keeps only the entries it can
+    still offer.
+    """
+    import streamlit as st
+
+    if key not in st.session_state or st.session_state[key] is None:
+        st.session_state[key] = default
+    if options is None:
+        return st.session_state[key]
+
+    allowed = list(options)
+    current = st.session_state[key]
+    if multi:
+        values = current if isinstance(current, (list, tuple)) else [current]
+        kept = [value for value in values if value in allowed]
+        if kept != list(values):
+            st.session_state[key] = kept
+    elif current not in allowed:
+        st.session_state[key] = default if default in allowed else (allowed[0] if allowed else None)
+    return st.session_state[key]
 
 
 def _format_bytes(value: float) -> str:
@@ -668,17 +703,17 @@ def render_fast_copy_controls(csv_path: str | None, *, key_prefix: str = "fastco
                 st.rerun()
 
     if building:
-        icon, label = "⏳", "Fast loading: preparing in background"
+        icon, label = ":material/hourglass_top:", "Fast loading: preparing in background"
     elif info["current"]:
-        icon, label = "✅", "Fast loading: on"
+        icon, label = ":material/check_circle:", "Fast loading: on"
     elif error:
-        icon, label = "❌", "Fast loading: could not be prepared"
+        icon, label = ":material/error:", "Fast loading: could not be prepared"
     elif info["exists"]:
-        icon, label = "⚠️", "Fast loading: out of date, refreshing"
+        icon, label = ":material/sync_problem:", "Fast loading: out of date, refreshing"
     else:
-        icon, label = "•", "Fast loading: not prepared yet"
+        icon, label = ":material/radio_button_unchecked:", "Fast loading: not prepared yet"
 
-    with st.expander(f"{icon} {label}", expanded=bool(error)):
+    with st.expander(label, icon=icon, expanded=bool(error)):
         st.caption(
             f"CSV {_format_bytes(info['source_bytes'])}"
             + (f" · fast copy {_format_bytes(info['twin_bytes'])}" if info["exists"] else "")

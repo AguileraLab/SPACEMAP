@@ -107,16 +107,16 @@ def _render_model_row(entry, report, token: str) -> None:
 
     label = f"{entry.name} — {entry.approx_size_gb:.1f} GB"
     if installed:
-        label = f"✅ {label} (installed)"
+        label = f"{label} (installed)"
     elif status.is_active:
-        label = f"⏳ {label} (downloading)"
+        label = f"{label} (downloading)"
 
     with st.expander(label, expanded=status.is_active):
         if entry.publisher:
             st.caption(f"{entry.publisher} · {entry.license or 'license not recorded'} · {entry.backend}")
         if entry.notes:
             st.markdown(entry.notes)
-        st.caption(("✔️ " if runnable else "⚠️ ") + reason)
+        st.caption(("Ready: " if runnable else "Not ready: ") + reason)
         if entry.source == "user":
             st.caption("Added by you, in the user catalog.")
 

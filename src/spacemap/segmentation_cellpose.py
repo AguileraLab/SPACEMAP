@@ -75,8 +75,6 @@ try:
 except Exception:
     pass
 
-import palom
-import dask.array as da
 
 from spacemap.background_subtraction_utils import get_channel_info as get_channel_info_any
 from spacemap.utils import parse_xml
@@ -1651,7 +1649,6 @@ def _segment_whole_image(ome_tiff_path, output_dir, config, segmenter,
 
             # Imported here rather than at module scope: matplotlib is only
             # needed for this optional preview.
-            import matplotlib.pyplot as plt
 
             png_subdir = os.path.join(output_dir, "png")
             os.makedirs(png_subdir, exist_ok=True)

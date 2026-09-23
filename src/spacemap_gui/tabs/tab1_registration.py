@@ -12,7 +12,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any, TextIO
 
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -23,14 +22,13 @@ import cv2
 
 from spacemap.registration import (
     extract_dapi_channel,
-    merge_channels,
     preprocess_he_image,
     register_images,
     register_codex_to_codex,
     merge_multi_round_ome_tiff,
     resolve_reference_channel,
 )
-from spacemap.utils import get_channel_info_qptiff, hex_to_rgb, log_time
+from spacemap.utils import get_channel_info_qptiff, hex_to_rgb
 from spacemap.background_subtraction_utils import (
     get_channel_info,
     get_image_mpp,
@@ -38,7 +36,6 @@ from spacemap.background_subtraction_utils import (
     normalize_image_stem,
     is_supported_image_file,
 )
-from spacemap_gui.file_browser import render_file_browser
 from spacemap_gui.ui_utils import (
     directory_input_with_browse,
     show_preflight_errors,
@@ -46,10 +43,16 @@ from spacemap_gui.ui_utils import (
     validate_selected_files,
 )
 from spacemap_gui.process_log import record_process_event
+from spacemap_gui import terminal
 
 # -----------------------------------------------------------------------------
 # Data structures
 # -----------------------------------------------------------------------------
+
+def _log_console(message: str, level: str = "info") -> None:
+    """One timestamped terminal line for this tab (see spacemap_gui.terminal)."""
+    terminal.say('tab1', message, step=None, level=level)
+
 
 @dataclass
 class ChannelRecord:
@@ -96,7 +99,7 @@ class ImageContainer:
         try:
             names, colors, metadata = get_channel_info_qptiff(str(file_path))
         except Exception as exc:
-            print(f"Channel parse failed for {file_path.name}: {exc}")
+            _log_console(f"Channel parse failed for {file_path.name}: {exc}", level="error")
             names, colors, metadata = [], [], []
 
         if not names:
@@ -1157,7 +1160,7 @@ def load_thumbnail(file_path: str, is_codex: bool = True) -> Optional[np.ndarray
         return _build_he_preview_image(file_path)
 
     except Exception as e:
-        print(f"Thumbnail load error: {e}")
+        _log_console(f"Thumbnail load error: {e}", level="error")
         return None
 
 
@@ -1203,7 +1206,7 @@ def load_reference_thumbnail(
         colored[:, :, 2] = normalized
         return colored
     except Exception as e:
-        print(f"Reference thumbnail load error: {e}")
+        _log_console(f"Reference thumbnail load error: {e}", level="error")
         return None
 
 @st.cache_data
@@ -1216,7 +1219,7 @@ def load_preview_channels(file_path: str, indices_to_load: List[int]) -> Tuple[D
         return {int(idx): np.asarray(img) for idx, img in preview_data.items()}, full_shape, False
             
     except Exception as e:
-        print(f"Preview load error: {e}")
+        _log_console(f"Preview load error: {e}", level="error")
         return {}, (0,0), False
 
 def create_composite_thumbnail(img_data_dict: Dict[int, np.ndarray], channel_colors: Dict[int, str]) -> np.ndarray:
@@ -1593,25 +1596,32 @@ def render_batch_registration(project_root: Path):
             f"H&E {detected_he_default:.4f} µm/px"
         )
         
+        # Keyed so the pairing rule is saved with the project.
+        for affix_key, affix_default in (
+            ("tab1_batch_codex_prefix", ""), ("tab1_batch_codex_suffix", "_codex"),
+            ("tab1_batch_he_prefix", ""), ("tab1_batch_he_suffix", "_he"),
+        ):
+            if st.session_state.get(affix_key) is None:
+                st.session_state[affix_key] = affix_default
         c4, c5, c6, c7 = st.columns(4)
         codex_prefix = c4.text_input(
             "CODEX Prefix",
-            value="",
+            key="tab1_batch_codex_prefix",
             help="Optional exact prefix to strip before matching, applied to the normalized stem without extension. Example: 'CODEX_' turns 'CODEX_CRC02.ome.tif' into 'CRC02'."
         )
         suffix_codex = c5.text_input(
             "CODEX Suffix",
-            value="_codex",
+            key="tab1_batch_codex_suffix",
             help="Optional exact suffix to strip before matching. If CODEX prefix and suffix are both empty, files matching the H&E rule are excluded from the CODEX candidate set automatically."
         )
         he_prefix = c6.text_input(
             "H&E Prefix",
-            value="",
+            key="tab1_batch_he_prefix",
             help="Optional exact prefix to strip before matching, applied to the normalized stem without extension."
         )
         suffix_he = c7.text_input(
             "H&E Suffix",
-            value="_he",
+            key="tab1_batch_he_suffix",
             help="Optional exact suffix to strip before matching. Example: with empty CODEX affixes and H&E suffix '-HE', 'CRC02.ome.tif' pairs with 'CRC02-HE.ome.tif'."
         )
 
@@ -1777,7 +1787,7 @@ def render_batch_registration(project_root: Path):
 
             # Wrap table in a form to prevent reloads on individual check clicks
             with st.form("detected_pairs_form"):
-                st.caption("💡 **Tip:** Highlight multiple checkboxes (click first, hold `Shift`, click last) and press `Spacebar` to toggle them instantly offline.")
+                st.caption("**Tip:** Highlight multiple checkboxes (click first, hold `Shift`, click last) and press `Spacebar` to toggle them instantly offline.")
                 edited_df = st.data_editor(
                     df,
                     hide_index=True,
@@ -2125,7 +2135,7 @@ def render_batch_registration(project_root: Path):
             def log_step(msg: str):
                 ts = datetime.now().strftime("[%Y-%m-%d %H:%M:%S]")
                 full_msg = f"{ts} {msg}"
-                print(full_msg) # Terminal log
+                _log_console(msg)
                 step_status.write(full_msg) # UI Log
                 status_text.text(msg) # Simple text status
                 record_process_event("tab1", "Registration step", message=msg)
@@ -3007,7 +3017,6 @@ def render_multi_stack_registration(project_root: Path):
 def render():
     """Main render function for Tab 1."""
     import streamlit as st
-    from pathlib import Path
     from spacemap_gui.ui_utils import require_active_project
     project_root = require_active_project()
     if project_root is None:

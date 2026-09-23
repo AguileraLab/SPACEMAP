@@ -161,9 +161,13 @@ bottleneck because the cost was assumed. Manual Reference now prints a timed
 trace of every stage — use it. `SPACEMAP_TRACE=0` silences it.
 
 ```
-[MR 17:15:49] -> load columns   n=27
-[MR 17:15:49] <- load columns: done in 3.0s
+2026-09-22 17:15:49 | Tab 7 Phenotyping | Manual Reference | Started: load columns   n=27
+2026-09-22 17:15:52 | Tab 7 Phenotyping | Manual Reference | Finished: load columns (3.0 s)
 ```
+
+Every tab prints in this format through `spacemap_gui/terminal.py`; use
+`terminal.say(tab, message, step=...)` and `terminal.timed(...)` rather than
+`print`.
 
 **An isolated benchmark is not the user's experience.** "This function is 200×
 faster" is not "the screen is fast". Say which you measured.
@@ -179,6 +183,14 @@ full frame must bypass it and live in `session_state`.
 **`st.button` is illegal inside `st.form`.** The test suite never renders these
 screens, so it reaches the user as a traceback. `scripts/check_streamlit_forms.py`
 catches it.
+
+**A setting is saved only if its control has a tab-prefixed key.**
+`persistence.sync_project_state` saves whatever is in `session_state` under a
+key that `get_tab_affected_from_key` maps to a tab and `is_transient_key` does
+not reject. A control without `key=`, or with a prefix no tab owns (Tab 3's old
+`tma_*`), is silently lost on reload. Seed keyed controls with
+`ui_utils.seed_widget_state` and omit `value=`/`default=`.
+`tests/test_widget_keys_persist.py` fails on any literal key that would be lost.
 
 **Inspect what you stage.** A careless `git add -A` committed 80 files of a
 user's analysis projects, because `.gitignore` said `projects/` while SPACEMAP
@@ -210,10 +222,21 @@ segmentation spillover or a corrected-vs-raw column question. Unresolved.
 images at ~0.6 s each. Showing them one at a time would let labelling start
 after a second. The loop collects into `results_to_store` before rendering.
 
+**Resolve's Z1 score mode is a relative rule.** Positive means "Z1 above 1.5
+within the batch" (`ph_thres_utils.apply_z1_positivity`). Abundant markers and
+markers with a few very bright cells are under-called. It is a fallback for
+projects without threshold tables; it has not been validated against images.
+
+**Parquet as the write format (proposal, not built).** Reads already prefer the
+Parquet fast copy. Making phenotype saves write a Parquet column overlay
+(like `spacemap.labels`) and rewriting the CSV only on request would make
+saves instant. It is safe only once every reader, notebooks included, reads
+through `dataio`; until then a CSV reader would miss unsaved columns.
+
 **Tab 9 `heatmap.py` still reads broadly**, deliberately — it scans many columns
 for low-cardinality filter columns. Narrowing it needs care.
 
-**Not pushed.** 18 commits ahead of `origin/main`.
+**Not yet on GitHub.** Local `main` is 22 commits ahead of `origin/main`; the 2026-09-22 interface review sits on branch `review/gui-publication-pass` on top of it, waiting to be pushed and reviewed.
 
 **Licence undecided.** The repo ships MIT, but UTSW policy INP-101 requires an
 academic-use-only notice by default; anything else needs written permission from
@@ -343,6 +366,6 @@ from spacemap import dataio;  dataio.load(path, columns=["phenotype_leiden"])
 from spacemap import labels;  labels.pending_count(path)
 ```
 
-Test baseline: **749 passed, 16 skipped** in the published repo;
+Test baseline: **771 passed, 13 skipped** in the published repo (2026-09-22);
 **760 passed, 2 skipped** in `SPACEMAP_AI` (which has assistant tests the
 published repo skips without the AI extras).

@@ -243,7 +243,7 @@ def render_proportion(
 
         # ── Cell Filtration Box ──────────────────────────────────────
         saved_filters = cached_params.get("viz_prop_filters", [])
-        with st.expander("🔍 Cell Filtration Options", expanded=bool(saved_filters)):
+        with st.expander("Cell Filtration Options", expanded=bool(saved_filters)):
             st.caption("Filter cells used for proportion calculations by categorical or continuous column criteria.")
             num_filters = st.number_input(
                 "Number of Cell Filters",

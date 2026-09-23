@@ -7,12 +7,10 @@ Compatible with SCIMAP and Resolve phenotyping workflows.
 from __future__ import annotations
 
 import hashlib
-import json
 import os
-import re
 import time
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -21,13 +19,9 @@ import streamlit as st
 
 from .common import (
     logger,
-    Timer,
     get_marker_list,
-    project_root_calc,
-    _normalize_marker_name,
     _load_tab7_state,
     _update_tab7_state,
-    AUTO_THRESHOLD_METHODS,
     get_marker_workspace_panel,
     render_method_marker_selection,
 )
@@ -745,8 +739,10 @@ def import_thresholds_from_csv(
 def _tlog(msg: str, t0: float | None = None) -> float:
     """Print a timestamped log line to the console and return current time."""
     now = time.time()
-    elapsed = f" [{(now - t0)*1000:.0f} ms]" if t0 is not None else ""
-    print(f"[THRESH {time.strftime('%H:%M:%S')}]{elapsed} {msg}", flush=True)
+    elapsed = f" ({(now - t0)*1000:.0f} ms)" if t0 is not None else ""
+    from spacemap_gui import terminal
+
+    terminal.say("tab7", f"{msg}{elapsed}", step="Threshold")
     return now
 
 

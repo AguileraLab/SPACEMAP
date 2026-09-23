@@ -381,7 +381,10 @@ def _group_inventory(
     """Cells and labelled reference cells for each value of the grouping column."""
     del modified_time
     wanted = [column] + [c for c in reference_columns if c and c != column]
-    frame = pd.read_csv(path, usecols=lambda c: c in set(wanted), low_memory=False)
+    from spacemap import dataio
+
+    present = set(dataio.columns(path))
+    frame = dataio.load(path, columns=[c for c in wanted if c in present])
     if column not in frame.columns:
         return pd.DataFrame()
     key = frame[column].astype("string").str.strip()

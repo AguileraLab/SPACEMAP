@@ -1,6 +1,5 @@
 import os
 import streamlit as st
-from pathlib import Path
 
 def get_drives():
     """Get list of drives on Windows."""
@@ -52,7 +51,7 @@ def render_file_browser(current_path, key_prefix, select_type='directory', file_
     col_nav1, col_nav2, col_nav3 = st.columns([1, 2, 4])
     
     with col_nav1:
-        if st.button("⬆️ Up", key=f"{key_prefix}_up"):
+        if st.button("Up", key=f"{key_prefix}_up"):
             parent = os.path.dirname(current_dir)
             if parent and parent != current_dir:
                 st.session_state[nav_key] = parent
@@ -71,7 +70,7 @@ def render_file_browser(current_path, key_prefix, select_type='directory', file_
             # Linux/Mac Navigation
             c_home, c_root = st.columns(2)
             with c_home:
-                if st.button("🏠 Home", key=f"{key_prefix}_home"):
+                if st.button("Home", key=f"{key_prefix}_home"):
                     st.session_state[nav_key] = os.path.expanduser("~")
                     st.rerun()
             with c_root:
@@ -138,15 +137,15 @@ def render_file_browser(current_path, key_prefix, select_type='directory', file_
     
     with col_act1:
         if select_type == 'directory':
-            if st.button(f"✅ Select This Folder", key=f"btn_{key_prefix}_confirm", type="primary"):
+            if st.button(f"Select This Folder", key=f"btn_{key_prefix}_confirm", type="primary"):
                 return current_dir
         else:
             # File selection
-            if st.button(f"✅ Select File", key=f"btn_{key_prefix}_confirm", type="primary", disabled=(not selected_file)):
+            if st.button(f"Select File", key=f"btn_{key_prefix}_confirm", type="primary", disabled=(not selected_file)):
                 return selected_file
                 
     with col_act2:
-        if st.button("❌ Cancel", key=f"{key_prefix}_cancel"):
+        if st.button("Cancel", key=f"{key_prefix}_cancel"):
             return "CANCEL"
 
     return None

@@ -246,8 +246,6 @@ def batch_process_geojson_files(input_directory: str, output_directory: str, fil
 # -----------------------------------------------------------------------------
 # Ground truth merging into unified phenotyping file
 # -----------------------------------------------------------------------------
-import re
-from collections import defaultdict
 
 
 def parse_gt_prefix(filename: str, custom_pattern: str | None = None) -> str:

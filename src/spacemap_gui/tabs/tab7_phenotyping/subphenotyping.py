@@ -41,7 +41,7 @@ from .common import (
     render_publication_heatmap,
     render_save_assignments,
     render_settings_export_import,
-    render_phenotyping_run_log_controls,
+    render_method_intro,
     begin_phenotyping_run_audit,
     finish_phenotyping_run_audit,
 )
@@ -176,9 +176,23 @@ def _state(name: str, default):
     return st.session_state[name]
 
 
+SUBPHENO_GUIDE = """\
+**What it does.** Splits one phenotype into functional states, for example activated and resting T cells. The markers used are chosen from the data for each phenotype rather than assumed, and each subcluster is checked for reproducibility before you name it.
+
+**Steps**
+1. **Functional Marker Discovery** finds the markers that vary most within the chosen phenotype.
+2. Choose a clustering method and its settings.
+3. Run.
+4. **Validate and Assign**: check how stable each subcluster is, name the subclusters, and export.
+"""
+
+
 def render_subphenotyping(project_root, global_input_path):
-    st.subheader("Sub-Phenotyping")
-    render_phenotyping_run_log_controls(Path(project_root), "subpheno", "Sub-Phenotyping")
+    render_method_intro(
+        project_root, "subpheno", "Sub-Phenotyping",
+        "Split one phenotype into functional states and check each state is reproducible.",
+        SUBPHENO_GUIDE, notebook="Step10_sub_phenotypes.ipynb", log_label="Sub-Phenotyping",
+    )
 
     if score_markers is None:
         st.error("`spacemap.ph_subpheno_utils` could not be imported.")
@@ -330,7 +344,7 @@ def render_subphenotyping(project_root, global_input_path):
     # Step 1 - discovery
     # ------------------------------------------------------------------
     st.divider()
-    st.markdown("#### 1. Functional Marker Discovery")
+    st.markdown("### 1. Functional Marker Discovery")
     st.caption(
         "Measures, for each marker, how much cells of this phenotype really differ from each "
         "other once batch effects are removed. Markers that are flat here would only contribute "
@@ -465,7 +479,7 @@ def render_subphenotyping(project_root, global_input_path):
     # which phenotypes the brightest cells of each marker belong to. The two
     # write to the same marker set, so either can drive the clustering.
     st.divider()
-    st.markdown("#### 1b. High-Expression Composition (visual alternative)")
+    st.markdown("### 1b. High-Expression Composition (visual alternative)")
     render_marker_composition_panel(
         project_root=project_root,
         phenotype_col=parent_col,
@@ -482,7 +496,7 @@ def render_subphenotyping(project_root, global_input_path):
     # Step 2 - method
     # ------------------------------------------------------------------
     st.divider()
-    st.markdown("#### 2. Clustering Method")
+    st.markdown("### 2. Clustering Method")
     method = st.radio(
         "Method", list(CLUSTERING_METHODS), horizontal=True, key="subpheno_method",
         index=list(CLUSTERING_METHODS).index(cached.get("method", "Leiden"))
@@ -553,7 +567,7 @@ def render_subphenotyping(project_root, global_input_path):
     # Step 3 - run
     # ------------------------------------------------------------------
     st.divider()
-    st.markdown("#### 3. Run")
+    st.markdown("### 3. Run")
     ready = [p for p in selected_parents if chosen_markers.get(str(p))]
     missing = [p for p in selected_parents if not chosen_markers.get(str(p))]
     if missing:
@@ -642,7 +656,7 @@ def render_subphenotyping(project_root, global_input_path):
     # Step 4 - validate and assign
     # ------------------------------------------------------------------
     st.divider()
-    st.markdown("#### 4. Validate and Assign")
+    st.markdown("### 4. Validate and Assign")
     view = st.selectbox("Phenotype", sorted(results), key="subpheno_view")
     info = results[view]
     if not Path(info["path"]).exists():

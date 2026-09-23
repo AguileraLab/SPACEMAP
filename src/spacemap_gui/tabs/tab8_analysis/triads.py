@@ -19,6 +19,14 @@ from . import density_clouds as clouds
 from .common import load_tab8_config_for_csv, save_tab8_config_for_csv, _is_transient_tab8_key, _to_jsonable
 
 
+from spacemap_gui import terminal
+
+
+def _log_console(message: str, level: str = "info") -> None:
+    """One timestamped terminal line for this tab (see spacemap_gui.terminal)."""
+    terminal.say('tab8', message, step='Triads', level=level)
+
+
 def _show_png_bytes(payload: Any, **kwargs) -> None:
     """Render cached figure bytes, ignoring stale non-binary values.
 
@@ -27,7 +35,7 @@ def _show_png_bytes(payload: Any, **kwargs) -> None:
     """
     if isinstance(payload, (bytes, bytearray, memoryview)):
         st.image(payload, **kwargs)
-from .virtual_tissue import _build_region_geometry, _compute_buffer_distance, _split_overlap_by_nearest
+from .virtual_tissue import _build_region_geometry, _compute_buffer_distance
 from .density_analysis import (
     _bracket_top_axes_fraction,
     _compute_panel2_stats,
@@ -160,7 +168,7 @@ def _px_to_um(distance_px: float, micron_per_pixel: float) -> float:
 
 
 def _log_terminal_event(message: str) -> None:
-    print(f"[Triad] {message}", flush=True)
+    _log_console(message)
 
 
 def _build_adjacency(coords: np.ndarray, min_dist_px: float, max_dist_px: float) -> list[set[int]]:
@@ -1289,13 +1297,12 @@ def _plot_triad_virtual_tissue(
     layer_order: list[str] = None,
 ):
     from matplotlib.collections import LineCollection
-    from matplotlib.colors import LinearSegmentedColormap, to_rgba, to_rgb
+    from matplotlib.colors import LinearSegmentedColormap, to_rgba
     from shapely.geometry import Polygon, MultiPolygon
 
     def plot_shapely_geometry(ax, geom, fill_color, border_color, alpha, linewidth, zorder=1, label=None):
         from matplotlib.path import Path
         from matplotlib.patches import PathPatch
-        from matplotlib.colors import to_rgba
 
         if geom is None or geom.is_empty:
             return
@@ -1636,7 +1643,7 @@ def _plot_triad_virtual_tissue(
                                 zorder=base_zorder,
                             )
                         except Exception as exc:
-                            print(f"Error drawing contours: {exc}", flush=True)
+                            _log_console(f"Error drawing contours: {exc}", level="error")
 
     ax.set_aspect("equal")
     ax.set_xlim(x_min, x_max)
@@ -2047,25 +2054,17 @@ def _render_panel_virtual_tissue(
     unified_csv_path: str | None = None,
 ):
     import os
-    import math
     from pathlib import Path
-    import numpy as np
     import pandas as pd
     import streamlit as st
     import matplotlib.pyplot as plt
-    from shapely.geometry import Point, Polygon, box
     
     # Import tab9_visualization helpers dynamically
     from ..tab9_visualization.actual_tissue import (
-        _load_preview_planes,
         _get_channel_info_cached,
-        _load_geojson_groups,
         _list_files_cached,
         _best_match_file,
-        _rgb_tuple,
         _hex_from_rgb,
-        _compose_preview_image,
-        _crop_box_native_from_full,
     )
     from spacemap_gui.persistence import load_directory_settings
 
@@ -2131,10 +2130,10 @@ def _render_panel_virtual_tissue(
 
     with st.expander("**Panel 3 · Triad Spatial Map on the Virtual Tissue**", expanded=False):
         st.info(
-            "🗺️ **How it works & What it does:** Panel 3 builds a virtual tissue map of the entire ROI or specimen. "
+            "**How it works & What it does:** Panel 3 builds a virtual tissue map of the entire ROI or specimen. "
             "It maps the locations of phenotypes, plots the spatial network of detected triads, and overlays a continuous "
             "triad density cloud using Kernel Density Estimation (KDE) to visualize interaction contours.\n\n"
-            "🔬 **Scientific Interpretation:** Helps identify macro-spatial patterns of triad clustering, such as enrichment "
+            "**Scientific Interpretation:** Helps identify macro-spatial patterns of triad clustering, such as enrichment "
             "along the tumor-stroma border (invasive margin) or clustering in functional domains like tertiary lymphoid structures (TLS)."
         )
         if run_df.empty:
@@ -2194,7 +2193,7 @@ def _render_panel_virtual_tissue(
         col_controls, col_preview = st.columns([1, 1.2])
 
         with col_controls:
-            run_render = st.button("🔄 Update Map Preview", key="tab8_triad_p2_update_btn", type="primary", width="stretch")
+            run_render = st.button("Update Map Preview", key="tab8_triad_p2_update_btn", type="primary", width="stretch")
             
             control_tabs = st.tabs([
                 "Data & Crop",
@@ -2424,7 +2423,7 @@ def _render_panel_virtual_tissue(
                                         key="tab8_triad_p2_visible_labels",
                                         help="Annotations are rendered in the order they are selected (first selected = back, last selected = front)."
                                     )
-                                    st.caption("ℹ️ Order of selection determines depth: first selected is at the back, last selected is in front.")
+                                    st.caption("Order of selection determines depth: first selected is at the back, last selected is in front.")
                                     
                                     # Color pickers per label
                                     st.markdown("###### Colors")
@@ -2945,10 +2944,10 @@ def _render_panel_image_triads(
 ):
     with st.expander("**Panel 2 · Triad Image Visualization**", expanded=False):
         st.info(
-            "🖼️ **How it works & What it does:** This panel extracts regional fields of view (FOVs) centered on detected triads "
+            "**How it works & What it does:** This panel extracts regional fields of view (FOVs) centered on detected triads "
             "from multiplexed OME-TIFF images. It plots marker intensities, overlays cell centroids colored by phenotype, "
             "draws the triad interaction lines, and displays segmentation boundaries.\n\n"
-            "🔬 **Scientific Interpretation:** Allows visual inspection to verify that the mathematically detected triads "
+            "**Scientific Interpretation:** Allows visual inspection to verify that the mathematically detected triads "
             "represent actual physical contact/spatial co-localization, rather than segmentation artifacts or z-plane overlap."
         )
         if triad_instances_df is None or triad_instances_df.empty:
@@ -3207,10 +3206,10 @@ def _render_panel4_triad_stats(
 ):
     with st.expander("**Panel 4 · Triad Statistics Across Phenotyping Methods**", expanded=False):
         st.info(
-            "📊 **How it works & What it does:** Panel 4 compares triad metrics (counts, densities) across multiple phenotyping methods "
+            "**How it works & What it does:** Panel 4 compares triad metrics (counts, densities) across multiple phenotyping methods "
             "to assess the robustness of your findings. It performs paired statistical tests across connected tissues and maps "
             "zonal triad density gradients as a function of distance from the tumor-stroma boundary.\n\n"
-            "🔬 **Scientific Interpretation:** Validates whether the discovered spatial associations are independent of the "
+            "**Scientific Interpretation:** Validates whether the discovered spatial associations are independent of the "
             "phenotyping algorithm and captures the exact spatial distribution profile (zonal enrichment) relative to the tumor boundary."
         )
 
@@ -3530,7 +3529,7 @@ def _render_panel4_triad_stats(
                     help="Linear, log₁₀, or log₂ scale. Log scales clip non-positive densities to a small visible floor.",
                 )
             with y2:
-                st.caption("ℹ️ Auto-adapts range to keep all data and significance labels visible.")
+                st.caption("Auto-adapts range to keep all data and significance labels visible.")
 
             y3, y4, y5 = st.columns(3)
             p4_manual_y_min = y3.checkbox(
@@ -5585,7 +5584,7 @@ def render_triad_analysis(project_root: Path, df: pd.DataFrame, unified_csv_path
     default_x_val = _preferred_or_blank(coord_options, "x_centroid")
     default_y_val = _preferred_or_blank(coord_options, "y_centroid")
 
-    with st.expander("⚙️ Shared Configuration · Coordinates, Regions & Triad Definition", expanded=True):
+    with st.expander("Shared Configuration · Coordinates, Regions & Triad Definition", expanded=True):
         st.caption("Applies to every panel below. Each panel runs only when you click its own run button.")
         xy1, xy2 = st.columns(2)
         current_x = st.session_state.get("tab8_triad_x_coord_col")
@@ -5746,7 +5745,7 @@ def render_triad_analysis(project_root: Path, df: pd.DataFrame, unified_csv_path
         c for c in ["phenotype_leiden", "phenotype_som", "phenotype_threshold", "phenotype_scimap"]
         if c in phenotype_candidates
     ]
-    with st.expander("🎨 Shared Figure Settings · methods, display names and colors", expanded=True):
+    with st.expander("Shared Figure Settings · methods, display names and colors", expanded=True):
         shared = render_shared_figure_settings(
             phenotype_candidates,
             default_methods,
@@ -5885,16 +5884,16 @@ def _render_panel1_triad_discovery(
     out_dir: str,
 ):
     st.info(
-        "🔬 **How it works:** Panel 1 identifies three-cell spatial triangles (triads) among phenotypes A, B, and C "
+        "**How it works:** Panel 1 identifies three-cell spatial triangles (triads) among phenotypes A, B, and C "
         "within the configured distance thresholds (e.g., local direct contact <= 30µm or neighborhood annulus 100–400µm). "
         "It performs a permutation test by randomly shuffling phenotype labels across all cell coordinates to construct "
         "a random null distribution of expected triad counts.\n\n"
-        "📈 **Why is the Z-score/significance so high?** Globally shuffling phenotypes assumes a homogeneous cell mixture. "
+        "**Why is the Z-score/significance so high?** Globally shuffling phenotypes assumes a homogeneous cell mixture. "
         "However, real tissue is highly structured (e.g., compartmentalized into tumor vs. stroma beds). If cells are restricted "
         "to a compartment (like immune cells in the stroma), they are naturally clustered close to each other. "
         "Shuffling them globally scatters them into the tumor bed where they don't belong, drastically lowering the expected co-occurrence "
         "mean and standard deviation. This inflates the observed Z-score (often > 50).\n\n"
-        "💡 **How to improve scientifically:** To control for macro-structure, you can perform *compartment-restricted permutation* "
+        "**How to improve scientifically:** To control for macro-structure, you can perform *compartment-restricted permutation* "
         "(shuffling phenotypes only within their specific tissue zone) or apply *spatial coordinate jittering/toroidal shifts* "
         "to preserve local densities while testing micro-scale relationships."
     )

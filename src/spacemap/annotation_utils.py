@@ -9,7 +9,6 @@ import json
 import glob
 import uuid
 import pandas as pd
-import numpy as np
 from shapely.geometry import shape, Point, Polygon, MultiPolygon, mapping
 from shapely.ops import unary_union
 from shapely.prepared import prep
@@ -122,9 +121,8 @@ def annotate_csv_with_regions_and_zones(csv_path, geojson_path, output_path):
     Returns:
         Number of cells annotated
     """
-    import pandas as pd
     import json
-    from shapely.geometry import Point, shape
+    from shapely.geometry import shape
     
     logger.info(f"Annotating cells from {os.path.basename(csv_path)}")
     

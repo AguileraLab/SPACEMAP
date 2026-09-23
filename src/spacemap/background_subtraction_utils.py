@@ -1,4 +1,4 @@
-from typing import Tuple, Set
+from typing import Tuple
 from typing import Union, List, Optional, Any, Dict
 """
 Utility functions for background subtraction in OME-TIFF images.
@@ -13,7 +13,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from contextlib import contextmanager
 import zarr
-from spacemap.utils import log_time, create_ome_metadata, hex_to_rgb, get_channel_info_qptiff, parse_xml
+from spacemap.utils import log_time, create_ome_metadata, hex_to_rgb, get_channel_info_qptiff
 
 
 SUPPORTED_IMAGE_EXTENSIONS = ('.ome.tiff', '.ome.tif', '.qptiff', '.tiff', '.tif')

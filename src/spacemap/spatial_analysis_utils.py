@@ -9,11 +9,9 @@ analysis, and statistical tests for spatial randomness.
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-import seaborn as sns
 from pathlib import Path
 from scipy.spatial import distance_matrix, cKDTree
-from scipy.stats import chi2_contingency, mannwhitneyu
-from sklearn.metrics import pairwise_distances
+from scipy.stats import chi2_contingency
 import warnings
 warnings.filterwarnings('ignore')
 

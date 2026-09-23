@@ -13,10 +13,8 @@ from __future__ import annotations
 import io
 import re
 import warnings
-from datetime import datetime
-from itertools import combinations
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import matplotlib.pyplot as plt
 from matplotlib.patches import Patch

@@ -6,6 +6,7 @@ Synchronized with Step6C_phenotype_threshold.ipynb notebook.
 
 import streamlit as st
 import pandas as pd
+from spacemap import dataio as _dataio
 import numpy as np
 import os
 import sys
@@ -18,25 +19,20 @@ from datetime import datetime
 from pathlib import Path
 from typing import cast
 import matplotlib.pyplot as plt
-import seaborn as sns
 
 from spacemap_gui.resolve_rule_parser import parse_resolve_rule_text
 
 # Import shared utilities
 from .common import (
     logger,
-    Timer,
     get_batch_id_column_help_text,
     get_marker_list,
-    get_marker_selection_help_text,
     get_marker_workspace_panel,
     render_method_marker_selection,
     normalize_optional_column_name,
     get_output_column_help_text,
     project_root_calc,
-    _extract_markers_from_notebook,
     _normalize_marker_name,
-    _extract_thresholds_from_csv,
     _load_thresholds_table,
     _threshold_settings_fingerprint,
     _preferred_threshold_directory,
@@ -52,19 +48,18 @@ from .common import (
     render_data_filter_ui,
     apply_data_filter,
     render_settings_export_import,
-    render_phenotyping_run_log_controls,
+    render_method_intro,
     begin_phenotyping_run_audit,
     finish_phenotyping_run_audit,
     resolve_notebook_marker_defaults,
-    STANDARD_PHENOTYPES,
     DEFAULT_PHENOTYPES,
     get_all_phenotype_options,
     render_add_custom_phenotype_ui,
-    THRESHOLD_MODE_CHOICES,
     _THRESHOLD_MODE_TO_KEY,
     AUTO_THRESHOLD_METHODS,
     compute_auto_thresholds,
 )
+from spacemap_gui import terminal
 
 try:
     from spacemap_gui.cell_visualizer import CellVisualizer
@@ -353,7 +348,7 @@ def _extract_markers_base_from_step6c():
         
         return []
     except Exception as e:
-        print(f"Warning: Could not extract MARKERS_BASE from Step6C: {e}")
+        _log_console(f"Warning: Could not extract MARKERS_BASE from Step6C: {e}", level="warning")
         return []
 
 
@@ -440,7 +435,7 @@ def _extract_config_from_step6c():
         
         return config
     except Exception as e:
-        print(f"Warning: Could not extract config from Step6C: {e}")
+        _log_console(f"Warning: Could not extract config from Step6C: {e}", level="warning")
         return {}
 
 
@@ -666,6 +661,26 @@ def _apply_resolve_without_thresholds(
         norm_order=norm_order,
     )
     return binary_df, norm_df
+
+
+RESOLVE_Z1_MODE = "Z1 score (no threshold files)"
+DEFAULT_RESOLVE_Z1_CUTOFF = 1.5
+
+
+def _apply_resolve_z1_positivity(
+    df: pd.DataFrame,
+    selected_markers: list[str],
+    batch_col: str | None,
+    cutoff: float = DEFAULT_RESOLVE_Z1_CUTOFF,
+    cofactor: float = 5.0,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Positive where the per-batch Z1 score is above ``cutoff`` (see
+    ``spacemap.ph_thres_utils.apply_z1_positivity``, shared with notebook Step6C)."""
+    from spacemap.ph_thres_utils import apply_z1_positivity
+
+    return apply_z1_positivity(
+        df, selected_markers, batch_col, method_tag="resolve", cutoff=cutoff, cofactor=cofactor,
+    )
 
 
 def _resolve_threshold_fingerprint(
@@ -982,9 +997,9 @@ def _timestamp():
     return time.strftime("%H:%M:%S")
 
 
-def _log_console(message: str) -> None:
-    """Print to VS Code terminal with flush."""
-    print(message, flush=True)
+def _log_console(message: str, level: str = "info") -> None:
+    """One timestamped terminal line for this tab (see spacemap_gui.terminal)."""
+    terminal.say('tab7', message, step='Resolve', level=level)
 
 
 def _apply_flexible_normalization_safe(
@@ -1189,14 +1204,28 @@ def _adaptive_resolve_hierarchy(
     return updated
 
 
+RESOLVE_GUIDE = """\
+**What it does.** Assigns phenotypes from rules you write, without clustering. Each marker has a threshold, and a cell above it counts as positive for that marker. Each phenotype has a rule listing the markers a cell must be positive for, with optional alternatives, and a cell receives the phenotype whose rule it matches.
+
+**Steps**
+1. Choose the input table and the markers.
+2. Set a threshold for each marker: import them from Tab 2's threshold tables, compute them automatically, or type them in.
+3. Write the phenotype rules. **Must have** lists required markers; the **or** columns list alternatives.
+4. Run, then review the heatmap and the number of cells per phenotype. Cells that match no rule are labelled **Unassigned**.
+5. Save the labels into the table, then check example cells under **Visual Validation**.
+"""
+
+
 def render_resolve(project_root, global_input_path):
     """
     Resolve Clustering (Threshold-based Phenotyping) Subtab
     Professional interface matching Leiden/SOM patterns with notebook-synchronized parameters.
     """
-    st.subheader("Resolve Clustering - Threshold-Based Phenotyping")
-    render_phenotyping_run_log_controls(Path(project_root), "resolve", "Resolve Threshold Phenotyping")
-    st.markdown("Deterministic rule-based phenotyping with professional interface synchronized with Step6C notebook.")
+    render_method_intro(
+        project_root, "resolve", "Resolve Threshold Phenotyping",
+        "Label cells with marker thresholds and rules you write. The same input always gives the same result.",
+        RESOLVE_GUIDE, notebook="Step6C_phenotype_threshold.ipynb", log_label="Resolve Threshold Phenotyping",
+    )
     
     # Initialize cache file for parameter persistence
     cache_dir = project_root / 'outputs/phenotyping/cache'
@@ -1229,7 +1258,7 @@ def render_resolve(project_root, global_input_path):
     notebook_config = _extract_config_from_step6c()
     
     # --- FILE SELECTION ---
-    st.markdown("##### Input File Selection")
+    st.markdown("### 1. Input File")
     
     use_global = st.checkbox("Use Global Input File", value=cached_params.get('use_global', True), key="resolve_use_global")
     full_input_path = global_input_path
@@ -1327,7 +1356,7 @@ def render_resolve(project_root, global_input_path):
     
     # --- SECTION 2: CONFIGURATION PANEL ---
     st.divider()
-    st.markdown("### 3. Configuration (Notebook Synchronized)")
+    st.markdown("### 3. Configuration")
     
     if 'resolve_config' not in st.session_state:
         # Migrate legacy 'apply_thresholds' boolean → threshold_mode string
@@ -1351,6 +1380,7 @@ def render_resolve(project_root, global_input_path):
             'threshold_statistic': notebook_config.get('threshold_statistic', 'median'),
             'threshold_source': cached_params.get('threshold_source', 'Auto'),
             'threshold_mode': _default_mode,
+            'z1_cutoff': float(cached_params.get('z1_cutoff', DEFAULT_RESOLVE_Z1_CUTOFF)),
             **pipeline_config,
             'enable_filtering': notebook_config.get('enable_filtering', False),
             'filter_column': notebook_config.get('filter_column', 'batch_id'),
@@ -1372,7 +1402,7 @@ def render_resolve(project_root, global_input_path):
         st.session_state['resolve_config']
     )
     
-    with st.expander("⚙️ Threshold & Normalization Configuration", expanded=True):
+    with st.expander("Threshold & Normalization Configuration", expanded=True):
         with st.form("resolve_config_form", clear_on_submit=False):
             cfg_col1, cfg_col2 = st.columns([1, 1])
             
@@ -1383,35 +1413,53 @@ def render_resolve(project_root, global_input_path):
                 # unified CSV. A cell mean has already averaged noise over hundreds of
                 # pixels, so its background mode is narrowed and shifted and the cut does
                 # not mean what the same method means on pixels. Thresholds now come from
-                # the images (Step 2), leaving two honest choices here.
-                _resolve_mode_choices = ["Predefined (CSV)", "None (No Thresholds)"]
+                # the images (Step 2). The Z1 score mode is a relative fallback for
+                # projects that have no threshold tables yet.
+                _resolve_mode_choices = ["Predefined (CSV)", RESOLVE_Z1_MODE, "None (No Thresholds)"]
                 current_mode = st.session_state['resolve_config'].get('threshold_mode', 'Predefined (CSV)')
-                mode_index = _resolve_mode_choices.index(current_mode) if current_mode in _resolve_mode_choices else 1
+                mode_index = (
+                    _resolve_mode_choices.index(current_mode)
+                    if current_mode in _resolve_mode_choices
+                    else _resolve_mode_choices.index("None (No Thresholds)")
+                )
                 threshold_mode = st.selectbox(
                     "Threshold Method",
                     _resolve_mode_choices,
                     index=mode_index,
                     help=(
-                        "Defines how marker thresholds are obtained before Resolve applies the phenotype rules and any normalization-based tie-break scoring.\n\n"
-                        "**None**: skips subtraction and treats any expression `> 0` as positive. Only appropriate "
-                        "for inputs whose background was already removed - on raw data roughly 98% of cells are "
-                        "above zero for a typical marker, so every rule fires for nearly every cell and the "
-                        "assignment collapses onto the tie-break.\n\n"
-                        "**Predefined (CSV)**: loads external thresholds and matches them to batches or ROIs when a valid Batch Column is available. "
-                        "Files are named `<batch>.ome.tiff_-_Merged_Image.csv` with a `Marker` column and one or more "
-                        "`Polygon_*` columns. The selected Threshold Statistic combines those polygon values.\n\n"
-                        "Thresholds are produced in **Step 2 > Detect Background**, which measures each "
-                        "marker inside the annotated tissue and writes the CSVs this step reads. "
-                        "Thresholding the per-cell means stored in the "
-                        "unified CSV is no longer offered: those means have already averaged away the noise "
-                        "distribution the threshold methods rely on.\n\n"
-                        "**Li**: minimum cross-entropy iterative threshold.\n\n"
-                        "**Yen**: maximum entropy threshold.\n\n"
-                        "**Mean**: uses the mean of positive values.\n\n"
-                        "**IsoData**: Ridler-Calvard iterative threshold.\n\n"
-                        "**Minimum**: smooths toward a bimodal histogram and picks the valley."
+                        "How Resolve decides whether a cell is positive for a marker.\n\n"
+                        "**Predefined (CSV)** (recommended): uses the threshold tables made in "
+                        "**Tab 2 > Detect Background**, one file per batch or ROI "
+                        "(`<batch>.ome.tiff_-_Merged_Image.csv`). A cell is positive when its raw value is "
+                        "above the marker's threshold.\n\n"
+                        "**Z1 score (no threshold files)**: for when no threshold tables exist. Each marker is "
+                        "ArcSinh-transformed and turned into a Z1 score within each batch (how many standard "
+                        "deviations a cell sits above the batch average). A cell is positive when its Z1 score "
+                        "is above the cutoff (default 1.5). Z2, CDF and NLog are switched off in this mode "
+                        "because they would change what the cutoff means. This is a relative rule: markers "
+                        "carried by a large share of cells, and markers with a few extremely bright cells, "
+                        "tend to be under-called, so check the result with Visual Validation.\n\n"
+                        "**None**: any value above 0 counts as positive. Only suitable when the background "
+                        "was already removed; on raw data about 98% of cells are above zero for a typical "
+                        "marker, so nearly every rule matches nearly every cell."
                     ),
                     key="resolve_threshold_mode"
+                )
+
+                _is_z1_mode = (threshold_mode == RESOLVE_Z1_MODE)
+                z1_cutoff = st.number_input(
+                    "Z1 cutoff (Z1 score mode only)",
+                    min_value=0.0,
+                    max_value=10.0,
+                    value=float(st.session_state['resolve_config'].get('z1_cutoff', DEFAULT_RESOLVE_Z1_CUTOFF)),
+                    step=0.1,
+                    key="resolve_z1_cutoff",
+                    disabled=not _is_z1_mode,
+                    help=(
+                        "A marker counts as positive when the cell's Z1 score is above this value. "
+                        "1.5 means 1.5 standard deviations above the batch average. Raise it to call "
+                        "fewer cells positive, lower it to call more."
+                    ),
                 )
 
                 # Threshold source/statistic are only relevant for Predefined CSV mode.
@@ -1484,11 +1532,12 @@ def render_resolve(project_root, global_input_path):
                     help=(
                         "Changes the continuous score used only when multiple phenotypes match. "
                         "ArcSinh uses the selected cofactor. Log uses log1p so zero values are valid. "
-                        "Marker-positive gates remain raw > threshold."
+                        "Marker-positive gates remain raw > threshold. In Z1 score mode this is fixed to ArcSinh."
                     ),
                     key="resolve_transform_choice",
+                    disabled=_is_z1_mode,
                 )
-                if transformation == "ArcSinh":
+                if transformation == "ArcSinh" or _is_z1_mode:
                     arcsinh_cofactor = st.number_input(
                         "ArcSinh cofactor",
                         min_value=0.001,
@@ -1524,6 +1573,7 @@ def render_resolve(project_root, global_input_path):
                         index=RESOLVE_NORMALIZATION_OPTIONS.index(slot_value),
                         key=f"resolve_normalization_{slot_index + 1}",
                         help=norm_order_help,
+                        disabled=_is_z1_mode,
                     ))
 
                 config_errors: list[str] = []
@@ -1549,6 +1599,11 @@ def render_resolve(project_root, global_input_path):
                         + [step for step in order_raw if step != 'None']
                     )
                     pipeline_preview = " → ".join(preview_parts) or "None"
+                if _is_z1_mode:
+                    # The saved slots are kept for when another mode is chosen again;
+                    # the Z1 run ignores them.
+                    pipeline_preview = f"ArcSinh -> Z1 per batch (positive if Z1 > {z1_cutoff:g})"
+                    config_errors = []
                 st.code(pipeline_preview, language="text")
                 for config_error in config_errors:
                     st.warning(config_error)
@@ -1578,6 +1633,7 @@ def render_resolve(project_root, global_input_path):
                     'threshold_statistic': threshold_stat,
                     'threshold_source': threshold_source,
                     'threshold_mode': threshold_mode,
+                    'z1_cutoff': float(z1_cutoff),
                     **pipeline_config,
                     'output_col': out_col,
                     'unclassified_label': unclassified_label
@@ -1609,6 +1665,8 @@ def render_resolve(project_root, global_input_path):
                     'norm_nlog': st.session_state['resolve_config'].get('norm_nlog', False),
                     'norm_sinh': False,
                     'unclassified_label': st.session_state['resolve_config'].get('unclassified_label', 'Others'),
+                    'threshold_mode': st.session_state['resolve_config'].get('threshold_mode', 'Predefined (CSV)'),
+                    'z1_cutoff': st.session_state['resolve_config'].get('z1_cutoff', DEFAULT_RESOLVE_Z1_CUTOFF),
                 }
                 try:
                     cached_params.update(params_to_save)
@@ -1636,12 +1694,13 @@ def render_resolve(project_root, global_input_path):
     st.markdown("#### Threshold Configuration & Table")
 
     # Determine current threshold mode for conditional UI
-    _resolve_mode_map = {**_THRESHOLD_MODE_TO_KEY, "None (No Thresholds)": "none"}
+    _resolve_mode_map = {**_THRESHOLD_MODE_TO_KEY, "None (No Thresholds)": "none", RESOLVE_Z1_MODE: "z1"}
     _current_mode = st.session_state['resolve_config'].get('threshold_mode', 'Predefined (CSV)')
     _mode_key = _resolve_mode_map.get(_current_mode, "predefined")
     _is_csv = (_mode_key == "predefined")
     _is_none = (_mode_key == "none")
-    _is_auto = (not _is_csv and not _is_none)
+    _is_z1 = (_mode_key == "z1")
+    _is_auto = not (_is_csv or _is_none or _is_z1)
 
     # Batch column is always needed (for pipeline)
     if available_columns:
@@ -1667,9 +1726,24 @@ def render_resolve(project_root, global_input_path):
 
     if _is_none:
         st.info(
-            "🔓 **No thresholds** — cells are classified as positive when marker expression > 0. "
+            "**No thresholds** — cells are classified as positive when marker expression > 0. "
             "Use this for data that is already background-subtracted or pre-binarized."
         )
+    if _is_z1:
+        _z1_cutoff = float(st.session_state['resolve_config'].get('z1_cutoff', DEFAULT_RESOLVE_Z1_CUTOFF))
+        st.info(
+            f"**Z1 score mode** — a marker is positive when its Z1 score is above {_z1_cutoff:g} "
+            "(ArcSinh, then a z-score within each batch). No threshold files are needed. "
+            "Use raw marker columns: background-subtracted or batch-corrected values move the "
+            "batch average and change which cells count as positive."
+        )
+        _affix = str(st.session_state.get("tab7_marker_workspace", {}).get("correction_affix", "_corr") or "")
+        _corrected = [m for m in selected_markers if _affix and (m.endswith(_affix) or m.startswith(_affix))]
+        if _corrected:
+            st.warning(
+                f"{len(_corrected)} selected marker(s) look batch-corrected ({', '.join(_corrected[:5])}). "
+                "Z1 score mode is meant for raw markers; switch **Values for this method** to raw markers."
+            )
 
     # --- CSV-specific inputs ---
     threshold_draft_refreshed = False
@@ -1802,7 +1876,7 @@ def render_resolve(project_root, global_input_path):
             batch_values = []
             if full_input_path and os.path.exists(full_input_path) and batch_col:
                 try:
-                    batch_values = pd.read_csv(full_input_path, usecols=[batch_col])[batch_col].dropna().unique().tolist()
+                    batch_values = _dataio.load(full_input_path, columns=[batch_col])[batch_col].dropna().unique().tolist()
                 except Exception:
                     batch_values = []
 
@@ -1829,7 +1903,7 @@ def render_resolve(project_root, global_input_path):
 
     # --- Auto-threshold Compute button ---
     if _is_auto:
-        if st.button(f"🔬 Compute {_current_mode} Thresholds", type="primary", key="resolve_compute_auto_thresh"):
+        if st.button(f"Compute {_current_mode} Thresholds", type="primary", key="resolve_compute_auto_thresh"):
             if not full_input_path or not os.path.exists(full_input_path):
                 st.error("Please select a valid input file first.")
             elif not selected_markers:
@@ -1861,7 +1935,7 @@ def render_resolve(project_root, global_input_path):
     # --- Import Universal Gating Thresholds (from Threshold Gating tab) ---
     # This section is available in ALL threshold modes.
     if not _is_none:
-        with st.expander("📥 Import Universal Gating Thresholds (from Threshold Tab)", expanded=False):
+        with st.expander("Import Universal Gating Thresholds (from Threshold Tab)", expanded=False):
             st.caption(
                 "Import universal (no-batch) thresholds exported by the **Threshold Gating** tool. "
                 "The same threshold value will be applied to **every batch** in your data."
@@ -1886,8 +1960,8 @@ def render_resolve(project_root, global_input_path):
                     _batch_vals = []
                     if full_input_path and os.path.exists(full_input_path) and batch_col:
                         try:
-                            _batch_vals = pd.read_csv(
-                                full_input_path, usecols=[batch_col]
+                            _batch_vals = _dataio.load(
+                                full_input_path, columns=[batch_col]
                             )[batch_col].dropna().unique().tolist()
                         except Exception:
                             pass
@@ -2161,7 +2235,7 @@ def render_resolve(project_root, global_input_path):
         remove_row[0].caption("remove a column:")
         for i, col_name in enumerate(criteria_cols):
             with remove_row[i + 1]:
-                if st.button(f"✖ {'Must have' if i == 0 else f'or {i}'}",
+                if st.button(f"Remove {'Must have' if i == 0 else f'or {i}'}",
                              key=f"resolve_remove_{col_name}_btn", width="stretch"):
                     remove_col = col_name
 
@@ -2440,16 +2514,17 @@ def render_resolve(project_root, global_input_path):
     
     selected_markers = st.session_state.get('resolve_confirmed_markers', [])
     
+    st.markdown("### 5. Run Resolve")
     if not selected_markers:
-        st.warning("⚠️ Please select markers first")
+        st.warning("Please select markers first")
     elif st.session_state['resolve_pheno_table'].empty or not any(
         st.session_state['resolve_pheno_table']['Phenotype']
     ):
-        st.warning("⚠️ Please define at least one phenotype")
+        st.warning("Please define at least one phenotype")
     else:
         if st.button("Run Phenotype Pipeline", type="primary", width="stretch", key="resolve_run_btn"):
             if not full_input_path or not Path(full_input_path).exists():
-                st.error("❌ Please select a valid input file")
+                st.error("Please select a valid input file")
                 return
 
             audit_cfg = st.session_state.get('resolve_config', {})
@@ -2475,12 +2550,12 @@ def render_resolve(project_root, global_input_path):
                     
                     # Load data
                     status.write(f"[{_timestamp()}] Loading input data...")
-                    _log_console(f"[{_timestamp()}] Resolve: Loading input data...")
+                    _log_console(f"Loading input data...")
                     df = _dataio_load(full_input_path)
                     audit_input_rows = len(df)
                     original_df = df.copy()
                     status.write(f"[{_timestamp()}] Loaded {len(df):,} cells")
-                    _log_console(f"[{_timestamp()}] Resolve: Loaded {len(df):,} cells")
+                    _log_console(f"Loaded {len(df):,} cells")
 
                     _resolve_filter = {
                         'enable_filter': cfg.get('enable_filter', False),
@@ -2498,7 +2573,7 @@ def render_resolve(project_root, global_input_path):
                         valid_mask = ~df[selected_markers].apply(pd.to_numeric, errors='coerce').isna().any(axis=1)
                         df = df[valid_mask].copy()
                         status.write(f"[{_timestamp()}] Filtered out {original_len_nan - len(df):,} cells containing NaN/Inf in selected markers. Remaining: {len(df):,} cells.")
-                        _log_console(f"[{_timestamp()}] Resolve: Filtered out {original_len_nan - len(df):,} cells containing NaN/Inf in selected markers. Remaining: {len(df):,} cells.")
+                        _log_console(f"Filtered out {original_len_nan - len(df):,} cells containing NaN/Inf in selected markers. Remaining: {len(df):,} cells.")
                         if len(df) == 0:
                             status.error("No cells remain after filtering out NaN/Inf values in selected markers.")
                             return
@@ -2531,10 +2606,12 @@ def render_resolve(project_root, global_input_path):
                         return
                     
                     status.write(f"[{_timestamp()}] Phenotypes to assign: {list(phenotype_defs.keys())}")
-                    _log_console(f"[{_timestamp()}] Resolve: Phenotypes to assign: {list(phenotype_defs.keys())}")
+                    _log_console(f"Phenotypes to assign: {list(phenotype_defs.keys())}")
                     
                     # Apply thresholds (mode-aware)
-                    _resolve_mode_map_run = {**_THRESHOLD_MODE_TO_KEY, "None (No Thresholds)": "none"}
+                    _resolve_mode_map_run = {
+                        **_THRESHOLD_MODE_TO_KEY, "None (No Thresholds)": "none", RESOLVE_Z1_MODE: "z1",
+                    }
                     run_threshold_mode = cfg.get('threshold_mode', 'Predefined (CSV)')
                     run_mode_key = _resolve_mode_map_run.get(run_threshold_mode, "predefined")
                     apply_thresholds_flag = (run_mode_key != "none")
@@ -2545,7 +2622,7 @@ def render_resolve(project_root, global_input_path):
                             "images, use Step 2 > Detect Background."
                         )
                     status.write(f"[{_timestamp()}] Threshold mode: {run_threshold_mode}")
-                    _log_console(f"[{_timestamp()}] Resolve: Threshold mode={run_threshold_mode} (key={run_mode_key})")
+                    _log_console(f"Threshold mode={run_threshold_mode} (key={run_mode_key})")
 
                     batch_col = normalize_optional_column_name(cfg.get('batch_col', 'batch_id'))
                     batch_group_col = batch_col if batch_col in df.columns else None
@@ -2569,10 +2646,8 @@ def render_resolve(project_root, global_input_path):
                         and not thresholds_table.empty
                         and active_threshold_fingerprint != runtime_threshold_fingerprint
                     ):
-                        _log_console(
-                            f"[{_timestamp()}] Resolve: Ignoring stale reviewed threshold table; "
-                            "source settings fingerprint changed"
-                        )
+                        _log_console(f"Ignoring stale reviewed threshold table; "
+                            "source settings fingerprint changed")
                         thresholds_table = None
                     used_external_thresholds = False
 
@@ -2592,10 +2667,8 @@ def render_resolve(project_root, global_input_path):
                                 f"Predefined thresholds cannot be matched for {missing_batch_cells:,} cell(s) "
                                 f"whose '{batch_group_col}' value is missing. Fill or filter those rows first."
                             )
-                            _log_console(
-                                f"[{_timestamp()}] Resolve: Threshold coverage failed; "
-                                f"{missing_batch_cells} cells have no batch ID"
-                            )
+                            _log_console(f"Threshold coverage failed; "
+                                f"{missing_batch_cells} cells have no batch ID", level="error")
                             return
 
                         table_has_values = _threshold_table_has_values(
@@ -2621,11 +2694,9 @@ def render_resolve(project_root, global_input_path):
                                 f"[{_timestamp()}] Loaded {len(thresholds_table)} threshold row(s) "
                                 f"from {threshold_dir}"
                             )
-                            _log_console(
-                                f"[{_timestamp()}] Resolve: Runtime threshold load rows="
+                            _log_console(f"Runtime threshold load rows="
                                 f"{len(thresholds_table)}, source={cfg.get('threshold_source', 'Auto')}, "
-                                f"statistic={cfg.get('threshold_statistic', 'median')}"
-                            )
+                                f"statistic={cfg.get('threshold_statistic', 'median')}")
 
                         coverage = _threshold_table_coverage(
                             thresholds_table, selected_markers, expected_batches or None
@@ -2665,21 +2736,15 @@ def render_resolve(project_root, global_input_path):
                                 "Predefined threshold coverage is incomplete, so RESOLVE stopped before "
                                 f"phenotyping: {coverage_text}. Load/correct and save a complete threshold table."
                             )
-                            _log_console(
-                                f"[{_timestamp()}] Resolve: Threshold coverage failed: {coverage_text}"
-                            )
+                            _log_console(f"Threshold coverage failed: {coverage_text}", level="error")
                             return
 
                         try:
                             sample_ids = thresholds_table["batch_id"].astype(str).head(3).tolist()
-                            _log_console(
-                                f"[{_timestamp()}] Resolve: Complete threshold table rows="
-                                f"{len(thresholds_table)}, sample batch_id={sample_ids}"
-                            )
+                            _log_console(f"Complete threshold table rows="
+                                f"{len(thresholds_table)}, sample batch_id={sample_ids}")
                         except Exception:
-                            _log_console(
-                                f"[{_timestamp()}] Resolve: Complete threshold table rows={len(thresholds_table)}"
-                            )
+                            _log_console(f"Complete threshold table rows={len(thresholds_table)}")
 
                         try:
                             binary_df, norm_df = _apply_thresholds_from_table(
@@ -2700,21 +2765,32 @@ def render_resolve(project_root, global_input_path):
                                 "Predefined threshold application failed; RESOLVE stopped without falling "
                                 f"back to raw > 0: {threshold_error}"
                             )
-                            _log_console(
-                                f"[{_timestamp()}] Resolve: Threshold application failed closed: "
-                                f"{threshold_error}"
-                            )
+                            _log_console(f"Threshold application failed closed: "
+                                f"{threshold_error}", level="error")
                             return
                         used_external_thresholds = True
                         status.write(f"[{_timestamp()}] Applied complete predefined thresholds")
-                        _log_console(f"[{_timestamp()}] Resolve: Applied complete predefined thresholds")
+                        _log_console(f"Applied complete predefined thresholds")
+
+                    # Branch 2b: Z1 score mode -> positive where Z1 > cutoff, no files.
+                    elif run_mode_key == "z1":
+                        z1_cutoff = float(cfg.get('z1_cutoff', DEFAULT_RESOLVE_Z1_CUTOFF))
+                        z1_cofactor = float(cfg.get('tie_score_cofactor', 5.0))
+                        binary_df, norm_df = _apply_resolve_z1_positivity(
+                            df, selected_markers, batch_col, cutoff=z1_cutoff, cofactor=z1_cofactor,
+                        )
+                        status.write(
+                            f"[{_timestamp()}] Z1 score mode: ArcSinh (cofactor {z1_cofactor:g}) -> Z1 per batch, "
+                            f"positive if Z1 > {z1_cutoff:g}"
+                        )
+                        _log_console(f"Z1 positivity, cutoff={z1_cutoff:g}")
 
                     # Branch 3: Auto mode (Otsu, Triangle, etc.) → compute on the fly
                     elif apply_thresholds_flag:
                         auto_func = AUTO_THRESHOLD_METHODS.get(run_mode_key)
                         if auto_func is not None:
                             status.write(f"[{_timestamp()}] Computing {run_threshold_mode} thresholds on the fly...")
-                            _log_console(f"[{_timestamp()}] Resolve: On-the-fly auto-threshold ({run_threshold_mode})")
+                            _log_console(f"On-the-fly auto-threshold ({run_threshold_mode})")
                             try:
                                 auto_thres_df = compute_auto_thresholds(
                                     df, selected_markers, run_mode_key,
@@ -2735,10 +2811,10 @@ def render_resolve(project_root, global_input_path):
                                 )
                                 used_external_thresholds = True
                                 status.write(f"[{_timestamp()}] Auto-thresholds applied ({len(auto_thres_df)} batches)")
-                                _log_console(f"[{_timestamp()}] Resolve: Auto-thresholds applied ({len(auto_thres_df)} batches)")
+                                _log_console(f"Auto-thresholds applied ({len(auto_thres_df)} batches)")
                             except Exception as e:
                                 status.warning(f"[{_timestamp()}] Auto-threshold failed: {e}, falling back to > 0")
-                                _log_console(f"[{_timestamp()}] Resolve: Auto-threshold failed: {e}")
+                                _log_console(f"Auto-threshold failed: {e}", level="error")
                                 binary_df, norm_df = _apply_resolve_without_thresholds(
                                     df, selected_markers, batch_col, cfg, norm_order
                                 )
@@ -2751,7 +2827,7 @@ def render_resolve(project_root, global_input_path):
                     # Branch 4: None mode → raw > 0 binarization
                     else:
                         status.write(f"[{_timestamp()}] No thresholds applied (mode: None)")
-                        _log_console(f"[{_timestamp()}] Resolve: No thresholds (raw > 0)")
+                        _log_console(f"No thresholds (raw > 0)")
                         binary_df, norm_df = _apply_resolve_without_thresholds(
                             df, selected_markers, batch_col, cfg, norm_order
                         )
@@ -2765,13 +2841,11 @@ def render_resolve(project_root, global_input_path):
                                 f"[{_timestamp()}] Predefined thresholding produced no binary marker columns. "
                                 "RESOLVE stopped rather than changing the method to raw marker > 0."
                             )
-                            _log_console(
-                                f"[{_timestamp()}] Resolve: Predefined thresholding failed closed "
-                                "because no binary columns were produced"
-                            )
+                            _log_console(f"Predefined thresholding failed closed "
+                                "because no binary columns were produced", level="error")
                             return
                         status.warning(f"[{_timestamp()}] No binary columns from thresholding -- falling back to raw marker > 0 binarization")
-                        _log_console(f"[{_timestamp()}] Resolve: Fallback binarization (marker > 0)")
+                        _log_console(f"Fallback binarization (marker > 0)")
                         binary_df = pd.DataFrame(index=df.index)
                         for m in selected_markers:
                             if m in df.columns:
@@ -2820,7 +2894,7 @@ def render_resolve(project_root, global_input_path):
                             f"{child} -> {parent}" for child, parent in phenotype_hierarchy.items() if parent
                         )
                         status.write(f"[{_timestamp()}] Auto-detected hierarchy: {hierarchy_str}")
-                        _log_console(f"[{_timestamp()}] Resolve: Auto hierarchy: {hierarchy_str}")
+                        _log_console(f"Auto hierarchy: {hierarchy_str}")
 
                     # --- Adaptive distinguishing-marker resolution ---
                     # When no external thresholds exist and the naive > 0
@@ -2831,7 +2905,7 @@ def render_resolve(project_root, global_input_path):
                     # "truly positive" for each distinguishing marker.
                     if has_hierarchy and not used_external_thresholds:
                         status.write(f"[{_timestamp()}] Running adaptive threshold resolution for parent/child markers...")
-                        _log_console(f"[{_timestamp()}] Resolve: Adaptive threshold resolution (no external thresholds)")
+                        _log_console(f"Adaptive threshold resolution (no external thresholds)")
                         binary_df = _adaptive_resolve_hierarchy(
                             df=df,
                             binary_df=binary_df,
@@ -2846,7 +2920,7 @@ def render_resolve(project_root, global_input_path):
 
                     # Assign phenotypes
                     status.write(f"[{_timestamp()}] Assigning phenotypes...")
-                    _log_console(f"[{_timestamp()}] Resolve: Assigning phenotypes...")
+                    _log_console(f"Assigning phenotypes...")
                     phenotype_col = cfg['output_col']
                     unclassified_label = cfg.get('unclassified_label', 'Others')
                     try:
@@ -2894,13 +2968,13 @@ def render_resolve(project_root, global_input_path):
                                 f"[{_timestamp()}] Exclusion markers moved {changed:,} cell(s) "
                                 f"whose forbidden marker outweighed the markers that defined the call"
                             )
-                            _log_console(f"[{_timestamp()}] Resolve: exclusion markers moved {changed:,} cells")
+                            _log_console(f"exclusion markers moved {changed:,} cells")
                         df[phenotype_col] = assigned_series.replace({"unclassified": unclassified_label})
                         status.write(f"[{_timestamp()}] Phenotypes assigned successfully")
-                        _log_console(f"[{_timestamp()}] Resolve: Phenotypes assigned successfully")
+                        _log_console(f"Phenotypes assigned successfully")
                     except Exception as e:
                         status.error(f"[{_timestamp()}] Phenotype assignment failed: {e}")
-                        _log_console(f"[{_timestamp()}] Resolve: Phenotype assignment failed: {e}")
+                        _log_console(f"Phenotype assignment failed: {e}", level="error")
                         return
 
                     try:
@@ -2945,8 +3019,8 @@ def render_resolve(project_root, global_input_path):
                     st.session_state['resolve_config']['last_plot_preprocessing'] = resolve_plot_provenance
                     
                     status.write(f"[{_timestamp()}] Pipeline complete!")
-                    _log_console(f"[{_timestamp()}] Resolve: Pipeline complete!")
-                    st.success("✅ Threshold phenotyping complete")
+                    _log_console(f"Pipeline complete!")
+                    st.success("Threshold phenotyping complete")
 
                     finish_phenotyping_run_audit(
                         run_audit,
@@ -2990,7 +3064,7 @@ def render_resolve(project_root, global_input_path):
     # --- RESULTS VISUALIZATION & EXPORT ---
     if 'resolve_temp_file' in st.session_state and Path(st.session_state['resolve_temp_file']).exists():
         st.divider()
-        st.subheader("Results & Phenotype Refinement")
+        st.subheader("Results & Phenotype Assignment")
         st.caption("Interactive visualization and export of threshold phenotyping results")
         
         temp_file = st.session_state['resolve_temp_file']
@@ -3200,7 +3274,7 @@ def render_resolve(project_root, global_input_path):
     # --- VISUAL VALIDATION COMPONENT (Ported from Leiden) ---
     if st.session_state.get('viz_enabled', True):
         st.divider()
-        with st.expander("Visual Validation of Phenotypes", expanded=True):
+        with st.expander("Visual Validation of Representative Cells", expanded=True):
             st.markdown("#### Visualize Representative Cells")
             st.caption("Inspect random cells from specific phenotypes to validate assignments.")
             
@@ -3440,7 +3514,7 @@ def render_resolve(project_root, global_input_path):
                                                 }
                                                 pd.DataFrame([meta_rec]).to_csv(csv_path, mode='a', header=not csv_path.exists(), index=False)
                                             except Exception as e:
-                                                print(f"Auto-save error: {e}")
+                                                _log_console(f"Auto-save error: {e}", level="error")
                                             
                                             plt.close(fig)
                                         except Exception as e:
