@@ -8,13 +8,14 @@ not edit it by hand -- run the script instead, or let CI regenerate it. The
 "Why" column comes from the `Why:` line in each commit message; see
 [CONTRIBUTING.md](../CONTRIBUTING.md) for how to write one.
 
-**23 changes** by **1 contributor**, touching **298 files**. Latest: `324de8b` on 2026-09-22.
+**24 changes** by **1 contributor**, touching **301 files**. Latest: `1cd78dd` on 2026-09-22.
 
 
 ## 2026-09
 
 | Date | Change | Who | Why | Files | Lines |
 | --- | --- | --- | --- | --- | --- |
+| 2026-09-22 | `1cd78dd` fix: save every setting, unify Tab 7 layout and terminal output | Bassel Dawod | preparing SPACEMAP for publication. Users lost settings on reload, Tab 7 methods looked and read differently, terminal output could not be followed, and two notebooks silently did not run what they describe. | 67 | +1746/-1270 |
 | 2026-09-22 | `324de8b` fix: allowlist the docs that describe the path rule | Bassel Dawod | a check that fires on its own documentation trains people to ignore it. | 1 | +5/-0 |
 | 2026-09-22 | `252ad0e` docs: add a handover document and a publishing procedure | Bassel Dawod | everything here was learned once, at cost, and lived only in one conversation. Someone starting tomorrow would have rediscovered all of it. | 4 | +551/-0 |
 | 2026-09-22 | `d7cc4eb` feat: rank a cell's top markers by percentile, not normalized score | Bassel Dawod | the top five markers steer a human's phenotype call, so a ranking that systematically favours rare markers biases the reference set that downstream models are trained and validated against. | 1 | +94/-8 |
@@ -42,6 +43,78 @@ not edit it by hand -- run the script instead, or let CI regenerate it. The
 ---
 
 ## Files changed per commit
+
+<details><summary><code>1cd78dd</code> fix: save every setting, unify Tab 7 layout and terminal output</summary>
+
+- `CHANGELOG.md`
+- `docs/handover.md`
+- `notebooks/Step5_batch_correction.ipynb`
+- `notebooks/Step6C_phenotype_threshold.ipynb`
+- `src/spacemap/acc_utils.py`
+- `src/spacemap/annotation_utils.py`
+- `src/spacemap/background_subtraction_utils.py`
+- `src/spacemap/batch_correction_utils.py`
+- `src/spacemap/comparison_utils.py`
+- `src/spacemap/config.py`
+- `src/spacemap/model_catalog.py`
+- `src/spacemap/ph_leiden_utils.py`
+- `src/spacemap/ph_scimap_utils.py`
+- `src/spacemap/ph_som_utils.py`
+- `src/spacemap/ph_thres_utils.py`
+- `src/spacemap/ph_vortex_utils.py`
+- `src/spacemap/registration.py`
+- `src/spacemap/segmentation_cellpose.py`
+- `src/spacemap/spatial_analysis_utils.py`
+- `src/spacemap/tissue_continuity.py`
+- `src/spacemap/utils.py`
+- `src/spacemap_assistant/blur_action.py`
+- `src/spacemap_gui/app.py`
+- `src/spacemap_gui/cell_visualizer.py`
+- `src/spacemap_gui/components/assistant_panel.py`
+- `src/spacemap_gui/components/assistant_setup.py`
+- `src/spacemap_gui/file_browser.py`
+- `src/spacemap_gui/persistence.py`
+- `src/spacemap_gui/tabs/cell_tagging_ui.py`
+- `src/spacemap_gui/tabs/legacy_cell_annotation.py`
+- `src/spacemap_gui/tabs/tab0_project.py`
+- `src/spacemap_gui/tabs/tab1_registration.py`
+- `src/spacemap_gui/tabs/tab2_background_subtraction.py`
+- `src/spacemap_gui/tabs/tab3_roi_extraction.py`
+- `src/spacemap_gui/tabs/tab4_annotation/common.py`
+- `src/spacemap_gui/tabs/tab5_segmentation.py`
+- `src/spacemap_gui/tabs/tab6_batch_correction.py`
+- `src/spacemap_gui/tabs/tab7_phenotyping/__init__.py`
+- `src/spacemap_gui/tabs/tab7_phenotyping/cell_visualization.py`
+- `src/spacemap_gui/tabs/tab7_phenotyping/common.py`
+- `src/spacemap_gui/tabs/tab7_phenotyping/consensus_ml.py`
+- `src/spacemap_gui/tabs/tab7_phenotyping/leiden_clustering.py`
+- `src/spacemap_gui/tabs/tab7_phenotyping/mr_ml_phenotyping.py`
+- `src/spacemap_gui/tabs/tab7_phenotyping/resolve_clustering.py`
+- `src/spacemap_gui/tabs/tab7_phenotyping/scimap_clustering.py`
+- `src/spacemap_gui/tabs/tab7_phenotyping/som_clustering.py`
+- `src/spacemap_gui/tabs/tab7_phenotyping/subphenotyping.py`
+- `src/spacemap_gui/tabs/tab7_phenotyping/threshold_gating.py`
+- `src/spacemap_gui/tabs/tab7_phenotyping/tools.py`
+- `src/spacemap_gui/tabs/tab7_phenotyping/visualization.py`
+- `src/spacemap_gui/tabs/tab7_phenotyping/vortex_clustering.py`
+- `src/spacemap_gui/tabs/tab8_analysis/clonality.py`
+- `src/spacemap_gui/tabs/tab8_analysis/common.py`
+- `src/spacemap_gui/tabs/tab8_analysis/density_analysis.py`
+- `src/spacemap_gui/tabs/tab8_analysis/feature_screening.py`
+- `src/spacemap_gui/tabs/tab8_analysis/feature_screening_core.py`
+- `src/spacemap_gui/tabs/tab8_analysis/roi_explorer.py`
+- `src/spacemap_gui/tabs/tab8_analysis/triads.py`
+- `src/spacemap_gui/tabs/tab9_visualization/actual_tissue.py`
+- `src/spacemap_gui/tabs/tab9_visualization/common.py`
+- `src/spacemap_gui/tabs/tab9_visualization/f1_paper_figures.py`
+- `src/spacemap_gui/tabs/tab9_visualization/f1_strict_validation_ui.py`
+- `src/spacemap_gui/tabs/tab9_visualization/proportion.py`
+- `src/spacemap_gui/terminal.py`
+- `src/spacemap_gui/ui_utils.py`
+- `tests/test_resolve_z1_mode.py`
+- `tests/test_widget_keys_persist.py`
+
+</details>
 
 <details><summary><code>324de8b</code> fix: allowlist the docs that describe the path rule</summary>
 
