@@ -81,7 +81,7 @@ def _discover_action_widget_keys() -> frozenset[str]:
     named *parameters* (for example ``tab9_actual_load_cells``) without
     relying on broad substring rules such as ``"load" in key``.
     """
-    action_keys, _prefixes, _suffixes = _scan_action_widget_keys()
+    action_keys, _prefixes, _suffixes, _infixes = _scan_action_widget_keys()
     return action_keys
 
 
@@ -97,7 +97,7 @@ def _discover_action_widget_prefixes() -> tuple[str, ...]:
     a later run, and Streamlit then refuses to build the button at all
     (``StreamlitValueAssignmentNotAllowedError``).
     """
-    _keys, prefixes, _suffixes = _scan_action_widget_keys()
+    _keys, prefixes, _suffixes, _infixes = _scan_action_widget_keys()
     return prefixes
 
 
@@ -112,8 +112,19 @@ SETTING_WIDGET_CALLS = {
 @lru_cache(maxsize=1)
 def _discover_action_widget_suffixes() -> tuple[str, ...]:
     """Literal suffixes of buttons keyed as ``f"{variable}_literal"``."""
-    _keys, _prefixes, suffixes = _scan_action_widget_keys()
+    _keys, _prefixes, suffixes, _infixes = _scan_action_widget_keys()
     return suffixes
+
+
+@lru_cache(maxsize=1)
+def _discover_action_widget_infixes() -> tuple[str, ...]:
+    """Literal middles of buttons keyed as ``f"{prefix}_literal_{index}"``.
+
+    These keys have no literal prefix or suffix, so they are matched on the
+    distinctive segment between the placeholders.
+    """
+    _keys, _prefixes, _suffixes, infixes = _scan_action_widget_keys()
+    return infixes
 
 
 @lru_cache(maxsize=1)
@@ -134,6 +145,7 @@ def _scan_action_widget_keys() -> tuple[frozenset[str], tuple[str, ...], tuple[s
     action_keys: set[str] = set()
     prefixes: set[str] = set()
     suffixes: set[str] = set()
+    infixes: set[str] = set()
     setting_keys: set[str] = set()
 
     if not current_dir.exists():
@@ -165,12 +177,36 @@ def _scan_action_widget_keys() -> tuple[frozenset[str], tuple[str, ...], tuple[s
                         # Only usable when the key does not already start with a
                         # literal, otherwise the prefix is the tighter match.
                         suffixes.add(tail.value)
+                    else:
+                        # A key shaped f"{prefix}_literal_{index}" begins and ends
+                        # with a placeholder, so it has neither a literal prefix
+                        # nor suffix and was previously invisible here. Its middle
+                        # segments still identify it, and missing one means the
+                        # button's key is persisted as though it were a setting --
+                        # which Streamlit then refuses to restore, raising
+                        # StreamlitValueAssignmentNotAllowedError on the next load.
+                        for part in value.values[1:-1]:
+                            if (
+                                isinstance(part, ast.Constant)
+                                and isinstance(part.value, str)
+                                and len(part.value.strip("_")) >= 4
+                            ):
+                                infixes.add(part.value)
 
     safe_suffixes = {
         suffix for suffix in suffixes
         if not any(setting.endswith(suffix) for setting in setting_keys)
     }
-    return frozenset(action_keys), tuple(sorted(prefixes)), tuple(sorted(safe_suffixes))
+    safe_infixes = {
+        infix for infix in infixes
+        if not any(infix in setting for setting in setting_keys)
+    }
+    return (
+        frozenset(action_keys),
+        tuple(sorted(prefixes)),
+        tuple(sorted(safe_suffixes)),
+        tuple(sorted(safe_infixes)),
+    )
 
 
 #: Section holding one isolated cache per project root. Everything outside it is
@@ -1476,6 +1512,8 @@ def is_transient_key(key: str) -> bool:
     if key in _discover_action_widget_keys():
         return True
     if key.startswith(_discover_action_widget_prefixes()):
+        return True
+    if any(infix in key for infix in _discover_action_widget_infixes()):
         return True
     if key.endswith(_discover_action_widget_suffixes()):
         return True
