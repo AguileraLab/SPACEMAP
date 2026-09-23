@@ -8,13 +8,14 @@ not edit it by hand -- run the script instead, or let CI regenerate it. The
 "Why" column comes from the `Why:` line in each commit message; see
 [CONTRIBUTING.md](../CONTRIBUTING.md) for how to write one.
 
-**19 changes** by **1 contributor**, touching **296 files**. Latest: `2426062` on 2026-09-22.
+**20 changes** by **1 contributor**, touching **296 files**. Latest: `11ed7ce` on 2026-09-22.
 
 
 ## 2026-09
 
 | Date | Change | Who | Why | Files | Lines |
 | --- | --- | --- | --- | --- | --- |
+| 2026-09-22 | `11ed7ce` fix: recognise button keys that begin and end with a placeholder | Bassel Dawod | a saved project could make the tab unopenable, and the cause was invisible because the widget key never appeared in any list the scanner produced. | 1 | +42/-4 |
 | 2026-09-22 | `2426062` fix: move the label commit control out of the form, and stop project data being committed | Bassel Dawod | the feature was unreachable, and the repository was one push away from publishing analysis project files. | 6 | +211/-6 |
 | 2026-09-22 | `f574f68` docs: add a guide for using this version on real data | Bassel Dawod | someone adopting this version needs to know their data cannot leak and that a saved label is not yet in the CSV, and neither was written down. | 2 | +259/-0 |
 | 2026-09-22 | `01ec57f` fix: name the two save actions for what they actually do | Bassel Dawod | the previous wording described the old behaviour and quietly misled anyone relying on it. | 1 | +4/-4 |
@@ -38,6 +39,12 @@ not edit it by hand -- run the script instead, or let CI regenerate it. The
 ---
 
 ## Files changed per commit
+
+<details><summary><code>11ed7ce</code> fix: recognise button keys that begin and end with a placeholder</summary>
+
+- `src/spacemap_gui/persistence.py`
+
+</details>
 
 <details><summary><code>2426062</code> fix: move the label commit control out of the form, and stop project data being committed</summary>
 
