@@ -989,9 +989,22 @@ def _visual_normalization_stats(
     else:
         groups[None] = population_stats(df)
 
+    # A quantile grid per marker, so any cell's standing within that marker can
+    # be looked up without keeping the whole population. 1001 points resolves to
+    # a tenth of a percentile, which is finer than the ranking needs.
+    grid = np.linspace(0.0, 100.0, 1001)
+    raw = df[valid_markers].apply(pd.to_numeric, errors="coerce").astype(float).to_numpy()
+    percentile_reference = {
+        name: np.nanpercentile(raw[:, index], grid)
+        for index, name in enumerate(valid_markers)
+        if np.isfinite(raw[:, index]).any()
+    }
+
     return {
         "markers": valid_markers,
         "norm_cols": norm_cols,
+        "percentile_grid": grid,
+        "percentile_reference": percentile_reference,
         "suffix": suffix,
         "flags": (apply_z1, apply_z2, apply_cdf, apply_nlog),
         "group_col": group_col if (group_col and group_col in df.columns) else None,
@@ -1523,6 +1536,51 @@ def _accumulate_shown_cell_keys(previous_keys, newly_shown_keys) -> list[str]:
     it free to return the same cells again.
     """
     return sorted(set(previous_keys or []) | set(newly_shown_keys or []))
+
+
+def _marker_percentile(stats: dict[str, Any], marker: str, value: float) -> float | None:
+    """Where *value* falls within *marker*'s own distribution, as a percentile.
+
+    Ranking markers against each other by their normalized score only compares
+    like with like when their distributions have a similar shape. They often do
+    not: on one real panel FoxP3 had a median of 2.2 and a maximum of 2165,
+    while CD4 was far broader, so a cell at the 99.0th percentile for FoxP3
+    outscored one at the 99.5th percentile for CD4 and was listed above it. A
+    percentile asks the question that actually matters -- how unusual is this
+    cell for this marker -- and is comparable whatever the shape.
+    """
+    reference = (stats.get("percentile_reference") or {}).get(marker)
+    grid = stats.get("percentile_grid")
+    if reference is None or grid is None or not np.isfinite(value):
+        return None
+    position = int(np.searchsorted(reference, value, side="right"))
+    position = max(0, min(position, len(grid) - 1))
+    return float(grid[position])
+
+
+def _compute_top_markers_by_percentile(
+    row: pd.Series,
+    marker_cols: list[str],
+    stats: dict[str, Any],
+    top_n: int = 5,
+    *,
+    affix_position: str | None = None,
+    correction_affix: str | None = None,
+) -> list[tuple[str, str, float]]:
+    """Rank a cell's markers by how unusual it is for each one."""
+    collapsed: dict[str, tuple[str, str, float]] = {}
+    for raw_marker in marker_cols:
+        value = pd.to_numeric(pd.Series([row.get(raw_marker)]), errors="coerce").iloc[0]
+        if pd.isna(value):
+            continue
+        percentile = _marker_percentile(stats, raw_marker, float(value))
+        if percentile is None:
+            continue
+        clean_name = _clean_visual_marker_name(raw_marker, affix_position, correction_affix)
+        existing = collapsed.get(clean_name)
+        if existing is None or percentile > existing[2]:
+            collapsed[clean_name] = (raw_marker, clean_name, percentile)
+    return sorted(collapsed.values(), key=lambda item: item[2], reverse=True)[:top_n]
 
 
 def _compute_top_markers_for_row(
@@ -3392,14 +3450,27 @@ def render_tools(project_root: Path, global_input_path: str | None) -> None:
                                                                 candidate_row = _apply_visual_normalization_rows(
                                                                     candidate_row.to_frame().T, norm_stats
                                                                 ).iloc[0]
-                                                                top_markers = _compute_top_markers_for_row(
-                                                                    candidate_row,
-                                                                    saved_vv_config["markers"],
-                                                                    norm_cols,
-                                                                    top_n=5,
-                                                                    affix_position=affix_position,
-                                                                    correction_affix=correction_affix,
-                                                                )
+                                                                if st.session_state.get(
+                                                                    "tools_mr_vv_rank_mode",
+                                                                    "Percentile within each marker",
+                                                                ) == "Percentile within each marker":
+                                                                    top_markers = _compute_top_markers_by_percentile(
+                                                                        candidate_row,
+                                                                        norm_stats["markers"],
+                                                                        norm_stats,
+                                                                        top_n=5,
+                                                                        affix_position=affix_position,
+                                                                        correction_affix=correction_affix,
+                                                                    )
+                                                                else:
+                                                                    top_markers = _compute_top_markers_for_row(
+                                                                        candidate_row,
+                                                                        saved_vv_config["markers"],
+                                                                        norm_cols,
+                                                                        top_n=5,
+                                                                        affix_position=affix_position,
+                                                                        correction_affix=correction_affix,
+                                                                    )
                                                                 if not top_markers:
                                                                     continue
                                                                 clean_top_markers = [marker_info[1] for marker_info in top_markers]
@@ -3564,6 +3635,21 @@ def render_tools(project_root: Path, global_input_path: str | None) -> None:
                         # Outside the form: Streamlit only allows form_submit_button inside one,
                         # and this has to be a normal button.
                         _render_label_commit_controls(unified_csv_path, key_prefix="mr_above_form")
+
+                        # How the five markers shown for each cell are chosen.
+                        st.radio(
+                            "Rank top markers by",
+                            options=["Percentile within each marker", "Normalized score"],
+                            key="tools_mr_vv_rank_mode",
+                            horizontal=True,
+                            help=(
+                                "Percentile asks how unusual this cell is for each marker, "
+                                "which compares fairly across markers with different "
+                                "distributions. Normalized score ranks by the Z1 value and "
+                                "can place a rare marker above a broader one the cell "
+                                "expresses more strongly."
+                            ),
+                        )
 
                         with st.form("tools_mr_vv_assignments_form", clear_on_submit=False):
                             submitted_selections: dict[str, str] = {}
