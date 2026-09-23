@@ -45,10 +45,15 @@ SKIP_DIRECTORIES = {
 
 #: Files that legitimately mention these patterns: this checker itself, and the
 #: documentation that explains the rule.
+#: Files that legitimately quote these patterns because they document the rule
+#: itself, or record history such as a module that used to carry a site name.
 ALLOWLIST = {
     "scripts/check_no_local_paths.py",
     "CONTRIBUTING.md",
     "docs/LEDGER.md",
+    "docs/handover.md",
+    "docs/publishing-changes.md",
+    "docs/working-with-this-repository.md",
 }
 
 #: Only text formats are scanned.
