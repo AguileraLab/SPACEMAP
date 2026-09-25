@@ -8,13 +8,14 @@ not edit it by hand -- run the script instead, or let CI regenerate it. The
 "Why" column comes from the `Why:` line in each commit message; see
 [CONTRIBUTING.md](../CONTRIBUTING.md) for how to write one.
 
-**26 changes** by **1 contributor**, touching **307 files**. Latest: `cb65845` on 2026-09-24.
+**27 changes** by **1 contributor**, touching **308 files**. Latest: `c0b12ec` on 2026-09-25.
 
 
 ## 2026-09
 
 | Date | Change | Who | Why | Files | Lines |
 | --- | --- | --- | --- | --- | --- |
+| 2026-09-25 | `c0b12ec` fix: switching to a moved project no longer loops forever | Bassel Dawod | switching from PDAC to INNATE_all_083120206 (moved from SPACEMAP_V17 to SPACEMAP_github/project) froze the interface. | 5 | +117/-6 |
 | 2026-09-24 | `cb65845` fix: keep data out of the project file, and shrink files it already bloated | Bassel Dawod | the PDAC project file reached 44 GB and SPACEMAP hung at start-up using over 60 GB of memory; this had happened before with other results. | 4 | +491/-6 |
 | 2026-09-22 | `dcd8d79` feat: one run log per tab, and phenotype saves without rewriting the CSV | Bassel Dawod | the user found Leiden's log box off and asked for one consistently named, always-on log that records settings changes, time and compute; and asked for fast Parquet-backed saves that survive an interface crash. | 24 | +1893/-167 |
 | 2026-09-22 | `1cd78dd` fix: save every setting, unify Tab 7 layout and terminal output | Bassel Dawod | preparing SPACEMAP for publication. Users lost settings on reload, Tab 7 methods looked and read differently, terminal output could not be followed, and two notebooks silently did not run what they describe. | 67 | +1746/-1270 |
@@ -45,6 +46,16 @@ not edit it by hand -- run the script instead, or let CI regenerate it. The
 ---
 
 ## Files changed per commit
+
+<details><summary><code>c0b12ec</code> fix: switching to a moved project no longer loops forever</summary>
+
+- `CHANGELOG.md`
+- `src/spacemap_gui/app.py`
+- `src/spacemap_gui/persistence.py`
+- `src/spacemap_gui/tabs/tab0_project.py`
+- `tests/test_project_moves.py`
+
+</details>
 
 <details><summary><code>cb65845</code> fix: keep data out of the project file, and shrink files it already bloated</summary>
 
