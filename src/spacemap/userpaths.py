@@ -10,8 +10,16 @@ state file.
 Resolution order for the root:
 
 1. ``$SPACEMAP_HOME`` when it is set.
-2. ``$XDG_DATA_HOME/spacemap`` when ``XDG_DATA_HOME`` is set.
+2. ``$XDG_DATA_HOME/spacemap`` when ``XDG_DATA_HOME`` is set, unless it points
+   into a temporary folder (see below).
 3. ``~/.spacemap``
+
+Some clusters set ``XDG_DATA_HOME=/tmp/$USER`` for every user (UTSW BioHPC does,
+for podman). ``/tmp`` is local to one node and is cleaned, so settings, the
+viewer's state and downloaded models would vanish or differ from node to node.
+Such a value is ignored; the small settings already written there on this node
+are carried over to ``~/.spacemap`` once (models are never copied: choose a
+models folder in the assistant's setup instead).
 
 A development checkout that prefers repository-local state can export
 ``SPACEMAP_HOME=<checkout>/.spacemap_home``.  Individual directories can also be
@@ -22,6 +30,8 @@ what the container image does to keep models on a mounted volume.
 from __future__ import annotations
 
 import os
+import shutil
+import tempfile
 from pathlib import Path
 
 
@@ -46,15 +56,56 @@ def _env_path(name: str) -> Path | None:
     return Path(raw).expanduser()
 
 
+def is_temporary(path: Path) -> bool:
+    """True for a folder inside /tmp, /var/tmp or the system temporary folder."""
+    def real(folder: Path) -> Path:
+        try:
+            return folder.resolve()
+        except OSError:
+            return folder
+
+    target = real(Path(path).expanduser())
+    for root in {Path("/tmp"), Path("/var/tmp"), Path(tempfile.gettempdir())}:
+        base = real(root)
+        if target == base or base in target.parents:
+            return True
+    return False
+
+
+#: What is carried over from a temporary home: settings and the assistant's own
+#: data. Not ``state`` (the interface cache restored old folder choices), not
+#: ``cache`` (rebuilt), not ``models`` (large; the models folder is a setting).
+_CARRIED_OVER = ("config", "assistant_data")
+_CARRIED = {"done": False}
+
+
+def _carry_over(old_root: Path, new_root: Path) -> None:
+    """Copy settings from a temporary home on this node, once, never overwriting."""
+    if _CARRIED["done"]:
+        return
+    _CARRIED["done"] = True
+    for part in _CARRIED_OVER:
+        source, target = old_root / part, new_root / part
+        if not source.is_dir() or target.exists():
+            continue
+        try:
+            shutil.copytree(source, target)  # keeps file permissions (the token stays private)
+        except OSError:
+            pass
+
+
 def spacemap_home() -> Path:
     """Return the root directory for all user-writable SPACEMAP state."""
     explicit = _env_path("SPACEMAP_HOME")
     if explicit is not None:
         return explicit
+    home = Path.home() / ".spacemap"
     xdg = _env_path("XDG_DATA_HOME")
     if xdg is not None:
-        return xdg / "spacemap"
-    return Path.home() / ".spacemap"
+        if not is_temporary(xdg):
+            return xdg / "spacemap"
+        _carry_over(xdg / "spacemap", home)
+    return home
 
 
 def _subdir(kind: str, *parts: str) -> Path:

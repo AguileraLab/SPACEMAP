@@ -52,7 +52,9 @@ later stage can pick it up.
 
 Nothing is written inside the installed package. `spacemap.userpaths` resolves
 one root — `$SPACEMAP_HOME`, else `$XDG_DATA_HOME/spacemap`, else
-`~/.spacemap` — and every writable location hangs off it.
+`~/.spacemap` — and every writable location hangs off it. An `XDG_DATA_HOME`
+inside `/tmp` is ignored: some clusters set it to `/tmp/$USER` for everyone,
+and `/tmp` is local to one node and cleaned.
 
 ```
 ~/.spacemap/
