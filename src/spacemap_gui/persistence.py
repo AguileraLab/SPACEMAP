@@ -519,6 +519,7 @@ def load_project_config(project_root: str) -> dict:
     if not path.exists():
         return {}
     try:
+        _shrink_if_oversized(path)
         with open(path, "r", encoding="utf-8") as f:
             config = json.load(f) or {}
             
@@ -583,6 +584,59 @@ def load_project_config(project_root: str) -> dict:
         except Exception:
             pass
         return {}
+
+def _shrink_if_oversized(path: Path) -> None:
+    """Clean a project file that data has leaked into before it is loaded.
+
+    Reading a multi-GB file whole takes minutes and more memory than the node
+    may have, so it is streamed instead (``config_repair.shrink_project_file``):
+    every setting is kept, the data-sized entries are left out, and the
+    original is kept beside it for the user to delete. Raises if the file
+    cannot be cleaned, so it is never loaded whole.
+    """
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return
+    if size <= _SHRINK_ON_LOAD_BYTES:
+        return
+    from spacemap_gui.config_repair import shrink_project_file
+
+    log_persistence(
+        f"{path.name} is {size / 1e9:.1f} GB; a project file should be under 1 MB, so data has "
+        "leaked into it. Cleaning it (it is read once; every setting is kept)..."
+    )
+    try:
+        import streamlit as _st
+
+        spinner = _st.spinner(f"Cleaning the project file ({size / 1e9:.1f} GB of saved results)...")
+    except Exception:
+        spinner = None
+    try:
+        if spinner is not None:
+            with spinner:
+                backup, removed = shrink_project_file(path)
+        else:
+            backup, removed = shrink_project_file(path)
+    except Exception as exc:
+        raise RuntimeError(
+            f"{path.name} is {size / 1e9:.1f} GB and could not be cleaned automatically ({exc}). "
+            f"Restore it from a restore point in {RESTORE_POINT_DIRNAME}/ (Tab 0) or ask for help."
+        ) from exc
+    listed = ", ".join(f"{entry} ({bytes_ / 1e9:.1f} GB)" if bytes_ >= 1e8 else entry for entry, bytes_ in removed[:5])
+    note = (
+        f"The project file had grown to {size / 1e9:.1f} GB because results were saved into it: {listed}. "
+        f"They were removed and every setting was kept. The original is kept as {backup.name}; "
+        "delete it once the project opens as expected."
+    )
+    log_persistence(note)
+    try:
+        import streamlit as _st
+
+        _st.warning(note)
+    except Exception:
+        pass
+
 
 def sanitize_json_obj(obj):
     """Recursively convert numpy/pandas types to standard JSON-serializable types."""
@@ -783,6 +837,9 @@ def create_restore_point(
         return None
 
     try:
+        if source.stat().st_size > _SHRINK_ON_LOAD_BYTES:
+            log_persistence(f"Skipping restore point: {source.name} is data-sized, not a settings file")
+            return None
         with open(source, "r", encoding="utf-8") as handle:
             json.load(handle)
     except Exception as exc:
@@ -834,7 +891,7 @@ def prune_oversized_config_entries(config: dict) -> list[tuple[str, str, int]]:
                 removed.append((tab, key, 0))
                 continue
             try:
-                size = len(json.dumps(tab_config[key], default=str))
+                size = estimate_json_bytes(tab_config[key], limit=_MAX_CONFIG_VALUE_BYTES)
             except Exception:
                 tab_config.pop(key, None)
                 removed.append((tab, key, -1))
@@ -848,7 +905,7 @@ def prune_oversized_config_entries(config: dict) -> list[tuple[str, str, int]]:
 def _warn_if_config_oversized(config: dict, path: Path) -> None:
     """Log the largest offenders when a project config grows data-shaped."""
     try:
-        size = len(json.dumps(config, default=str))
+        size = estimate_json_bytes(config, limit=_MAX_PROJECT_CONFIG_BYTES)
     except Exception:
         return
     if size <= _PROJECT_CONFIG_WARN_BYTES:
@@ -859,7 +916,7 @@ def _warn_if_config_oversized(config: dict, path: Path) -> None:
             continue
         for key, value in tab_cfg.items():
             try:
-                offenders.append((len(json.dumps(value, default=str)), f"{tab}:{key}"))
+                offenders.append((estimate_json_bytes(value, limit=_MAX_PROJECT_CONFIG_BYTES), f"{tab}:{key}"))
             except Exception:
                 continue
     offenders.sort(reverse=True)
@@ -896,11 +953,39 @@ def save_project_config(project_root: str, config: dict) -> None:
         except Exception as exc:  # never let bundling block a save
             log_persistence(f"Could not attach portable state: {exc}")
 
+        # Tab settings were checked one by one above. Any other section that has
+        # grown data-sized is left out of this write too (config is a copy here).
+        config = dict(config)
+        for section in list(config):
+            if section == "tab_configurations":
+                continue
+            try:
+                section_size = estimate_json_bytes(config[section], limit=_MAX_PROJECT_CONFIG_BYTES)
+            except Exception:
+                continue
+            if section_size > _MAX_PROJECT_CONFIG_BYTES // 2:
+                config.pop(section)
+                log_persistence(f"Left '{section}' out of {path.name}: it is data-sized ({section_size / 1e6:.0f} MB+).")
+
         # Sanitize config to prevent JSON serialization errors on numpy/pandas types
         sanitized_config = sanitize_json_obj(config)
         
         # Serialize to string FIRST to prevent file corruption/truncation on TypeErrors
         json_str = json.dumps(sanitized_config, indent=2)
+
+        # Last line of defence: a project file records settings. Never write one
+        # that is data-sized; keep the previous file instead and say so.
+        if len(json_str) > _MAX_PROJECT_CONFIG_BYTES:
+            message = (
+                f"Did not save {path.name}: it would be {len(json_str) / 1e6:.0f} MB, and a project file "
+                "records settings (under 1 MB). The previous file is unchanged."
+            )
+            log_persistence(f"ERROR: {message}")
+            try:
+                st.error(message)
+            except Exception:
+                pass
+            return
         
         # One restore point per session rather than a full copy on every save.
         # These configs reach 8 MB+, and sync_project_state saves whenever any
@@ -1405,6 +1490,9 @@ def is_transient_key(key: str) -> bool:
     # ``tab9_actual_load_cells`` is a real reproducibility parameter, not a
     # load event, and must remain serializable.
     if key in [
+        # Tab 8 results: whole per-cell tables (tab8_nb_result reached 44 GB once).
+        "tab8_nb_result", "tab8_triad_instances_df", "tab8_triad_p1_summary_df",
+        "tab8_triad_run_df_inputs", "tools_edit_csv_df",
         "tab9_viz_shared_df", "tab9_viz_unified_cache_df", "tab9_viz_shared_df_path", 
         "tab9_viz_shared_df_mtime", "tab9_viz_unified_cache_key", 
         "global_visualization_file_empty", "global_spatial_file_empty", "global_pheno_file_empty",
@@ -1480,7 +1568,7 @@ def is_transient_key(key: str) -> bool:
     # Rendered figures and result payloads are session-only caches. They are not
     # reproducibility settings, and serializing them writes the repr of raw PNG
     # bytes into the project JSON, which later fails to render as an image.
-    if lk.endswith(("_bytes", "_results", "_visualizations", "_run_details")):
+    if lk.endswith(("_bytes", "_result", "_results", "_visualizations", "_run_details")):
         return True
 
     # Computed artifacts that dominate the project file. Each is written from a
@@ -1612,6 +1700,82 @@ def is_transient_key(key: str) -> bool:
 # setting (a long path list is a few KB) and far below anything data-shaped.
 _MAX_CONFIG_VALUE_BYTES = 256 * 1024
 
+# Ceiling on the whole project file. A healthy one is well under 1 MB; nothing
+# larger is ever written.
+_MAX_PROJECT_CONFIG_BYTES = 32 * 1024 * 1024
+
+# A project file larger than this is cleaned by streaming before it is loaded
+# (see spacemap_gui.config_repair), instead of being read into memory whole.
+_SHRINK_ON_LOAD_BYTES = 64 * 1024 * 1024
+
+
+def estimate_json_bytes(value, limit: int | None = None) -> int:
+    """About how many bytes *value* takes once written into the project file.
+
+    It measures what the writer really writes (``sanitize_json_obj``): a
+    DataFrame becomes one JSON object per row and an array one entry per
+    element, however deeply they are nested in dicts and lists. Measuring with
+    ``json.dumps(value, default=str)`` instead sees only a table's short printed
+    summary, which is how a per-cell table nested in a dict passed the size cap
+    and grew a project file to 44 GB. Counting stops once *limit* is passed, so
+    a huge table costs no more to measure than a small setting.
+    """
+    from pathlib import PurePath
+
+    import numpy as np
+    import pandas as pd
+
+    budget = float("inf") if limit is None else limit
+    total = 0
+    stack = [value]
+    seen: set[int] = set()
+    while stack:
+        if total > budget:
+            return total
+        item = stack.pop()
+        if item is None or isinstance(item, (bool, int, float, np.number, np.bool_)):
+            total += 8
+        elif isinstance(item, str):
+            total += len(item) + 2
+        elif isinstance(item, (bytes, bytearray, memoryview)):
+            total += 4 * len(item) + 3  # written as a repr string
+        elif isinstance(item, PurePath):
+            total += len(str(item)) + 2
+        elif isinstance(item, pd.DataFrame):
+            rows = len(item)
+            per_row = sum(len(str(column)) + 12 for column in item.columns) + 4
+            total += rows * per_row  # a lower bound: keys repeat on every row
+            if total <= budget and rows:
+                total += len(json.dumps(sanitize_json_obj(item), default=str)) - rows * per_row
+        elif isinstance(item, pd.Series):
+            total += len(item) * 12
+            if total <= budget and len(item):
+                total += len(json.dumps(sanitize_json_obj(item), default=str)) - len(item) * 12
+        elif isinstance(item, np.ndarray):
+            total += 2 * item.size + 2  # at least one digit and a separator each
+            if total <= budget and item.size:
+                total += len(json.dumps(sanitize_json_obj(item), default=str)) - 2 * item.size
+        elif isinstance(item, (dict, list, tuple, set, frozenset)):
+            if id(item) in seen:
+                continue
+            seen.add(id(item))
+            total += 2 + 2 * len(item)
+            if total > budget:
+                return total
+            if isinstance(item, dict):
+                total += sum(len(str(key)) + 4 for key in item)
+                stack.extend(item.values())
+            else:
+                stack.extend(item)
+        elif hasattr(item, "to_dict") and callable(getattr(item, "to_dict")):
+            try:
+                stack.append(item.to_dict())
+            except Exception:
+                total += len(str(item)) + 2
+        else:
+            total += len(str(item)) + 2
+    return total
+
 
 def update_stored_config_key(config: dict, key: str, value) -> None:
     """Update a specific configuration parameter in the nested JSON configuration structure."""
@@ -1642,9 +1806,9 @@ def update_stored_config_key(config: dict, key: str, value) -> None:
     # a per-cell table once turned this file into gigabytes. Cap the serialized
     # size of every entry so no key, present or future, can do that again.
     try:
-        encoded_size = len(json.dumps(serialized_val, default=str))
+        encoded_size = estimate_json_bytes(serialized_val, limit=_MAX_CONFIG_VALUE_BYTES)
     except Exception:
-        return  # not JSON-serializable: not a setting
+        return  # cannot be measured: not a setting
     if encoded_size > _MAX_CONFIG_VALUE_BYTES:
         log_persistence(
             f"Skipped '{key}': {encoded_size / 1e6:.1f} MB exceeds the "

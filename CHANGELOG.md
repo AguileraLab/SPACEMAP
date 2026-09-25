@@ -17,6 +17,19 @@ Tabs 7 and 9, and a Z1 option for Resolve. Grouped by tab.
 
 ### All tabs
 
+- **Fixed: the project file could grow to tens of GB.** Tab 8's
+  neighbourhood result (a per-cell table held inside a session value) was
+  saved into the project file, which reached 44 GB and made SPACEMAP take
+  minutes and all the node's memory to start. The size check measured a
+  table by its short printed summary, not by the one-row-per-cell JSON
+  actually written. Now:
+  - every setting is measured as it will be written, tables nested in lists
+    and dicts included, and anything data-sized is left out;
+  - Tab 8's result holders are never saved;
+  - a project file is never written above 32 MB;
+  - a project file that has already grown is cleaned when it is opened:
+    it is streamed, not loaded, every setting is kept, and the original is
+    kept beside it as `<project>.json.oversized-<date>` for you to delete.
 - **Settings are saved with the project.** A setting is saved only when its
   control has a key that belongs to a tab. The controls below had none, so
   their values were lost on reload; they now save and restore. A new test
