@@ -21,8 +21,12 @@ def pairwise(iterable):
     return zip(a, b)
 
 
-# Add pairwise to itertools for palom compatibility
-itertools.pairwise = pairwise
+# palom calls itertools.pairwise, which Python added in 3.10. Only fill it in
+# where it is missing: replacing the built-in on 3.10+ breaks torch (its compiler
+# rejects the substitute), which stopped transformers 5 and the AI assistant's
+# model server from loading.
+if not hasattr(itertools, "pairwise"):
+    itertools.pairwise = pairwise
 
 
 def log_time(message, tab_id: str = None):
