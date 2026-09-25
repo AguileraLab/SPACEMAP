@@ -92,3 +92,17 @@ def test_background_jobs_can_write_a_row_without_a_session(tmp_path):
                               settings={"resolution": 1.5})
     rows = run_log.read_rows(tmp_path, "tab7")
     assert path and rows[-1]["action"] == "Leiden clustering (background run)"
+
+
+def test_settings_with_number_keys_are_compared_and_kept(tmp_path):
+    from spacemap_gui import run_log
+
+    state = tmp_path / "logs" / ".run_log_last_settings.json"
+    state.parent.mkdir()
+    state.write_text(json.dumps("{'tab3': {'x': 1}}"))  # what an older build wrote
+    first = {"tab3_roi_visible": {0: True, 1: False}, "tab3_name": "P11", "tab3_rows": {"2": "a"}}
+    assert run_log.settings_changes(tmp_path, "tab3", first) == {}
+    stored = json.loads(state.read_text())
+    assert isinstance(stored, dict) and stored["tab3"]["tab3_roi_visible"] == {"0": True, "1": False}
+    second = dict(first, tab3_roi_visible={0: False, 1: False})
+    assert list(run_log.settings_changes(tmp_path, "tab3", second)) == ["tab3_roi_visible"]

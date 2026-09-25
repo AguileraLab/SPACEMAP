@@ -351,9 +351,23 @@ def machine_info() -> dict[str, Any]:
 # Settings and what changed
 # ---------------------------------------------------------------------------
 
+def _text_keys(value: Any) -> Any:
+    """The same value with every dict key as text, so keys can be sorted.
+
+    Some settings are dicts keyed by numbers (per-row visibility, for example)
+    inside dicts keyed by names; sorting such mixed keys raises TypeError.
+    """
+    if isinstance(value, dict):
+        return {str(key): _text_keys(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_text_keys(item) for item in value]
+    return value
+
+
 def _json(value: Any) -> str:
+    """Compact, sorted JSON for the log (long values are cut short)."""
     try:
-        text = json.dumps(value, default=str, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+        text = json.dumps(_text_keys(value), default=str, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
     except Exception:
         text = json.dumps(str(value))
     return text if len(text) <= _MAX_SETTINGS_CHARS else text[: _MAX_SETTINGS_CHARS] + "...(truncated)"
@@ -398,6 +412,8 @@ def settings_changes(project_root: Path, context: str, current: dict[str, Any]) 
         previous_all = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
     except Exception:
         previous_all = {}
+    if not isinstance(previous_all, dict):  # written by an older build as one string
+        previous_all = {}
     previous = previous_all.get(page_of(context))
     changes: dict[str, Any] = {}
     if isinstance(previous, dict):
@@ -408,8 +424,9 @@ def settings_changes(project_root: Path, context: str, current: dict[str, Any]) 
     previous_all[page_of(context)] = current
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(_json(previous_all), encoding="utf-8")
+        # Complete JSON, never cut short, in a temporary file of this process's own.
+        tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(_text_keys(previous_all), default=str, ensure_ascii=False), encoding="utf-8")
         os.replace(tmp, path)
     except Exception:
         pass
