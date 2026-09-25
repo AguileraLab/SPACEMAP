@@ -69,3 +69,27 @@ def test_a_temporary_xdg_data_home_is_not_used(tmp_path, monkeypatch):
         assert userpaths.spacemap_home() == kept / "spacemap"
     monkeypatch.setenv("SPACEMAP_HOME", str(tmp_path / "explicit"))
     assert userpaths.spacemap_home() == tmp_path / "explicit"  # an explicit choice always wins
+
+
+def test_the_chat_asks_for_the_model_under_the_name_the_server_was_started_with(monkeypatch):
+    from spacemap import ai_settings
+    from spacemap.model_catalog import list_models
+    from spacemap_assistant import model_client, model_runtime
+
+    entry = next(e for e in list_models() if e.backend != "gguf")
+    monkeypatch.setattr(ai_settings, "load_settings", lambda: {"active_model": entry.id})
+    command = model_runtime._build_command(entry, "bf16")
+    assert model_client.local_model_id() == command[command.index("--model-id") + 1]
+
+
+def test_thinking_markers_never_reach_the_answer():
+    from spacemap_assistant.model_service.server import _AnswerFilter, clean_answer
+
+    cases = {"thought\n<channel|>CD20": "CD20",  # seen from Gemma 4 12B on 2026-09-25
+             "<|channel>thought\nlet me see\n<channel|>A CD8 T cell kills.": "A CD8 T cell kills.",
+             "A CD8 T cell kills infected cells.": "A CD8 T cell kills infected cells.",
+             "thoughtful answer": "thoughtful answer"}
+    for raw, wanted in cases.items():
+        assert clean_answer(raw) == wanted
+        streamed = _AnswerFilter()
+        assert ("".join(streamed.feed(ch) for ch in raw) + streamed.flush()).strip() == wanted

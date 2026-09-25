@@ -29,10 +29,24 @@ DEFAULT_LOCAL_MODEL_ID = "local-model"
 
 
 def local_model_id() -> str:
-    """The id of the currently selected local model."""
+    """The name the local model server was started with for the selected model.
+
+    The runtime starts the server as ``--model-id <repo_id or id>`` and the
+    server refuses any other name, so requests must use the same one (the
+    catalog id alone was refused: "Only google/gemma-4-12B-it is installed").
+    """
     from spacemap.ai_settings import load_settings
 
-    return str(load_settings().get("active_model") or "").strip() or DEFAULT_LOCAL_MODEL_ID
+    selected = str(load_settings().get("active_model") or "").strip()
+    if not selected:
+        return DEFAULT_LOCAL_MODEL_ID
+    try:
+        from spacemap.model_catalog import get_model
+
+        entry = get_model(selected)
+    except Exception:
+        return selected
+    return entry.repo_id or entry.id
 
 
 def local_port() -> int:

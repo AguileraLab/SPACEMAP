@@ -62,3 +62,35 @@ def test_the_setup_page_shows_the_command(monkeypatch):
     commands = [block.value for block in app.code]
     assert any('-m pip install "transformers>=4.45"' in c and "torch" not in c for c in commands)
     assert any("same environment" in m.value or "inside the environment" in m.value for m in app.markdown)
+
+
+def test_download_progress_updates_by_itself_and_the_first_model_is_used(tmp_path, monkeypatch):
+    from streamlit.testing.v1 import AppTest
+
+    from spacemap.model_catalog import ModelEntry, list_models
+    from spacemap_assistant import model_installer
+
+    monkeypatch.setenv("SPACEMAP_CONFIG_DIR", str(tmp_path / "config"))
+    entry = next(e for e in list_models() if e.backend != "gguf")
+    state = {"now": "running"}
+    monkeypatch.setattr(ModelEntry, "is_installed", lambda self: state["now"] == "done")
+    monkeypatch.setattr(model_installer, "read_status", lambda model_id: model_installer.InstallStatus(
+        model_id=model_id, state=state["now"], message="Installed.", downloaded_bytes=6_700_000_000,
+        total_bytes=22_300_000_000))
+
+    def page(model_id):
+        from spacemap.hardware import detect_hardware
+        from spacemap.model_catalog import get_model
+        from spacemap_gui.components import assistant_setup
+
+        assistant_setup._render_model_row(get_model(model_id), detect_hardware(), token="")
+
+    app = AppTest.from_function(page, args=(entry.id,), default_timeout=300)
+    app.run()
+    assert not app.exception, app.exception
+    assert not [b for b in app.button if b.label == "Refresh"]  # no Refresh button any more
+    assert not ai_settings.load_settings()["active_model"]
+    state["now"] = "done"
+    app.run()
+    assert not app.exception, app.exception
+    assert ai_settings.load_settings()["active_model"] == entry.id  # Start is no longer greyed out

@@ -117,12 +117,32 @@ def _render_hardware(report) -> None:
         st.caption("PyTorch is not installed yet, so GPU details could not be read.")
 
 
+@st.fragment(run_every=2)
+def _download_progress(model_id: str) -> None:
+    """Download progress that updates by itself every 2 seconds (no Refresh button)."""
+    from spacemap_assistant import model_installer
+
+    status = model_installer.read_status(model_id)
+    if not status.is_active:
+        st.rerun()  # finished: the whole row shows the result
+        return
+    st.progress(
+        min(1.0, status.percent / 100.0),
+        text=f"{_human_bytes(status.downloaded_bytes)} of about "
+        f"{_human_bytes(status.total_bytes)} ({status.percent:.0f}%) · updates by itself",
+    )
+
+
 def _render_model_row(entry, report, token: str) -> None:
     """One model in the library, with its install controls."""
     from spacemap_assistant import model_installer
 
     status = model_installer.read_status(entry.id)
     installed = entry.is_installed()
+    if installed and status.state == "done" and not str(ai_settings.load_settings().get("active_model") or "").strip():
+        # With no model chosen yet, the one just downloaded is the one used
+        # (otherwise Start stayed disabled with "No model is selected").
+        ai_settings.update_settings(active_model=entry.id, backend="local")
     runnable, reason = can_run(
         report, min_vram_gb=entry.min_vram_gb, cpu_capable=entry.cpu_capable
     )
@@ -143,15 +163,8 @@ def _render_model_row(entry, report, token: str) -> None:
             st.caption("Added by you, in the user catalog.")
 
         if status.is_active:
-            st.progress(
-                min(1.0, status.percent / 100.0),
-                text=f"{_human_bytes(status.downloaded_bytes)} of about "
-                f"{_human_bytes(status.total_bytes)} ({status.percent:.0f}%)",
-            )
-            left, right = st.columns(2)
-            if left.button("Refresh", key=f"ai_refresh_{entry.id}"):
-                st.rerun()
-            if right.button("Cancel", key=f"ai_cancel_{entry.id}"):
+            _download_progress(entry.id)
+            if st.button("Cancel", key=f"ai_cancel_{entry.id}"):
                 model_installer.cancel_install(entry.id)
                 st.rerun()
             return
