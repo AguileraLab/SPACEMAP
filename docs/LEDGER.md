@@ -8,13 +8,15 @@ not edit it by hand -- run the script instead, or let CI regenerate it. The
 "Why" column comes from the `Why:` line in each commit message; see
 [CONTRIBUTING.md](../CONTRIBUTING.md) for how to write one.
 
-**27 changes** by **1 contributor**, touching **308 files**. Latest: `c0b12ec` on 2026-09-25.
+**29 changes** by **1 contributor**, touching **309 files**. Latest: `afd8ad2` on 2026-09-25.
 
 
 ## 2026-09
 
 | Date | Change | Who | Why | Files | Lines |
 | --- | --- | --- | --- | --- | --- |
+| 2026-09-25 | `afd8ad2` fix(tab3): refill blank marker names and black colours from the image | Bassel Dawod | the P11 channel list showed no names and black colours. | 3 | +84/-10 |
+| 2026-09-25 | `aa5a947` fix: run log crashed on settings keyed by numbers | Bassel Dawod | clicking an image in Tab 3 of the INNATE project raised AttributeError. | 2 | +34/-3 |
 | 2026-09-25 | `c0b12ec` fix: switching to a moved project no longer loops forever | Bassel Dawod | switching from PDAC to INNATE_all_083120206 (moved from SPACEMAP_V17 to SPACEMAP_github/project) froze the interface. | 5 | +117/-6 |
 | 2026-09-24 | `cb65845` fix: keep data out of the project file, and shrink files it already bloated | Bassel Dawod | the PDAC project file reached 44 GB and SPACEMAP hung at start-up using over 60 GB of memory; this had happened before with other results. | 4 | +491/-6 |
 | 2026-09-22 | `dcd8d79` feat: one run log per tab, and phenotype saves without rewriting the CSV | Bassel Dawod | the user found Leiden's log box off and asked for one consistently named, always-on log that records settings changes, time and compute; and asked for fast Parquet-backed saves that survive an interface crash. | 24 | +1893/-167 |
@@ -46,6 +48,21 @@ not edit it by hand -- run the script instead, or let CI regenerate it. The
 ---
 
 ## Files changed per commit
+
+<details><summary><code>afd8ad2</code> fix(tab3): refill blank marker names and black colours from the image</summary>
+
+- `CHANGELOG.md`
+- `src/spacemap_gui/tabs/tab3_roi_extraction.py`
+- `tests/test_tab3_marker_defaults.py`
+
+</details>
+
+<details><summary><code>aa5a947</code> fix: run log crashed on settings keyed by numbers</summary>
+
+- `src/spacemap_gui/run_log.py`
+- `tests/test_run_log.py`
+
+</details>
 
 <details><summary><code>c0b12ec</code> fix: switching to a moved project no longer loops forever</summary>
 
