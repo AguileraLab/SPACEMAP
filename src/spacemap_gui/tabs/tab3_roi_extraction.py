@@ -1633,6 +1633,27 @@ def _unset_colour(saved, image_colour) -> bool:
     return text in ("#000000", "#000") and str(image_colour or "").strip().lower() not in ("#000000", "#000", "")
 
 
+def _follow_pipeline_input() -> None:
+    """Images Directory follows the last step that produced images (Tab 2, else Tab 1).
+
+    A folder chosen by hand is kept; Tab 3's own output folder never is.
+    See spacemap_gui.pipeline_folders.
+    """
+    from spacemap_gui.pipeline_folders import follow_pipeline
+
+    mappings = dict((st.session_state.get("active_project") or {}).get("directory_mappings") or {})
+    mappings.update({key: value for key, value in st.session_state.items()
+                     if isinstance(key, str) and key.endswith("_dir") and not key.startswith("proj_dir_")
+                     and isinstance(value, str)})
+    current = st.session_state.get("tab3_multi_input_dir") or st.session_state.get("tab3_input_dir")
+    value, note = follow_pipeline(current, mappings)
+    if note:
+        st.session_state["tab3_multi_input_dir"] = value
+        st.session_state["tab3_input_dir"] = value
+        log_tab3(note)
+        st.caption(note)
+
+
 def render_multiple_images(project_root):
     c_head = st.columns([1])[0]
     c_head.header("Multiple Images")
@@ -1753,6 +1774,7 @@ def render_multiple_images(project_root):
     # --- LEFT COLUMN ---
     with col1:
         st.subheader("1. Directories")
+        _follow_pipeline_input()
         input_dir = directory_input_with_browse(
             label="Images Directory", text_key="tab3_multi_input_dir", default_value=str(project_root),
             browser_key_prefix="tab3_multi_input_dir", start_dir_fallback=str(project_root)

@@ -593,7 +593,21 @@ def load_project_config(project_root: str) -> dict:
             
             # Save the updated config back to disk to store the corrected paths
             save_project_config(current_root, config)
-            
+
+        from spacemap_gui.pipeline_folders import unlink_step_outputs
+
+        repaired = unlink_step_outputs(config, current_root)
+        if repaired:
+            log_persistence(f"Tab 2's output pointed at the ROI folder; set back to {repaired}.")
+            config.setdefault("audit_log", []).append({
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "tab_affected": "Background Subtraction",
+                "parameter_changed": "tab2_output_dir",
+                "old_value": "the ROI output folder (linked to Tab 3's input)",
+                "new_value": repaired,
+            })
+            save_project_config(current_root, config)
+
         return config
     except Exception as e:
         # A project that fails to load is NOT an empty project. Returning {} here
@@ -1220,6 +1234,24 @@ def values_equal(v1, v2) -> bool:
         if v1_norm == v2_norm:
             return True
         
+    return False
+
+
+def same_folder_setting(value, stored) -> bool:
+    """values_equal, and two spellings of one folder count as the same.
+
+    On UTSW BioHPC /work is a link to /endosome/work. A project opened through
+    one spelling and saved with the other showed every folder as changed, so
+    each page update saved the project and updated the page again.
+    """
+    if values_equal(value, stored):
+        return True
+    if isinstance(value, str) and isinstance(stored, str) and value.strip() and stored.strip():
+        try:
+            return os.path.realpath(os.path.expanduser(value.strip())) == \
+                os.path.realpath(os.path.expanduser(stored.strip()))
+        except (OSError, ValueError):
+            return False
     return False
 
 
@@ -2154,7 +2186,11 @@ def sync_project_state() -> None:
     DIRECTORY_GROUPS = [
         {"batch_codex_dir", "annot_image_dir"},
         {"tab1_batch_output_dir", "registration_output_dir", "tab2_input_dir_reg"},
-        {"tab2_output_dir", "bg_subtraction_output_dir", "tab3_input_dir", "tab3_multi_input_dir"},
+        # Tab 3's input used to be in this group, so choosing the ROI folder as its
+        # input made Tab 2 write there. It now follows the pipeline instead
+        # (spacemap_gui.pipeline_folders).
+        {"tab2_output_dir", "bg_subtraction_output_dir"},
+        {"tab3_input_dir", "tab3_multi_input_dir"},
         {
             "tab3_output_dir", "tab3_multi_output_dir", "roi_output_dir",
             "tab4_input_dir", "batch_input_dir", "vis_img_dir", "viz_roi_dir",
@@ -2208,7 +2244,7 @@ def sync_project_state() -> None:
         # Check global tab key
         if key in st.session_state:
             val = st.session_state[key]
-            if not values_equal(val, stored_val):
+            if not same_folder_setting(val, stored_val):
                 changed_group_val = val
                 for group in DIRECTORY_GROUPS:
                     if key in group:
@@ -2220,7 +2256,7 @@ def sync_project_state() -> None:
         # Check project tab key
         if proj_key in st.session_state:
             val = st.session_state[proj_key]
-            if not values_equal(val, stored_val):
+            if not same_folder_setting(val, stored_val):
                 changed_group_val = val
                 for group in DIRECTORY_GROUPS:
                     if key in group:
@@ -2236,7 +2272,7 @@ def sync_project_state() -> None:
     if changed_group_keys and changed_group_val is not None:
         for k in changed_group_keys:
             old_val = directory_mappings.get(k)
-            if not values_equal(old_val, changed_group_val):
+            if not same_folder_setting(old_val, changed_group_val):
                 directory_mappings[k] = changed_group_val
                 safe_set_session_state(k, changed_group_val)
                 safe_set_session_state(f"proj_dir_{k}", changed_group_val)
@@ -2284,13 +2320,13 @@ def sync_project_state() -> None:
         global_changed = False
         if global_in_state:
             val_global = st.session_state[key]
-            if not values_equal(val_global, stored_dir_val):
+            if not same_folder_setting(val_global, stored_dir_val):
                 global_changed = True
                 
         proj_changed = False
         if proj_in_state:
             val_proj = st.session_state[proj_key]
-            if not values_equal(val_proj, stored_dir_val):
+            if not same_folder_setting(val_proj, stored_dir_val):
                 proj_changed = True
                 
         if global_changed:
@@ -2451,7 +2487,10 @@ def hydrate_project_state(config: dict, project_root: str) -> None:
         del st.session_state[key]
         
     # The root must be set before restoring, because interface-state routing and
-    # ${PROJECT_ROOT} expansion both key off it.
+    # ${PROJECT_ROOT} expansion both key off it. One spelling of it: a project
+    # opened as /work/... and saved as /endosome/work/... (the same folder)
+    # otherwise showed every folder as changed.
+    project_root = str(Path(project_root).resolve())
     st.session_state["active_project_root"] = project_root
     config = restore_portable_state(config, project_root)
 
