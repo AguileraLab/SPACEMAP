@@ -91,6 +91,10 @@ Tabs 7 and 9, and a Z1 option for Resolve. Grouped by tab.
 
 ### Tab 3 — ROI Extraction
 
+- **Fixed:** marker names showed as empty boxes and colours as black when
+  blanks had been saved in the project (seen for INNATE's P11). Black was also
+  written into the extracted ROI files. A blank name, or black where the image
+  gives a colour, is now filled from the image again.
 - **Fixed:** TMA core-detection settings (core size, sensitivity, row gap, row
   label format, name prefix) were never saved: their keys belonged to no tab.
 - **Fixed:** numbered TMA rows produced duplicate core names — row 1 column 12

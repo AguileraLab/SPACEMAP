@@ -591,16 +591,14 @@ def render_single_image(project_root):
                 for i, (ch, col, m) in enumerate(zip(channels, colors, meta)):
                     # Color state
                     color_key = f"roi_color_{i}"
-                    if color_key not in st.session_state:
-                        if isinstance(col, tuple):
-                            hex_col = '#{:02x}{:02x}{:02x}'.format(*col)
-                        else:
-                            hex_col = col
+                    hex_col = '#{:02x}{:02x}{:02x}'.format(*col) if isinstance(col, tuple) else col
+                    if _unset_colour(st.session_state.get(color_key), hex_col):
                         st.session_state[color_key] = hex_col
+                        st.session_state.pop(f"roi_cp_{i}", None)
                         
-                    # Name state
+                    # Name state (a blank saved name is filled from the image again)
                     name_key = f"roi_name_{i}"
-                    if name_key not in st.session_state:
+                    if not str(st.session_state.get(name_key) or "").strip():
                         st.session_state[name_key] = ch
                         
                     # Export state
@@ -1622,6 +1620,19 @@ def _friendly_shape_type(obj: dict[str, Any]) -> str:
     return str(raw).capitalize() if raw else "?"
 
 
+def _unset_colour(saved, image_colour) -> bool:
+    """True when a marker's colour should be taken from the image.
+
+    Missing, or black while the image gives the marker a real colour: black
+    would hide the marker in every viewer, and is what an interrupted save
+    leaves behind.
+    """
+    text = str(saved or "").strip().lower()
+    if not text:
+        return True
+    return text in ("#000000", "#000") and str(image_colour or "").strip().lower() not in ("#000000", "#000", "")
+
+
 def render_multiple_images(project_root):
     c_head = st.columns([1])[0]
     c_head.header("Multiple Images")
@@ -1923,9 +1934,12 @@ def render_multiple_images(project_root):
 
                      if isinstance(col, tuple): hex_c = '#{:02x}{:02x}{:02x}'.format(*col)
                      else: hex_c = col
-                     if k_name not in st.session_state:
-                         st.session_state[k_name] = str(st.session_state[rename_key].get(name, name))
-                     if k_col not in st.session_state:
+                     # A blank name or a black colour is never a real choice: it is what an
+                     # interrupted save left behind. Fill it from the image again, or the
+                     # table shows empty boxes and black is written into the ROI files.
+                     if not str(st.session_state.get(k_name) or "").strip():
+                         st.session_state[k_name] = str(st.session_state[rename_key].get(name) or name)
+                     if _unset_colour(st.session_state.get(k_col), hex_c):
                          st.session_state[k_col] = hex_c
 
                      r1, r2, r3, r4, r5 = st.columns([0.8, 0.8, 3, 1, 1.5])
