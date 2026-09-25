@@ -25,8 +25,6 @@ from spacemap.model_catalog import ModelCatalogError, list_models, remove_user_m
 from spacemap.userpaths import describe_layout
 
 #: The extra that installs everything a local model needs.
-AI_EXTRA_COMMAND = "pip install 'spacemap-ai[ai]'"
-GGUF_EXTRA_COMMAND = "pip install 'spacemap-ai[ai,gguf]'"
 
 
 def _human_bytes(value: float) -> str:
@@ -57,27 +55,51 @@ def _render_disabled_state() -> None:
 
 
 def _render_dependency_status() -> bool:
-    """Show whether the AI packages are importable.  Returns True when ready."""
-    missing = ai_settings.missing_local_dependencies()
+    """Show which packages the local model needs, which are installed, and how to add the rest.
+
+    Returns True when everything required is installed.
+    """
+    report = ai_settings.dependency_report()
+    missing = [item for item in report if item["required"] and not item["installed"]]
+    optional = [item for item in report if not item["required"] and not item["installed"]]
+    environment = ai_settings.environment_name()
     if not missing:
-        st.success("AI dependencies are installed.")
+        st.success(f"Everything the local model needs is installed in `{environment}`.")
+        if optional:
+            st.caption(
+                "Optional: `bitsandbytes` lets a large model fit a smaller NVIDIA GPU (8- or 4-bit). "
+                "Install it only if a model does not fit: "
+                f"`{ai_settings.install_command([(item['name'], item['wanted']) for item in optional])}`"
+            )
         return True
 
-    st.warning(
-        "The packages needed to run a model on this machine are not installed: "
-        + ", ".join(f"`{name}`" for name in missing)
+    st.warning(f"The local model needs {len(missing)} more package(s) in the environment that runs SPACEMAP.")
+    st.markdown(
+        f"The assistant's model runs **inside the environment that already runs SPACEMAP** (`{environment}`), "
+        "not in a separate one. Packages it has already are not installed again."
+    )
+    st.dataframe(
+        [{"Package": item["name"], "Needed": "yes" if item["required"] else "optional",
+          "Installed": item["installed"] or "missing"} for item in report],
+        hide_index=True, width="stretch",
     )
     st.markdown(
-        "Install them into the same environment that runs SPACEMAP, then use "
-        "**Re-check** below:"
+        "Run this in a terminal on a machine with internet access (the cluster's login node is fine: "
+        "the environment is on shared storage, so every node sees the new packages). It names SPACEMAP's "
+        "own Python, so the packages go into the right environment whatever it is called:"
     )
-    st.code(f"{Path(sys.executable).name} -m {AI_EXTRA_COMMAND}", language="bash")
+    st.code(ai_settings.install_command([(item["name"], item["wanted"]) for item in missing]), language="bash")
     st.caption(
-        "For a small quantized model on a machine with no GPU, install the GGUF extra "
-        f"instead: `{GGUF_EXTRA_COMMAND}`. The assistant can still use a remote API "
-        "provider without any of these packages."
+        f"The same with conda: `conda activate {environment}`, then "
+        f"`python -m pip install {' '.join(repr(item['name'] + item['wanted']) for item in missing)}`. "
+        "Then press **Re-check** below; no restart is needed."
     )
-    if st.button("Re-check dependencies", key="ai_setup_recheck"):
+    st.caption(
+        "For a small quantized model on a machine without a GPU, install "
+        f"`{ai_settings.install_command([(n, v) for n, v, _, _ in ai_settings.GGUF_PACKAGES])}` instead. "
+        "The assistant can also use a remote API provider without any of these packages."
+    )
+    if st.button("Re-check", key="ai_setup_recheck"):
         st.rerun()
     return False
 

@@ -382,11 +382,9 @@ def start_runtime(precision: str = "auto") -> RuntimeStatus:
     except FileNotFoundError as exc:
         raise ModelRuntimeError(
             f"Could not start the model server: {exc}. "
-            + (
-                "Install the GGUF extra with: pip install 'spacemap-ai[gguf]'"
-                if entry.backend == "gguf"
-                else "Install the AI extras with: pip install 'spacemap-ai[ai]'"
-            )
+            + "Install the missing packages into SPACEMAP's environment from Tab 0 -> AI Assistant (optional), which "
+            "shows what is missing and the exact command"
+            + (" (a GGUF model needs llama-cpp-python)." if entry.backend == "gguf" else ".")
         ) from exc
     except OSError as exc:
         raise ModelRuntimeError(f"Could not start the model server: {exc}") from exc

@@ -130,8 +130,8 @@ def _require_hub():
         import huggingface_hub  # noqa: F401
     except ImportError as exc:  # pragma: no cover - depends on the install
         raise ModelInstallError(
-            "Downloading a model needs the 'huggingface-hub' package. Install the AI "
-            "extras with: pip install 'spacemap-ai[ai]'"
+            "Downloading a model needs the 'huggingface-hub' package in SPACEMAP's environment. "
+            "Tab 0 -> AI Assistant (optional) shows the exact command to install it."
         ) from exc
     return __import__("huggingface_hub")
 
