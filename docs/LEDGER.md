@@ -8,13 +8,14 @@ not edit it by hand -- run the script instead, or let CI regenerate it. The
 "Why" column comes from the `Why:` line in each commit message; see
 [CONTRIBUTING.md](../CONTRIBUTING.md) for how to write one.
 
-**30 changes** by **1 contributor**, touching **311 files**. Latest: `6371845` on 2026-09-25.
+**31 changes** by **1 contributor**, touching **312 files**. Latest: `2a8050b` on 2026-09-25.
 
 
 ## 2026-09
 
 | Date | Change | Who | Why | Files | Lines |
 | --- | --- | --- | --- | --- | --- |
+| 2026-09-25 | `2a8050b` fix(assistant): clear instructions for installing what the local model needs | Bassel Dawod | the user could not tell which environment to install into, whether a separate one was needed, or what was already installed. | 5 | +172/-23 |
 | 2026-09-25 | `6371845` test: every page must still render (guard for changes elsewhere) | Bassel Dawod | the image viewer work must leave every SPACEMAP feature intact, and this makes a broken page fail the tests. | 2 | +153/-0 |
 | 2026-09-25 | `afd8ad2` fix(tab3): refill blank marker names and black colours from the image | Bassel Dawod | the P11 channel list showed no names and black colours. | 3 | +84/-10 |
 | 2026-09-25 | `aa5a947` fix: run log crashed on settings keyed by numbers | Bassel Dawod | clicking an image in Tab 3 of the INNATE project raised AttributeError. | 2 | +34/-3 |
@@ -49,6 +50,16 @@ not edit it by hand -- run the script instead, or let CI regenerate it. The
 ---
 
 ## Files changed per commit
+
+<details><summary><code>2a8050b</code> fix(assistant): clear instructions for installing what the local model needs</summary>
+
+- `src/spacemap/ai_settings.py`
+- `src/spacemap_assistant/model_installer.py`
+- `src/spacemap_assistant/model_runtime.py`
+- `src/spacemap_gui/components/assistant_setup.py`
+- `tests/test_ai_install_help.py`
+
+</details>
 
 <details><summary><code>6371845</code> test: every page must still render (guard for changes elsewhere)</summary>
 
