@@ -8,13 +8,14 @@ not edit it by hand -- run the script instead, or let CI regenerate it. The
 "Why" column comes from the `Why:` line in each commit message; see
 [CONTRIBUTING.md](../CONTRIBUTING.md) for how to write one.
 
-**29 changes** by **1 contributor**, touching **309 files**. Latest: `afd8ad2` on 2026-09-25.
+**30 changes** by **1 contributor**, touching **311 files**. Latest: `6371845` on 2026-09-25.
 
 
 ## 2026-09
 
 | Date | Change | Who | Why | Files | Lines |
 | --- | --- | --- | --- | --- | --- |
+| 2026-09-25 | `6371845` test: every page must still render (guard for changes elsewhere) | Bassel Dawod | the image viewer work must leave every SPACEMAP feature intact, and this makes a broken page fail the tests. | 2 | +153/-0 |
 | 2026-09-25 | `afd8ad2` fix(tab3): refill blank marker names and black colours from the image | Bassel Dawod | the P11 channel list showed no names and black colours. | 3 | +84/-10 |
 | 2026-09-25 | `aa5a947` fix: run log crashed on settings keyed by numbers | Bassel Dawod | clicking an image in Tab 3 of the INNATE project raised AttributeError. | 2 | +34/-3 |
 | 2026-09-25 | `c0b12ec` fix: switching to a moved project no longer loops forever | Bassel Dawod | switching from PDAC to INNATE_all_083120206 (moved from SPACEMAP_V17 to SPACEMAP_github/project) froze the interface. | 5 | +117/-6 |
@@ -48,6 +49,13 @@ not edit it by hand -- run the script instead, or let CI regenerate it. The
 ---
 
 ## Files changed per commit
+
+<details><summary><code>6371845</code> test: every page must still render (guard for changes elsewhere)</summary>
+
+- `tests/page_smoke.py`
+- `tests/test_pages_render.py`
+
+</details>
 
 <details><summary><code>afd8ad2</code> fix(tab3): refill blank marker names and black colours from the image</summary>
 
