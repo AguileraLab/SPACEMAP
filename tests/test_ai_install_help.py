@@ -81,9 +81,9 @@ def test_download_progress_updates_by_itself_and_the_first_model_is_used(tmp_pat
     def page(model_id):
         from spacemap.hardware import detect_hardware
         from spacemap.model_catalog import get_model
-        from spacemap_gui.components import assistant_setup
+        from spacemap_gui.components import ai_setup
 
-        assistant_setup._render_model_row(get_model(model_id), detect_hardware(), token="")
+        ai_setup._render_model_row(get_model(model_id), detect_hardware(), "test")
 
     app = AppTest.from_function(page, args=(entry.id,), default_timeout=300)
     app.run()

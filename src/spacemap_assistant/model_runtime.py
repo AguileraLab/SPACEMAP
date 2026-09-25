@@ -48,6 +48,10 @@ PRECISIONS = ("auto", "float32", "bfloat16", "int8", "int4")
 STARTUP_GRACE_SECONDS = 1.0
 
 
+#: Where the assistant's settings are, for messages.
+SETUP_PLACE = "AI setup (Tab 0 > AI Assistant, or Setup on the assistant page)"
+
+
 class ModelRuntimeError(RuntimeError):
     """Raised when the local model runtime cannot be managed."""
 
@@ -237,12 +241,12 @@ def runtime_status() -> RuntimeStatus:
     if entry is None:
         return RuntimeStatus(
             False, False, False, None,
-            "No model is selected. Choose one in Tab 0 under AI Assistant.",
+            f"No model is chosen yet. Choose one in {SETUP_PLACE}.",
         )
     if not entry.is_installed():
         return RuntimeStatus(
             False, False, False, None,
-            f"{entry.name} is not installed yet. Download it in Tab 0 under AI Assistant.",
+            f"{entry.name} is not downloaded yet. Download it in {SETUP_PLACE}.",
             model_id=entry.id, backend=entry.backend,
         )
 
@@ -382,7 +386,7 @@ def start_runtime(precision: str = "auto") -> RuntimeStatus:
     except FileNotFoundError as exc:
         raise ModelRuntimeError(
             f"Could not start the model server: {exc}. "
-            + "Install the missing packages into SPACEMAP's environment from Tab 0 -> AI Assistant (optional), which "
+            + f"Install the missing packages into SPACEMAP's environment: {SETUP_PLACE} "
             "shows what is missing and the exact command"
             + (" (a GGUF model needs llama-cpp-python)." if entry.backend == "gguf" else ".")
         ) from exc
@@ -399,6 +403,47 @@ def start_runtime(precision: str = "auto") -> RuntimeStatus:
             pass
         raise ModelRuntimeError(f"{entry.name} stopped during startup.\n{tail}")
     return runtime_status()
+
+
+def _log_tail(lines: int = 12) -> str:
+    try:
+        return "\n".join(_log_path().read_text(encoding="utf-8", errors="replace").splitlines()[-lines:])
+    except OSError:
+        return ""
+
+
+def ensure_running(*, precision: str | None = None, timeout: float = 900.0, on_wait=None) -> RuntimeStatus:
+    """Start the chosen local model if it is stopped, and wait until it answers.
+
+    Lets the chat start the model by itself when a question is asked, instead
+    of sending you to a settings page first. *on_wait(status, seconds)* is
+    called every few seconds while it loads. Raises ModelRuntimeError when the
+    model is not downloaded, stops while loading, or is not ready in time.
+    """
+    status = runtime_status()
+    if status.ready:
+        return status
+    if not status.installed:
+        raise ModelRuntimeError(status.message)
+    if not status.running:
+        if precision is None:
+            from spacemap.ai_settings import load_settings
+
+            precision = str(load_settings().get("precision") or "auto")
+        start_runtime(precision)
+    started = time.monotonic()
+    while True:
+        status = runtime_status()
+        if status.ready:
+            return status
+        waited = time.monotonic() - started
+        if not status.running:
+            raise ModelRuntimeError(f"The model stopped while loading.\n{_log_tail()}")
+        if waited > timeout:
+            raise ModelRuntimeError(f"The model is still loading after {waited:.0f} s.\n{_log_tail()}")
+        if on_wait is not None:
+            on_wait(status, waited)
+        time.sleep(3)
 
 
 def stop_runtime() -> RuntimeStatus:

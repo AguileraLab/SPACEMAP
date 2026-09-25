@@ -30,15 +30,10 @@ def test_assistant_workspace_renders_without_exception(assistant_on: None) -> No
     app.run()
     assert not app.exception
     labels = [tab.label for tab in app.tabs]
-    for expected in (
-        "Chat",
-        "Actions",
-        "Instructions & Safety",
-        "Memory",
-        "Model & Compute",
-        "Admin Access",
-    ):
-        assert expected in labels
+    # One Setup tab replaced Model & Compute, Admin Access and Settings.
+    assert labels[:5] == ["Chat", "Actions", "Instructions & Safety", "Memory", "Setup"]
+    for removed in ("Model & Compute", "Admin Access", "Settings", "Local model", "Provider and API key"):
+        assert removed not in labels
     for removed_action_subtab in (
         "Registration",
         "ROI Extraction",
@@ -47,11 +42,12 @@ def test_assistant_workspace_renders_without_exception(assistant_on: None) -> No
         "Tool Coverage",
     ):
         assert removed_action_subtab not in labels
-    assert "Local model" in labels
-    assert "Provider and API key" in labels
-    assert "Cluster" in labels
-    assert "Model & Compute" in labels
-    assert labels[-1] == "Settings"
+    for inside_setup in ("Answers", "Cluster", "Folder access for AI tools", "Activity and model log"):
+        assert inside_setup in labels
+    expanders = [expander.label for expander in app.expander]
+    for section in ("Find more models on Hugging Face", "Answer with an online model instead (optional)",
+                    "Storage and access", "Advanced"):
+        assert section in expanders
     button_labels = [button.label for button in app.button]
     assert "New Chat" in button_labels
     assert "Retry Last Request" in button_labels

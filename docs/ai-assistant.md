@@ -55,64 +55,58 @@ that keeps data in place.
 
 ---
 
-## Installing a local model
+## Setting it up: one page
 
-### Step 1 — install the AI packages
+Everything is on one page, **AI setup**. It is in Tab 0 (**AI Assistant**) and,
+identically, in the **Setup** tab of the assistant page, so you never need to
+go to a second place.
 
-The panel checks whether `torch`, `transformers`, `accelerate`, `fastapi` and
-`uvicorn` can be imported. If any are missing it prints the exact command for
-your environment:
+**At the top** a row shows what is done (assistant on, packages, model
+downloaded, model chosen, model running) and **one button for the next step**:
 
-```bash
-python -m pip install 'spacemap-ai[ai]'
-```
+1. **Packages.** The environment made from `environment.yml` already has them.
+   Otherwise the page shows the one command to run, naming SPACEMAP's own
+   Python so the packages go into the right environment.
+2. **Download** the model suggested for this machine (the largest that fits
+   its GPU), or any other from the list below. Progress updates by itself.
+3. **Use** it. The first model you download is chosen automatically.
+4. **Start** it, or simply ask a question: the chosen model **starts by itself**
+   when you ask (about a minute on a GPU), and the chat shows the progress.
+5. **Ask a test question** to see it answer.
 
-On a machine with no GPU, install the GGUF extra instead — it is far smaller
-and much faster on CPU:
-
-```bash
-python -m pip install 'spacemap-ai[gguf]'
-```
-
-Click **Re-check dependencies** afterwards.
-
-### Step 2 — pick a model
-
-The **Model library** lists what SPACEMAP knows about, with its size, its
-license, and whether your hardware can run it. The panel reads your actual CPU,
-memory and GPU and says so plainly — for example *"No GPU detected, so this
-model will run on CPU. Expect slow replies."*
+**Models.** Each model is one row: what it is (size, whether it reads images,
+license, whether it fits this machine), its state (not downloaded,
+downloading, downloaded, in use: stopped, starting or ready) and its buttons
+(Download, Use, Start, Stop, Remove files).
 
 | Model | Size | Needs | Notes |
 | --- | --- | --- | --- |
-| Qwen3 4B Instruct (Q4_K_M) | ~2.5 GB | No GPU | Text only. The practical choice on a laptop. |
-| Gemma 4 12B Instruct | ~24 GB | ~28 GB GPU | Reads images, so it can comment on previews. |
+| Gemma 4 12B Instruct | ~24 GB | ~28 GB GPU | Reads images, so it can comment on previews. Checked on an RTX PRO 6000: ready in about 60 s, answers in seconds. |
 | Llama 3.1 8B Instruct | ~16 GB | ~20 GB GPU | Text only. Access must be approved on Hugging Face. |
+| Qwen3 4B Instruct (Q4_K_M) | ~2.5 GB | No GPU | Text only; needs `pip install -e ".[gguf]"`. |
 
-Start with **Qwen3 4B** unless you have a large GPU. It needs no GPU, no
-license approval and no token.
+**Find more models on Hugging Face.** Type a few words (for example
+*qwen3 instruct* or *medgemma*), choose text or text-and-images, and press
+**Search**. Results show downloads, size and license; **Add** puts a model in
+the list, where it is downloaded and used like the others. Only models with
+`safetensors` weights are offered, since those are the ones SPACEMAP's model
+server loads.
 
-### Step 3 — gated models need a token
+**Gated models** (Gemma, Llama) need their terms accepted on Hugging Face and a
+read token (<https://huggingface.co/settings/tokens>), saved under **Storage
+and access**. It is stored in your configuration folder, readable only by you;
+`HF_TOKEN` works too.
 
-Gemma and Llama require you to accept their terms before downloading. If you
-choose one:
+**Storage and access** shows the models folder and its free space. On a
+cluster choose a folder on work storage: home folders are often small.
 
-1. Sign in to Hugging Face and accept the terms on the model's page (the panel
-   links to it).
-2. Create a **read** token at <https://huggingface.co/settings/tokens>.
-3. Paste it into **Hugging Face access token** in the panel.
+**Answer with an online model instead (optional)** chooses the NVIDIA hosted
+model and its key. It is off unless you choose it; your question and recent
+chat then leave the machine.
 
-The token is stored in your configuration directory, readable only by you. You
-can also supply it as `HF_TOKEN` instead of saving it.
-
-### Step 4 — download
-
-Click **Download**. The download runs in the background with a progress bar and
-survives page changes and browser reloads. When it finishes, click **Use this
-model**.
-
-Then open the **AI Assistant** page, go to **Model → Local model**, and start
-the server. The first start takes a few minutes while the weights load.
+**Advanced** holds the GPU memory mode (auto, full quality, 8-bit, 4-bit),
+answer settings, cluster (Slurm) settings, folder access for AI tools, the
+activity log, the model server's log, and **Turn the assistant off**.
 
 ---
 
@@ -198,7 +192,7 @@ same folder and each will see the models as installed.
 
 If SPACEMAP runs on the login node of a Slurm cluster, the assistant can submit
 the model server as a job instead of running it on the login node. Enable it in
-**Tab 0 → AI Assistant → Run model jobs on a cluster**.
+**AI setup → Advanced → Cluster**.
 
 The control is disabled unless `sbatch` is actually on your PATH, so it stays
 invisible on a workstation. Partitions are ranked by what Slurm reports — idle
@@ -220,7 +214,7 @@ By default it may:
 
 It may **never** write to the installed source, the model store, or your
 configuration. An administrator can grant additional exact folders, read-only
-or read-write, in the **Admin Access** tab. Whole filesystem roots and home
+or read-write, in **AI setup → Advanced → Folder access for AI tools**. Whole filesystem roots and home
 directories are refused.
 
 ---
@@ -240,7 +234,7 @@ human-subject data. The interface says which provider is active on every reply.
 
 ## Turning it off again
 
-**Tab 0 → AI Assistant → Turn off.** The page disappears immediately.
+**AI setup → Advanced → Turn the assistant off.** The page disappears immediately.
 
 To also reclaim the disk space:
 
