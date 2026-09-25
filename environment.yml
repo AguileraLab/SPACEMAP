@@ -1,28 +1,34 @@
-# Conda environment for SPACEMAP.
+# Conda environment for SPACEMAP, its image viewer and its AI assistant.
 #
-# Conda supplies the compiled geospatial and imaging libraries that are awkward
-# to build with pip; the Python package itself is installed afterwards:
+# From the repository folder:
 #
 #     conda env create -f environment.yml
 #     conda activate spacemap
-#     pip install -e .
+#     spacemap doctor          # checks the environment and says what to fix
 #
-# The AI assistant is optional and is not installed here. Enable it from
-# Tab 0 inside the interface, which prints the command for this environment.
+# Conda supplies Python only; every package comes from pip through
+# pyproject.toml, so this file and `pip install -e ".[ai]"` give the same
+# environment. `pip check` is clean for it.
+#
+# Python 3.10: palom (registration) needs scikit-image < 0.20, and the last
+# such release (0.19.3) has no builds for newer Python versions.
+#
+# The AI assistant's packages (the `ai` extra) and JupyterLab for the notebooks
+# (the `notebook` extra) are included; the models
+# themselves are downloaded from the assistant's setup page. DeepCell is not
+# installed: add it with `pip install -e ".[deepcell]"` if you want that
+# segmentation method (it pulls TensorFlow).
+#
+# On a cluster, keep large downloads out of a small home folder, for example:
+#     export PIP_CACHE_DIR=/path/on/work/.pip_cache
 name: spacemap
 channels:
   - conda-forge
 dependencies:
-  - python=3.11
+  - python=3.10
   - pip
-  # Numeric stack, pinned where the pipeline is sensitive to the ABI.
-  - numpy=1.26.*
-  - scipy>=1.12
-  - libopenblas
-  # Compiled libraries behind rasterio, geopandas, shapely and opencv.
-  - gdal
-  - geos
-  - proj
-  - hdf5
-  # Developer tools
-  - pytest>=7.4.4
+  - pip:
+      - -e .[ai,notebook]
+      - pytest>=7.4.4
+      - ruff>=0.5
+      - httpx>=0.27

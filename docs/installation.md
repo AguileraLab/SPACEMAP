@@ -8,8 +8,12 @@ SPACEMAP installs in three ways. Pick one:
 | [pip](#pip) | An environment you already manage. | Python 3.10+ and system libraries |
 | [Docker](#docker) | A reproducible run, or a machine you cannot install onto. | Docker |
 
-The AI assistant is **optional and off by default** in every route. Install it
-later, from inside the interface — see [ai-assistant.md](ai-assistant.md).
+The AI assistant is **optional and off by default** in every route. The conda
+environment already contains its packages; you switch it on and download a
+model in **AI setup** (Tab 0 > AI Assistant) — see [ai-assistant.md](ai-assistant.md).
+
+After installing, run `spacemap doctor`: it checks the environment and says in
+plain words what, if anything, to fix.
 
 ---
 
@@ -19,11 +23,25 @@ later, from inside the interface — see [ai-assistant.md](ai-assistant.md).
 git clone https://github.com/AguileraLab/SPACEMAP.git
 cd SPACEMAP
 
-conda env create -f environment.yml
+conda env create -f environment.yml     # SPACEMAP, the image viewer and the assistant's packages
 conda activate spacemap
-
-pip install -e .
+spacemap doctor                         # every line should say OK (a NOTE is information)
 ```
+
+`environment.yml` takes Python from conda and installs everything else with pip
+from `pyproject.toml` (`pip install -e ".[ai]"` plus the test tools), so the
+checkout is installed in editable mode and `pip check` reports no conflicts.
+
+**On a cluster** (for example UTSW BioHPC):
+
+- Keep pip's download cache off a small home folder:
+  `export PIP_CACHE_DIR=/work/<lab>/<you>/.pip_cache` before creating the environment.
+- Create the environment on work storage if your conda keeps environments in
+  your home folder: `conda env create -f environment.yml -p /work/<lab>/<you>/envs/spacemap`.
+- Choose a models folder on work storage in AI setup (models are 5-25 GB each).
+- SPACEMAP ignores `XDG_DATA_HOME` when it points into `/tmp` (BioHPC sets it
+  for everyone): `/tmp` is local to one node and cleaned. Settings go to
+  `~/.spacemap` instead.
 
 Start it:
 
@@ -115,8 +133,25 @@ pip install -e ".[notebook]"  # JupyterLab for the notebooks
 pip install -e ".[all]"       # everything
 ```
 
-**You do not need to install the AI extras by hand.** Tab 0 shows the exact
-command for your environment and re-checks when you have run it.
+The conda environment already includes `ai`. In an environment made another
+way, AI setup (Tab 0 > AI Assistant) shows the exact command for that
+environment and checks again when you have run it.
+
+### Why some versions are held back
+
+`pyproject.toml` pins a few packages below their newest releases, on purpose:
+
+- **palom** (registration) requires numpy < 2, scikit-image < 0.20 and
+  tifffile <= 2024.7.2; palom 2024.x also requires zarr < 2.15.
+- **scimap** (Tab 7's SCIMAP method) requires zarr == 2.10.3, tifffile < 2024,
+  scipy <= 1.12.0 and dask < 2024. Every palom release since 2025 needs
+  zarr >= 2.17, so palom stays at 2024.12.1.
+- palom 2024.12.1 installs `opencv-python` next to the `opencv-python-headless`
+  that Cellpose and SPACEMAP use. Both come at the same version; `spacemap doctor`
+  mentions it as a note.
+
+Installing a newer version of any of these by hand makes pip report conflicts
+and can break registration or the SCIMAP method.
 
 DeepCell is optional on purpose: it pulls TensorFlow, which is a large and
 version-sensitive install. Cellpose segmentation is included in the base
@@ -176,6 +211,7 @@ print(describe_layout())
 
 ```bash
 spacemap --version
+spacemap doctor             # environment check: versions, conflicts, GPU, folders
 python -m pytest            # from a clone
 ```
 

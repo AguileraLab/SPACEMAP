@@ -39,6 +39,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "server_host": "127.0.0.1",
     "server_port": 8091,
     "models_dir": "",
+    # GPU memory mode for the local model: auto, bfloat16, float32, int8 or int4 (model_runtime.PRECISIONS).
+    "precision": "auto",
     "allow_downloads": True,
     "api": {
         "provider": "",
@@ -209,7 +211,7 @@ def clear_token() -> None:
 #: only lets large models fit a smaller NVIDIA GPU (8- or 4-bit).
 AI_PACKAGES: tuple[tuple[str, str, str, bool], ...] = (
     ("torch", ">=2.0.0", "torch", True),
-    ("transformers", ">=4.45", "transformers", True),
+    ("transformers", ">=5.0", "transformers", True),
     ("accelerate", ">=0.30", "accelerate", True),
     ("safetensors", ">=0.4", "safetensors", True),
     ("huggingface-hub", ">=0.24", "huggingface_hub", True),
