@@ -323,11 +323,15 @@ def get_default_directory_mappings(project_root_str: str, codex_dir: str, he_dir
     }
 
 
-def load_project_callback(project_root: str):
-    """Load project config and hydrate session state exclusively from it."""
+def load_project_callback(project_root: str) -> bool:
+    """Load project config and hydrate session state exclusively from it.
+
+    Returns False when nothing could be loaded (missing folder or file), so
+    callers can report it instead of retrying.
+    """
     config = load_project_config(project_root)
     if not config:
-        return
+        return False
         
     from spacemap_gui.persistence import hydrate_project_state
     hydrate_project_state(config, project_root)
@@ -342,6 +346,7 @@ def load_project_callback(project_root: str):
     
     # Force sidebar selectbox synchronization on rerun
     st.session_state["_force_sidebar_proj_sync"] = True
+    return True
 
 
 def create_project_callback():

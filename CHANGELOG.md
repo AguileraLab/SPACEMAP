@@ -17,6 +17,12 @@ Tabs 7 and 9, and a Z1 option for Resolve. Grouped by tab.
 
 ### All tabs
 
+- **Fixed: switching to a moved project froze SPACEMAP.** If a project's
+  folder had been moved, choosing it in the sidebar loaded nothing and the
+  page restarted itself endlessly (full CPU, Ctrl+C slow to respond). Now the
+  sidebar looks for the project next to your other projects and remembers its
+  new place. If it is not found, it shows an error and stays on the current
+  project. Projects whose folder is missing are marked "(folder not found)".
 - **Fixed: the project file could grow to tens of GB.** Tab 8's
   neighbourhood result (a per-cell table held inside a session value) was
   saved into the project file, which reached 44 GB and made SPACEMAP take

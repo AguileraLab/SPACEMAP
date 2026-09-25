@@ -508,8 +508,19 @@ with st.sidebar:
     if st.session_state.get("_force_sidebar_proj_sync"):
         st.session_state["_global_sidebar_proj"] = active_project_name
         st.session_state["_force_sidebar_proj_sync"] = False
-        
-    selected_proj_name = st.selectbox("Active Project", project_names, index=idx, key="_global_sidebar_proj")
+
+    from spacemap_gui.persistence import project_config_path
+
+    missing = {name for name, root in (projects or {}).items() if project_config_path(root) is None}
+
+    def _project_label(name: str) -> str:
+        return f"{name} (folder not found)" if name in missing else name
+
+    selected_proj_name = st.selectbox("Active Project", project_names, index=idx, key="_global_sidebar_proj",
+                                      format_func=_project_label)
+    project_error = st.session_state.pop("_sidebar_project_error", None)
+    if project_error:
+        st.error(project_error)
     
     # If user changed the project, load it instantly
     if selected_proj_name != active_project_name:
@@ -527,7 +538,25 @@ with st.sidebar:
             unload_project_callback()
             st.switch_page(str(current_dir / "tabs/tab0_project.py"))
         elif projects and selected_proj_name in projects:
-            load_project_callback(projects[selected_proj_name])
+            from spacemap_gui.persistence import find_moved_project, save_project_to_index
+
+            target = projects[selected_proj_name]
+            if selected_proj_name in missing:
+                # The folder was moved: look for it beside the other projects and
+                # remember the new place, instead of loading nothing.
+                found = find_moved_project(selected_proj_name, projects)
+                if found is not None:
+                    save_project_to_index(selected_proj_name, str(found))
+                    target = str(found)
+            if not load_project_callback(target):
+                # Loading nothing must not leave the list pointing at a project that
+                # is not loaded: every rerun would try again, forever.
+                st.session_state["_sidebar_project_error"] = (
+                    f"Could not open '{selected_proj_name}': no project settings file in `{target}`. "
+                    "If the project was moved, open it from its new folder in Tab 0 "
+                    "(Load Existing Project); the list then remembers the new place."
+                )
+                st.session_state["_force_sidebar_proj_sync"] = True
             st.rerun()
 
     # What is actually loaded right now. The directory and unified CSV shown here

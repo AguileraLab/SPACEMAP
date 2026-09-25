@@ -468,6 +468,43 @@ def save_project_to_index(name: str, root_path: str) -> None:
     except Exception as e:
         log_persistence(f"Error saving project to index: {e}")
 
+def project_config_path(root: str | Path) -> Path | None:
+    """The project's settings file, or None when the folder or file is missing."""
+    root = Path(root)
+    for candidate in (root / f"{root.name}.json", root / "experiment.json"):
+        try:
+            if candidate.is_file():
+                return candidate
+        except OSError:
+            continue
+    return None
+
+
+def find_moved_project(name: str, index: dict | None = None) -> Path | None:
+    """Where a project whose recorded folder is gone now lives, if it can be found.
+
+    Projects are usually moved together, so the folders that hold the other
+    projects in the list are searched for one with this name and its settings
+    file, then the ``project`` and ``projects`` folders beside this SPACEMAP.
+    """
+    index = load_projects_index() if index is None else index
+    parents: list[Path] = []
+    for other, root in index.items():
+        if other != name and root:
+            parents.append(Path(root).parent)
+    here = Path(__file__).resolve().parents[2]
+    parents += [here / "project", here / "projects", here.parent / "project"]
+    seen = set()
+    for parent in parents:
+        candidate = parent / name
+        if str(candidate) in seen:
+            continue
+        seen.add(str(candidate))
+        if project_config_path(candidate) is not None:
+            return candidate
+    return None
+
+
 def remove_project_from_index(name: str) -> None:
     """Remove a project from the global projects index file."""
     index = load_projects_index()
