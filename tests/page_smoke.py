@@ -50,6 +50,9 @@ def ome_image(path, size=600):
 
 
 ome_image(root / "outputs/registered/P1_merged.ome.tiff")
+# Tab 1 pairs: one pair by the naming rule, and a CODEX image whose name does not follow it.
+for image in ("data/codex/P1_codex.ome.tiff", "data/codex/slide7.ome.tiff", "data/he/P1_he.ome.tiff"):
+    ome_image(root / image, size=300)
 ome_image(root / "outputs/rois/s1r1.ome.tiff")
 features, rows = [], []
 rng = np.random.default_rng(1)
@@ -72,6 +75,7 @@ table[["cell_id", "batch_id", "label", "x_centroid", "y_centroid", "phenotype_le
 config = {"project_name": "Smoke", "project_root": str(root), "unified_csv_filename": "unified.csv",
           "codex_raw_dir": str(root / "data/codex"), "he_raw_dir": str(root / "data/he"),
           "directory_mappings": {"bc_output_dir": str(root / "outputs/batch_corrected"),
+                                 "batch_codex_dir": str(root / "data/codex"), "batch_he_dir": str(root / "data/he"),
                                  "tab1_batch_output_dir": str(root / "outputs/registered"),
                                  "tab3_output_dir": str(root / "outputs/rois"),
                                  "tab4_geojson_dir": str(root / "outputs/segmentation/geojson")},

@@ -6,6 +6,7 @@ import hashlib
 import io
 import json
 import os
+from collections import Counter
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -420,6 +421,61 @@ def _build_role_file_map(
             mapping[identity] = filename
 
     return mapping
+
+
+PAIR_AUTO, PAIR_SKIP = "<Auto>", "<Skip>"
+
+
+def find_pairs(
+    codex_names: List[str],
+    he_names: List[str],
+    codex_prefix: str,
+    codex_suffix: str,
+    he_prefix: str,
+    he_suffix: str,
+    choices: Dict[str, str],
+    same_folder: bool = False,
+) -> Dict[str, Any]:
+    """Tab 1's pairs, shared by classic Tab 1 and Studio.
+
+    The naming rule pairs images automatically: each name without the rule's prefix and suffix is its
+    sample (``P11_codex`` and ``P11_he`` are both ``P11``). Every image stays pairable by hand, whatever
+    its name: *choices* maps a CODEX file to ``<Auto>``, ``<Skip>`` or any H&E image. A CODEX image the
+    rule does not accept has no automatic H&E; its sample is its name. When both roles share a folder,
+    images the other role's rule claims are left out. Two CODEX images with the same sample would write
+    the same ``<sample>_merged`` image, so neither is paired until one is renamed or skipped.
+
+    Returns {"rows": [{sample, codex, auto, choice, he, follows_rule, duplicate}], "he_files": [...],
+    "unpaired_he": [...]}.
+    """
+    codex_map = _build_role_file_map(codex_names, codex_prefix, codex_suffix, he_prefix, he_suffix)
+    he_map = _build_role_file_map(he_names, he_prefix, he_suffix, codex_prefix, codex_suffix)
+    ruled_codex, ruled_he = set(codex_map.values()), set(he_map.values())
+    codex_files = sorted(ruled_codex | {name for name in codex_names if not (same_folder and name in ruled_he)})
+    he_files = sorted(ruled_he | {name for name in he_names if not (same_folder and name in ruled_codex)})
+    auto = {codex_file: he_map.get(identity) for identity, codex_file in codex_map.items()}
+    samples = {codex_file: _derive_pair_identity(codex_file, codex_prefix, codex_suffix) for codex_file in codex_files}
+    counts = Counter(samples.values())
+    rows, used = [], set()
+    for codex_file in codex_files:
+        choice = (choices or {}).get(codex_file, PAIR_AUTO)
+        if choice not in (PAIR_AUTO, PAIR_SKIP) and choice not in he_files:
+            choice = PAIR_AUTO
+        he = None if choice == PAIR_SKIP else auto.get(codex_file) if choice == PAIR_AUTO else choice
+        duplicate = counts[samples[codex_file]] > 1
+        if duplicate:
+            he = None
+        rows.append({
+            "sample": samples[codex_file],
+            "codex": codex_file,
+            "auto": auto.get(codex_file),
+            "choice": choice,
+            "he": he,
+            "follows_rule": codex_file in ruled_codex,
+            "duplicate": duplicate,
+        })
+        used.add(he)
+    return {"rows": rows, "he_files": he_files, "unpaired_he": [name for name in he_files if name not in used]}
 
 
 def _parse_channel_schema_csv(uploaded_file) -> List[Dict[str, Any]]:
@@ -1649,26 +1705,14 @@ def render_batch_registration(project_root: Path):
                     codex_file_names = sorted([f for f in os.listdir(codex_dir) if is_supported_image_file(f)])
                     he_file_names = sorted([f for f in os.listdir(he_dir) if is_supported_image_file(f)])
 
-                    codex_files = _build_role_file_map(
-                        codex_file_names,
-                        codex_prefix,
-                        suffix_codex,
-                        he_prefix,
-                        suffix_he,
+                    # Every image is pairable by hand; the naming rule gives the automatic pairs.
+                    scan = find_pairs(
+                        codex_file_names, he_file_names, codex_prefix, suffix_codex, he_prefix, suffix_he, {},
+                        same_folder=os.path.realpath(codex_dir) == os.path.realpath(he_dir),
                     )
-                    he_files = _build_role_file_map(
-                        he_file_names,
-                        he_prefix,
-                        suffix_he,
-                        codex_prefix,
-                        suffix_codex,
-                    )
-
-                    codex_candidate_files = sorted(codex_files.values())
-                    he_candidate_files = sorted(he_files.values())
-
-                    for prefix_val, codex_file in codex_files.items():
-                        auto_pairs_by_codex[codex_file] = he_files.get(prefix_val)
+                    codex_candidate_files = [row["codex"] for row in scan["rows"]]
+                    he_candidate_files = scan["he_files"]
+                    auto_pairs_by_codex = {row["codex"]: row["auto"] for row in scan["rows"]}
                 except Exception as e:
                     st.error(f"Error scanning directories: {e}")
             st.session_state["tab1_scan_cache"] = (codex_candidate_files, he_candidate_files, auto_pairs_by_codex)
@@ -1704,18 +1748,18 @@ def render_batch_registration(project_root: Path):
             pairs = []
             used_he_files = []
             if codex_candidate_files and he_candidate_files:
-                for codex_file in codex_candidate_files:
-                    prefix = _derive_pair_identity(codex_file, codex_prefix, suffix_codex)
-                    auto_he = auto_pairs_by_codex.get(codex_file)
-                    selection = st.session_state.get(f"tab1_pair_override_{codex_file}", "<Auto>")
-
-                    if selection == "<Skip>":
+                found = find_pairs(
+                    codex_candidate_files, he_candidate_files, codex_prefix, suffix_codex, he_prefix, suffix_he,
+                    {f: st.session_state.get(f"tab1_pair_override_{f}", PAIR_AUTO) for f in codex_candidate_files},
+                )
+                duplicates = sorted({row["sample"] for row in found["rows"] if row["duplicate"]})
+                if duplicates:
+                    st.warning("Two CODEX images give the same sample name (" + ", ".join(duplicates) + "), so they would "
+                               "write the same merged image; skip one or change the naming rule.")
+                for row in found["rows"]:
+                    if not row["he"]:
                         continue
-
-                    chosen_he = auto_he if selection == "<Auto>" else selection
-                    if not chosen_he or chosen_he not in he_candidate_files:
-                        continue
-
+                    prefix, codex_file, chosen_he, selection = row["sample"], row["codex"], row["he"], row["choice"]
                     used_he_files.append(chosen_he)
                     pairs.append(
                         _build_pair_entry(

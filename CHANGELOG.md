@@ -86,6 +86,13 @@ Tabs 7 and 9, and a Z1 option for Resolve. Grouped by tab.
 
 ### Tab 1 — Registration
 
+- **Any CODEX image can be paired with any H&E image by hand.** Manual Pair
+  Overrides listed only images whose names followed the naming rule, so an H&E
+  named e.g. `S7 HE scan.tif` could not be chosen. Now every image in the two
+  folders is listed; the rule still makes the automatic pairs. Two CODEX images
+  that would give the same sample name (and so the same merged image) are flagged
+  and left unpaired until one is skipped or the rule changed. Studio's
+  Registration step uses the same pairing and the same saved choices.
 - **The registered image keeps all of the CODEX metadata.** Before, only each
   channel's name, colour and fluorophore reached the merged image. Now every field
   the CODEX file records is kept, per channel (marker, exposure, filters and their
