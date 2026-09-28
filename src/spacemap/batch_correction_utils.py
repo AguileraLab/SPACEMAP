@@ -49,26 +49,32 @@ except ImportError:
 
 
 class BatchCorrector:
-    """Handles batch correction using direct or SOM-clustered ComBat correction (cyCombine approach).
-    
-    This implementation matches the R cyCombine batch_correct() function:
-    - Pre-normalization with StandardScaler (matching R's norm_method="scale")
-    - SOM-based micro-clustering to group phenotypically similar cells
-    - Parametric/non-parametric ComBat correction within each micro-cluster
-    - Post-correction clipping to ensure non-negative values
+    """Batch correction of the markers, by default cyCombine's own method (``spacemap.cycombine``).
+
+    ``correction_mode`` chooses how:
+
+    - ``'cycombine'`` (default): cyCombine's workflow ported from its R code, giving R's result for the same
+      seed: per-batch z-scores only to group cells, a kohonen SOM (8 x 8, rlen 10, seed 473), sva::ComBat
+      within each SOM group, each marker clipped to the group's input range.
+    - ``'monotonic'``: SPACEMAP's variant: the batch effect is estimated within SOM groups, then applied as one
+      shift and scale per batch and marker, so the order of cells within a batch never changes.
+    - ``'per_cluster'``: the earlier approximation of cyCombine (MiniSom and pycombat), kept to reproduce
+      earlier runs.
     """
     
     def __init__(self, markers, normalization_method='scale', som_grid_size=(8, 8),
                  som_iterations=100000, random_seed=42, verbose=True,
                  mode='som_clustered', min_cells_per_cluster=10, covariates=None, parametric=True,
-                 arcsinh_cofactor=5.0, correction_mode='monotonic'):
+                 arcsinh_cofactor=5.0, correction_mode='cycombine', som_rlen=10, cycombine_seed=473):
         """
         Parameters
         ----------
-        correction_mode : {'monotonic', 'per_cluster'}
-            How the estimated batch effect is *applied* to cells.
+        correction_mode : {'cycombine', 'monotonic', 'per_cluster'}
+            ``'cycombine'`` (default) is cyCombine's method, exact (see ``spacemap.cycombine``); the SOM uses
+            ``som_grid_size``, ``som_rlen`` passes and ``cycombine_seed`` (cyCombine's 473), and every selected
+            covariate together is its ``covar``. ``som_iterations`` and ``min_cells_per_cluster`` are not used.
 
-            ``'per_cluster'`` is the literal cyCombine translation: ComBat runs
+            ``'per_cluster'`` is the earlier approximation of cyCombine: ComBat runs
             independently inside every SOM node and its output is written back
             per node. This makes the correction non-monotonic within a batch --
             two cells from the same batch with the *same* input value land in
@@ -98,9 +104,11 @@ class BatchCorrector:
         self.covariates = covariates or []
         self.parametric = parametric
         self.arcsinh_cofactor = arcsinh_cofactor
-        if correction_mode not in ('monotonic', 'per_cluster'):
-            raise ValueError("correction_mode must be 'monotonic' or 'per_cluster'")
+        if correction_mode not in ('cycombine', 'monotonic', 'per_cluster'):
+            raise ValueError("correction_mode must be 'cycombine', 'monotonic' or 'per_cluster'")
         self.correction_mode = correction_mode
+        self.som_rlen = int(som_rlen)
+        self.cycombine_seed = int(cycombine_seed)
         
         # Store normalization parameters for reference
         self.scaler = None
@@ -165,8 +173,10 @@ class BatchCorrector:
             }
         }
         
-        # Apply ComBat correction (cyCombine SOM-clustered approach)
-        corrected_data = self._apply_som_clustered_combat_correction(marker_data, batches, data)
+        if self.correction_mode == 'cycombine':
+            corrected_data = self._apply_cycombine(marker_data, batches, data)
+        else:
+            corrected_data = self._apply_som_clustered_combat_correction(marker_data, batches, data)
         
         # Combine with original data
         result = data.copy()
@@ -178,6 +188,40 @@ class BatchCorrector:
         print(f"ComBat correction completed for {len(self.markers)} markers (output is in capped ArcSinh space)")
         return result
     
+
+    def _apply_cycombine(self, marker_data, batches, full_df):
+        """cyCombine's batch_correct, exact (``spacemap.cycombine``), on the arcsinh values."""
+        from spacemap import cycombine
+
+        covar = None
+        chosen = [c for c in self.covariates if c in full_df.columns]
+        if chosen:
+            # cyCombine takes one covariate: several chosen together are one factor (each combination a level).
+            covar = full_df[chosen].astype(str).agg('|'.join, axis=1).to_numpy()
+        rows, cols = self.som_grid_size
+        corrected, labels, summary = cycombine.batch_correct(
+            marker_data.to_numpy(dtype=np.float64),
+            np.asarray(batches).astype(str),
+            covar=covar,
+            xdim=int(rows),
+            ydim=int(cols),
+            rlen=self.som_rlen,
+            seed=self.cycombine_seed,
+            parametric=self.parametric,
+            report=print if self.verbose else None,
+        )
+        full_df['som_cluster'] = labels
+        self.run_summary['som'].update(rlen=self.som_rlen, seed=self.cycombine_seed)
+        self.run_summary['combat'].update(
+            n_clusters_total=int(rows) * int(cols),
+            n_clusters_corrected=summary['groups'],
+            n_clusters_one_batch=summary['one_batch'],
+            n_clusters_with_covariate=summary['covar_used'],
+            n_cells_kept_as_measured=summary['cells_kept_as_measured'],
+        )
+        if self.verbose:
+            print(f"cyCombine: ComBat in {summary['groups']} SOM groups; {summary['one_batch']} held one batch and were left as measured.")
+        return pd.DataFrame(corrected, index=marker_data.index, columns=marker_data.columns)
 
     def _apply_som_clustered_combat_correction(self, marker_data, batches, full_df=None):
         """Apply SOM-clustered batch correction (matching R cyCombine approach)."""
@@ -296,11 +340,24 @@ class BatchCorrector:
         node_sizes = np.bincount(cluster_labels, minlength=n_clusters).astype(float)
         node_index = [np.flatnonzero(cluster_labels == n) for n in range(n_clusters)]
         node_means = np.full((n_clusters, values.shape[1]), np.nan)
-        node_stds = np.full((n_clusters, values.shape[1]), np.nan)
         for n, idx in enumerate(node_index):
             if idx.size:
                 node_means[n] = values[idx].mean(axis=0)
-                node_stds[n] = values[idx].std(axis=0)
+
+        # The spread a batch should have in a node: the node's spread *within* batches, pooled over the batches
+        # with enough cells there. The node's overall spread also holds the very batch offsets being removed, so
+        # scaling each batch to it widened every batch (K9).
+        pooled_sum = np.zeros((n_clusters, values.shape[1]))
+        pooled_n = np.zeros(n_clusters)
+        for b in unique_batches:
+            batch_idx = np.flatnonzero(batches == b)
+            batch_nodes = cluster_labels[batch_idx]
+            for n in range(n_clusters):
+                cells = batch_idx[batch_nodes == n]
+                if cells.size >= self.min_cells_per_cluster:
+                    pooled_sum[n] += cells.size * values[cells].var(axis=0)
+                    pooled_n[n] += cells.size
+        pooled_std = np.sqrt(pooled_sum / np.maximum(pooled_n, 1)[:, None])
 
         n_uncorrected = 0
         for b in unique_batches:
@@ -319,7 +376,7 @@ class BatchCorrector:
                     continue
                 shifts[n] = values[cells].mean(axis=0) - node_means[n]
                 batch_std = values[cells].std(axis=0)
-                scales[n] = np.where(batch_std > 1e-6, node_stds[n] / np.maximum(batch_std, 1e-6), 1.0)
+                scales[n] = np.where(batch_std > 1e-6, pooled_std[n] / np.maximum(batch_std, 1e-6), 1.0)
                 weights[n] = node_sizes[n]
 
             if weights.sum() <= 0:

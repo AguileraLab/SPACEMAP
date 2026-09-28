@@ -109,6 +109,24 @@ Tabs 7 and 9, and a Z1 option for Resolve. Grouped by tab.
 
 ### Tab 6 — Batch Correction
 
+- **New default: cyCombine's own method, exact.** `spacemap/cycombine.py`
+  ports cyCombine's R code (its table workflow, as in the released 0.2
+  versions): each marker z-scored within each batch only to group cells; a
+  kohonen SOM (8 x 8, 10 passes, seed 473) with R's own random numbers, so
+  every cell lands in the same group as in R; sva's ComBat within each group;
+  each marker kept within the group's measured range; the covariate used per
+  group only when cyCombine would use it. Checked against R (cyCombine 0.3.0,
+  kohonen 3.0.13, sva 3.48.0): the same group for every cell and values equal
+  to 15 decimal places. Where R gives missing values (a group of two cells
+  from two batches), the measured values are kept. Several covariates chosen
+  together act as one (cyCombine takes one).
+- **Fixed: Monotonic correction widened each batch.** It scaled each batch
+  to the spread of all cells in an SOM group, which also holds the batch
+  differences being removed. It now scales to the group's spread within
+  batches, so a cell type's spread stays as measured.
+- **Renamed:** Per-cluster ComBat is now "Earlier cyCombine approximation"
+  (a different SOM and ComBat library); keep it only to reproduce an earlier
+  run. Projects that saved a method keep it until you choose another.
 - **Removed dead code:** three QC functions in
   `spacemap/batch_correction_utils.py` were defined twice, identically; the
   unused first copies are gone.

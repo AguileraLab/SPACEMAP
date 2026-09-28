@@ -3002,28 +3002,26 @@ def render_qc_correction(project_root: Path):
             help="Use parametric priors (faster) vs non-parametric priors."
         )
         
-        _correction_modes = ["monotonic", "per_cluster"]
-        _saved_mode = st.session_state.bc_config.get('correction_mode', 'monotonic')
+        _correction_modes = ["cycombine", "monotonic", "per_cluster"]
+        _saved_mode = st.session_state.bc_config.get('correction_mode', 'cycombine')
         correction_mode = c_conf1.selectbox(
-            "Correction application",
+            "Correction method",
             _correction_modes,
             index=_correction_modes.index(_saved_mode) if _saved_mode in _correction_modes else 0,
             format_func=lambda v: {
-                "monotonic": "Monotonic (recommended)",
-                "per_cluster": "Per-cluster ComBat (legacy)",
+                "cycombine": "cyCombine (recommended)",
+                "monotonic": "Monotonic (keeps each batch's cell order)",
+                "per_cluster": "Earlier cyCombine approximation",
             }[v],
             help=(
-                "How the estimated batch effect is applied to cells.\n\n"
-                "**Monotonic** uses the SOM to estimate the batch effect within matched "
-                "cell populations, then applies one shift/scale per batch and marker. "
-                "Cell ranking inside a batch is preserved exactly, so the correction can "
-                "never reorder cells or blur the negative/positive boundary that defines "
-                "a phenotype.\n\n"
-                "**Per-cluster ComBat** is the literal cyCombine translation: ComBat runs "
-                "separately inside each SOM node. Two cells in the same batch with the "
-                "same input value can then come out different, which reorders markers that "
-                "have a large true-negative population. Choose this only to reproduce an "
-                "earlier run."
+                "**cyCombine** is cyCombine's own method, ported from its R code and checked to give the same "
+                "result as R: similar cells are grouped with an SOM (8 x 8, 10 passes, seed 473), then ComBat "
+                "corrects each group, and each marker stays within the group's measured range. SOM iterations "
+                "and Min cells per cluster do not apply to it.\n\n"
+                "**Monotonic** estimates the batch effect within the same SOM groups, then applies one shift and "
+                "scale per batch and marker, so the order of cells inside a batch never changes.\n\n"
+                "**Earlier cyCombine approximation** is SPACEMAP's earlier version (a different SOM and ComBat "
+                "library). Choose it only to reproduce an earlier run."
             ),
         )
 
