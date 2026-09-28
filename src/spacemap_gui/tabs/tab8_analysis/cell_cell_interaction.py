@@ -102,12 +102,15 @@ def _compute_interaction_stats(
     if not region_payloads:
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), {}
 
+    def pair_counts(labels, pairs):
+        """Neighbouring pairs of each phenotype pair, both ways round (counted with bincount: fast, exact)."""
+        a, b = labels[pairs[:, 0]], labels[pairs[:, 1]]
+        size = n_ph * n_ph
+        return (np.bincount(a * n_ph + b, minlength=size) + np.bincount(b * n_ph + a, minlength=size)).reshape(n_ph, n_ph)
+
     obs = np.zeros((n_ph, n_ph), dtype=float)
     for ph_idx, pairs in region_payloads:
-        a = ph_idx[pairs[:, 0]]
-        b = ph_idx[pairs[:, 1]]
-        np.add.at(obs, (a, b), 1)
-        np.add.at(obs, (b, a), 1)
+        obs += pair_counts(ph_idx, pairs)
 
     rng = np.random.default_rng(int(random_state))
     null_sum = np.zeros((n_ph, n_ph), dtype=float)
@@ -118,11 +121,7 @@ def _compute_interaction_stats(
     for _ in range(int(n_permutations)):
         perm_counts = np.zeros((n_ph, n_ph), dtype=float)
         for ph_idx, pairs in region_payloads:
-            shuffled = rng.permutation(ph_idx)
-            a = shuffled[pairs[:, 0]]
-            b = shuffled[pairs[:, 1]]
-            np.add.at(perm_counts, (a, b), 1)
-            np.add.at(perm_counts, (b, a), 1)
+            perm_counts += pair_counts(rng.permutation(ph_idx), pairs)
 
         null_sum += perm_counts
         null_sumsq += perm_counts ** 2

@@ -169,6 +169,9 @@ Tabs 7 and 9, and a Z1 option for Resolve. Grouped by tab.
 
 ### Tab 8 — Spatial Analysis
 
+- **Faster: cell-cell interactions.** The permutation test counts neighbouring
+  pairs with one count per phenotype pair instead of one update per pair; the
+  z-scores and p-values are unchanged (tested against the earlier counting).
 - **Removed a control that did nothing:** Density Panel 2's "Zone area buffer
   percentile" slider was never read — Panel 2 uses Panel 1's tissue area.
 
