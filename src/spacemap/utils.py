@@ -118,8 +118,9 @@ def rgb_to_color_int(rgb):
 
     Notes
     -----
-    The packed format used is: (R << 24) | (G << 16) | (B << 8).
-    This matches the prior behavior in SPACEMAP.
+    The packed format is OME's RGBA: (R << 24) | (G << 16) | (B << 8) | A, with A = 255
+    (opaque). Earlier SPACEMAP wrote A = 0, which OME defines as fully transparent;
+    readers that honour alpha could hide such a channel. The RGB bytes are unchanged.
 
     Parameters
     ----------
@@ -166,7 +167,7 @@ def rgb_to_color_int(rgb):
     R = max(0, min(255, R))
     G = max(0, min(255, G))
     B = max(0, min(255, B))
-    val = (R << 24) | (G << 16) | (B << 8)
+    val = (R << 24) | (G << 16) | (B << 8) | 0xFF
     if val >= 2**31:
         val = val - 2**32
     return val

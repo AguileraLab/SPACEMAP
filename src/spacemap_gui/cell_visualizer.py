@@ -482,13 +482,10 @@ class CellVisualizer:
                          # Convert to unsigned 32-bit
                          val = val & 0xFFFFFFFF
                          
-                         # Parse ARGB (Alpha is highest byte)
-                         # We want RGB 0-1 triples
-                         # (A, R, G, B)
-                         a = (val >> 24) & 0xFF
-                         r = (val >> 16) & 0xFF
-                         g = (val >> 8) & 0xFF
-                         b = val & 0xFF
+                         # OME packs RGBA (red in the highest byte, alpha lowest)
+                         r = (val >> 24) & 0xFF
+                         g = (val >> 16) & 0xFF
+                         b = (val >> 8) & 0xFF
                          
                          colors.append((r/255.0, g/255.0, b/255.0))
                      except:

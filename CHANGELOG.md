@@ -17,6 +17,9 @@ Tabs 7 and 9, and a Z1 option for Resolve. Grouped by tab.
 
 ### All tabs
 
+- **Fixed: the cell visualizer showed image channels in the wrong colours.** It
+  read OME colours byte-shifted (a blue DAPI came out green); it now reads them as
+  OME defines them (red, green, blue, opacity).
 - **Fixed: switching to a moved project froze SPACEMAP.** If a project's
   folder had been moved, choosing it in the sidebar loaded nothing and the
   page restarted itself endlessly (full CPU, Ctrl+C slow to respond). Now the
@@ -82,6 +85,22 @@ Tabs 7 and 9, and a Z1 option for Resolve. Grouped by tab.
   segmentation no longer requires it.
 
 ### Tab 1 — Registration
+
+- **The registered image keeps all of the CODEX metadata.** Before, only each
+  channel's name, colour and fluorophore reached the merged image. Now every field
+  the CODEX file records is kept, per channel (marker, exposure, filters and their
+  bands) and for the slide (slide ID, study, objective, camera, scan profile, ...),
+  as OME key/value annotations that QuPath, OMERO and Bio-Formats show. Exposure
+  times (exact, from the source) and excitation/emission wavelengths also go in
+  OME's own fields, and the original CODEX and H&E file names are recorded. Checked
+  with Bio-Formats: valid OME-XML, one pyramidal image.
+- **Fixed: channel colours were saved as fully transparent.** OME colours carry an
+  opacity byte; SPACEMAP wrote 0 (transparent), so a viewer that honours it could
+  hide the channel. Colours are now opaque; red, green and blue are unchanged.
+- **The coarse alignment's matched points are saved as a figure**
+  (`<sample>_he_registered_feature_matches.png`, beside the registered H&E), as
+  the Registration notebook showed them. Figures are now closed after each pair,
+  so a long batch no longer accumulates them in memory.
 
 - CODEX/H&E filename prefix and suffix used for pairing are now saved.
 

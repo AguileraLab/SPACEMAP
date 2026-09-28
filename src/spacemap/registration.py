@@ -69,6 +69,7 @@ from spacemap.utils import (
     log_time, check_file_exists, create_ome_metadata, rgb_to_color_int,
     load_geojson, extract_rois_with_geometry_from_geojson
 )
+from spacemap.image_metadata import enrich_ome, source_metadata
 from spacemap.background_subtraction_utils import (
     get_channel_info, read_channel_image, read_channel_from_open_tif, normalize_image_stem, is_supported_image_file, io_worker_count,
 )
@@ -904,6 +905,31 @@ def merge_channels(registered_he_path, codex_path, output_dir, base_name, mpp, c
     return output_path
 
 
+def feature_matches_path(output_path):
+    """Where the coarse alignment's matched-points figure is saved: beside the registered image, ``<name>_feature_matches.png``."""
+    path = Path(output_path)
+    stem = path.name[:-len('.ome.tiff')] if path.name.endswith('.ome.tiff') else path.stem
+    return path.with_name(f"{stem}_feature_matches.png")
+
+
+def _save_feature_matches(output_path, moving='H&E'):
+    """Save palom's matched-points figure (reference left, moving image right, lines joining the pairs it kept).
+
+    palom draws it while matching; a notebook shows it inline, a background run would lose it.
+    """
+    figure = plt.gcf()
+    if not figure.axes:
+        return
+    figure.axes[0].set_title(f"Matched points: CODEX reference (left) and {moving} (right)", fontsize=9)
+    figure.set_size_inches(12, 6)
+    try:
+        figure.savefig(feature_matches_path(output_path), dpi=120, bbox_inches='tight')
+    except OSError as exc:
+        log_time(f"Could not save the feature-matches figure: {exc}")
+    plt.show()
+    plt.close('all')  # figures left open pile up over a batch
+
+
 def register_he_to_codex(codex_dapi_path, he_img_path, registered_he_output, mpp, overwrite=False, ref_channel_index=0, n_keypoints=10000):
     """
     Register the H&E image (grayscale) to the CODEX DAPI channel.
@@ -941,6 +967,7 @@ def register_he_to_codex(codex_dapi_path, he_img_path, registered_he_output, mpp
         plt.imshow(mov_thumb, cmap='gray')
         plt.title("H&E Thumbnail")
         plt.show()
+        plt.close('all')
 
         aligner = palom.align.Aligner(
             ref_img=ref_reader.read_level_channels(LEVEL, ref_channel_index),
@@ -951,6 +978,7 @@ def register_he_to_codex(codex_dapi_path, he_img_path, registered_he_output, mpp
             moving_thumbnail_down_factor=mov_reader.level_downsamples[THUMBNAIL_LEVEL] / mov_reader.level_downsamples[LEVEL]
         )
         aligner.coarse_register_affine(n_keypoints=int(n_keypoints))
+        _save_feature_matches(registered_he_output)
         _validate_coarse_affine(aligner.affine_matrix, int(n_keypoints))
         aligner.compute_shifts()
         aligner.constrain_shifts()
@@ -1542,6 +1570,7 @@ def register_codex_to_codex(
 
         log_time("Performing coarse affine registration...")
         aligner.coarse_register_affine(n_keypoints=int(n_keypoints))
+        _save_feature_matches(output_path, moving='moving CODEX')
         _validate_coarse_affine(aligner.affine_matrix, int(n_keypoints))
         aligner.compute_shifts()
         aligner.constrain_shifts()
@@ -1743,7 +1772,43 @@ def register_codex_to_codex(
         log_time(traceback.format_exc())
 
 
-def merge_multi_round_ome_tiff(image_paths, output_path, mpp, channel_configs=None, overwrite=False):
+def _carry_acquisition_metadata(output_path, image_paths, sources, final_channels, provenance=None):
+    """Write each input's acquisition metadata into the merged OME-TIFF (exposure, wavelengths, all other fields)."""
+    channels = []
+    for info in final_channels:
+        source = sources[info['img_idx']]
+        index = info['ch_idx']
+        record = source['channels'][index] if index < len(source['channels']) else {}
+        exposure = source['exposures'][index] if index < len(source['exposures']) else None
+        meta = info.get('meta') or {}
+        if exposure is None and _format_exposure(meta.get('exposure')):
+            exposure = (meta['exposure'], 'ms')  # SPACEMAP's own reading, in milliseconds
+        notes = {'Source file': os.path.basename(image_paths[info['img_idx']]), 'Source channel': info['source_name'],
+                 'Source channel index': str(index), **record}
+        channels.append({
+            'exposure': exposure,
+            'excitation_nm': meta.get('excitation_wavelength'),
+            'emission_nm': meta.get('emission_wavelength'),
+            'notes': notes,
+        })
+    image_notes = [('SPACEMAP', {'Inputs': ', '.join(os.path.basename(path) for path in image_paths),
+                                 **{str(key): str(value) for key, value in (provenance or {}).items()}})]
+    image_notes += [(f'Acquisition: {os.path.basename(path)}', source['image'])
+                    for path, source in zip(image_paths, sources) if source['image']]
+    try:
+        enrich_ome(output_path, channels, image_notes)
+    except Exception as exc:  # the pixels are written; missing notes must not fail the merge
+        log_time(f"Could not add the acquisition metadata to {os.path.basename(output_path)}: {exc}")
+
+
+def _format_exposure(value):
+    try:
+        return float(value) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def merge_multi_round_ome_tiff(image_paths, output_path, mpp, channel_configs=None, overwrite=False, provenance=None):
     """
     Merge multiple OME-TIFF/QPTIFF images into a single OME-TIFF stack.
     Handles channel selection and renaming.
@@ -1757,6 +1822,11 @@ def merge_multi_round_ome_tiff(image_paths, output_path, mpp, channel_configs=No
             - 'keep': list of channel names to keep (None for all)
             - 'rename': dict of {old_name: new_name}
         overwrite (bool): Force overwrite if file exists
+        provenance (dict): Optional notes about how the image was made (e.g. the original
+            CODEX and H&E files), saved as an annotation of the output image.
+
+    Each input's acquisition metadata (exposure, filters, camera, slide, ...) is carried into
+    the output: see :mod:`spacemap.image_metadata`.
     """
     if check_file_exists(output_path, "Multi-round merge", overwrite=overwrite):
         return
@@ -1766,6 +1836,7 @@ def merge_multi_round_ome_tiff(image_paths, output_path, mpp, channel_configs=No
     try:
         # 1. Collect all channels to be written
         final_channels = [] # List of (image_index, channel_index, original_name, new_name, color, metadata)
+        sources = []  # each input's acquisition metadata, by image index
         
         ref_shape = None
         
@@ -1774,6 +1845,7 @@ def merge_multi_round_ome_tiff(image_paths, output_path, mpp, channel_configs=No
                 raise FileNotFoundError(f"Merge input does not exist: {img_path}")
 
             c_names, c_colors, c_meta, _ = get_channel_info(img_path)
+            sources.append(source_metadata(img_path))
             if not c_names:
                 raise ValueError(f"No channels were detected for merge input: {img_path}")
             
@@ -1821,6 +1893,7 @@ def merge_multi_round_ome_tiff(image_paths, output_path, mpp, channel_configs=No
                     'img_idx': img_idx,
                     'ch_idx': ch_idx,
                     'name': new_name,
+                    'source_name': name,
                     'color': final_color,
                     'meta': c_meta[ch_idx]
                 })
@@ -1891,6 +1964,7 @@ def merge_multi_round_ome_tiff(image_paths, output_path, mpp, channel_configs=No
             channel_metadata=[c['meta'] for c in final_channels],
             n_pyramid_levels=3,
         )
+        _carry_acquisition_metadata(output_path, image_paths, sources, final_channels, provenance)
 
         log_time(f"Multi-round merge complete: {output_path}")
 

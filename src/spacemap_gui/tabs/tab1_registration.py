@@ -2260,7 +2260,10 @@ def render_batch_registration(project_root: Path):
                     
                     configs = [c_conf, final_h_conf] if c_conf else None
                     
-                    merge_multi_round_ome_tiff(images_to_merge, final_out, mpp_codex, configs, overwrite=overwrite)
+                    merge_multi_round_ome_tiff(
+                        images_to_merge, final_out, mpp_codex, configs, overwrite=overwrite,
+                        provenance={"CODEX": os.path.basename(p["CODEX Path"]), "H&E": os.path.basename(p["H&E Path"])},
+                    )
                     
                     processed_count += 1
                     elapsed = time.time() - start_time
