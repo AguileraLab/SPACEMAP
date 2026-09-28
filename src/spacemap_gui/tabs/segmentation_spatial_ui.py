@@ -41,6 +41,7 @@ EDGE_BUFFER_KEY = "tab4_spatial_edge_buffer"
 EDGE_COLUMN_KEY = "tab4_spatial_edge_column"
 MIN_BED_CELLS_KEY = "tab4_spatial_min_cells_per_bed_target"
 CLEAN_PATH_KEY = "tab4_spatial_require_clean_path"
+GEOJSON_MATCHES_KEY = "tab4_annot_geojson_matches"  # {image name: annotation file name}, chosen by hand
 
 MASK_SOURCE_NONE = "No mask (whole image)"
 MASK_SOURCE_ANNOTATION = "Annotation GeoJSON (Annotation tab)"
@@ -60,13 +61,26 @@ RULE_COLUMNS = [
 # Matching and class discovery
 # ==========================================================================
 
-def matched_geojson(image_name: str, geojson_dir: str) -> str | None:
-    """Annotation GeoJSON matching one image by name, or None."""
+def matched_geojson(image_name: str, geojson_dir: str, chosen: str | None = None) -> str | None:
+    """Annotation GeoJSON for one image: *chosen* (a file in *geojson_dir* picked by hand), else matched by name."""
     from spacemap.segmentation_cellpose import find_annotation_geojson
 
     if not geojson_dir:
         return None
+    if chosen:
+        path = os.path.join(geojson_dir, os.path.basename(str(chosen)))
+        return path if os.path.isfile(path) else None
     return find_annotation_geojson(str(image_name), str(geojson_dir))
+
+
+def _state(state):
+    """The saved segmentation settings: *state* when given (Studio), else this page's session."""
+    return st.session_state if state is None else state
+
+
+def chosen_geojson(image_name: str, state=None) -> str | None:
+    """The annotation file picked by hand for *image_name*, if any."""
+    return (_state(state).get(GEOJSON_MATCHES_KEY) or {}).get(str(image_name))
 
 
 @st.cache_data(show_spinner=False, max_entries=64)
@@ -90,10 +104,10 @@ def geojson_classes(geojson_path: str | None) -> list[str]:
 
 
 def build_match_table(image_names: Sequence[str], geojson_dir: str) -> pd.DataFrame:
-    """One row per image: which annotation file matched and what it contains."""
+    """One row per image: which annotation file matched (by name, or chosen by hand) and what it contains."""
     rows = []
     for name in image_names:
-        path = matched_geojson(name, geojson_dir)
+        path = matched_geojson(name, geojson_dir, chosen_geojson(name))
         classes = geojson_classes(path)
         rows.append({
             "Image": name,
@@ -223,7 +237,7 @@ def render_spatial_panel(project_root: Path, image_names: Sequence[str], input_d
     # Union of classes across matched files drives the pickers.
     all_classes: list[str] = []
     for name in image_names:
-        for class_name in geojson_classes(matched_geojson(name, geojson_dir)):
+        for class_name in geojson_classes(matched_geojson(name, geojson_dir, chosen_geojson(name))):
             if class_name not in all_classes:
                 all_classes.append(class_name)
 
@@ -472,7 +486,7 @@ def preview_columns(records: Sequence[dict[str, Any]], edge_enabled: bool, edge_
 def render_mask_overlay(image_path: str, image_name: str) -> None:
     """Show the chosen mask polygon on the image thumbnail."""
     geojson_dir = st.session_state.get(GEOJSON_DIR_KEY, "")
-    path = matched_geojson(image_name, geojson_dir)
+    path = matched_geojson(image_name, geojson_dir, chosen_geojson(image_name))
     if not path:
         st.info("No annotation GeoJSON matched this image, so no mask preview is available.")
         return
@@ -505,29 +519,30 @@ def render_mask_overlay(image_path: str, image_name: str) -> None:
 # Configuration handed to the batch runner
 # ==========================================================================
 
-def build_spatial_config(image_name: str) -> dict[str, Any]:
+def build_spatial_config(image_name: str, state=None, mask_source: str | None = None) -> dict[str, Any]:
     """Per-image mask and annotation settings for :func:`segment_image_cellpose`.
 
     Returns a dict with ``geojson_path``, ``mask_classes``, ``rules``,
     ``tissue_label``, ``min_cells_per_bed_target`` and ``edge_config``; empty values mean "not configured",
     which the runner treats as no mask / no spatial columns.
     """
-    geojson_dir = st.session_state.get(GEOJSON_DIR_KEY, "")
-    path = matched_geojson(image_name, geojson_dir)
+    state = _state(state)
+    geojson_dir = state.get(GEOJSON_DIR_KEY, "")
+    path = matched_geojson(image_name, geojson_dir, chosen_geojson(image_name, state))
     classes = geojson_classes(path)
 
     mask_classes: list[str] = []
-    if st.session_state.get(MASK_SOURCE_KEY) == MASK_SOURCE_ANNOTATION:
-        mask_classes = [name for name in st.session_state.get(MASK_CLASSES_KEY, []) if name in classes]
+    if (state.get(MASK_SOURCE_KEY) if mask_source is None else mask_source) == MASK_SOURCE_ANNOTATION:
+        mask_classes = [name for name in state.get(MASK_CLASSES_KEY, []) if name in classes]
         if not mask_classes:
             mask_classes = default_mask_classes(classes)
 
     rules: list[dict[str, Any]] = []
     edge_config: dict[str, Any] | None = None
-    if st.session_state.get(SPATIAL_ENABLED_KEY, True):
+    if state.get(SPATIAL_ENABLED_KEY, True):
         available = {str(name).lower() for name in classes}
-        tissue_label = str(st.session_state.get(TISSUE_LABEL_KEY, DEFAULT_TISSUE_LABEL))
-        for record in normalize_rule_records(st.session_state.get(SPATIAL_RULES_KEY, [])):
+        tissue_label = str(state.get(TISSUE_LABEL_KEY, DEFAULT_TISSUE_LABEL))
+        for record in normalize_rule_records(state.get(SPATIAL_RULES_KEY, [])):
             if record["Annotation Label"].lower() not in available:
                 continue
             scoped_record = dict(record)
@@ -535,24 +550,64 @@ def build_spatial_config(image_name: str) -> dict[str, Any]:
                 scoped_record["Annotation Label"].lower() != tissue_label.lower()
             )
             rules.append(scoped_record)
-        if st.session_state.get(EDGE_ENABLED_KEY, False):
+        if state.get(EDGE_ENABLED_KEY, False):
             edge_config = {
-                "reference": st.session_state.get(EDGE_REFERENCE_KEY, DEFAULT_TISSUE_LABEL),
-                "buffer": float(st.session_state.get(EDGE_BUFFER_KEY, 100.0)),
-                "column": st.session_state.get(EDGE_COLUMN_KEY, "edge_cell"),
+                "reference": state.get(EDGE_REFERENCE_KEY, DEFAULT_TISSUE_LABEL),
+                "buffer": float(state.get(EDGE_BUFFER_KEY, 100.0)),
+                "column": state.get(EDGE_COLUMN_KEY, "edge_cell"),
             }
 
     return {
         "geojson_path": path,
         "mask_classes": mask_classes,
         "rules": rules,
-        "tissue_label": st.session_state.get(TISSUE_LABEL_KEY, DEFAULT_TISSUE_LABEL),
+        "tissue_label": state.get(TISSUE_LABEL_KEY, DEFAULT_TISSUE_LABEL),
         "min_cells_per_bed_target": max(
-            int(st.session_state.get(
+            int(state.get(
                 MIN_BED_CELLS_KEY, DEFAULT_MIN_CELLS_PER_BED_TARGET
             )),
             1,
         ),
         "edge_config": edge_config,
-        "require_clean_path": bool(st.session_state.get(CLEAN_PATH_KEY, False)),
+        "require_clean_path": bool(state.get(CLEAN_PATH_KEY, False)),
     }
+
+
+def apply_region_and_tags(seg_config, image_name: str, mask_source: str, mask_save_dir: str = "", state=None) -> list[str]:
+    """Set *seg_config*'s segmentation region and spatial columns for one image, as Tab 5 runs it.
+
+    *mask_source* is one of MASK_SOURCES: the whole image, inside chosen classes of the image's
+    annotation GeoJSON, or inside the tissue mask drawn in Tab 5. Spatial columns are added when rules
+    are saved (``tab4_spatial_*``) and the image has an annotation. Returns what was decided, in words.
+    """
+    spatial = build_spatial_config(image_name, state, mask_source)
+    notes = []
+    seg_config.use_input_geojson = False
+    if mask_source == MASK_SOURCE_ANNOTATION:
+        if spatial["geojson_path"] and spatial["mask_classes"]:
+            seg_config.use_input_geojson = True
+            seg_config.input_geojson_path = spatial["geojson_path"]
+            seg_config.mask_class_names = list(spatial["mask_classes"])
+            notes.append(f"Segmenting inside '{', '.join(spatial['mask_classes'])}' from {os.path.basename(spatial['geojson_path'])}")
+        else:
+            notes.append(f"Warning: no annotation mask for {image_name}. Running without mask.")
+    elif mask_source == MASK_SOURCE_DRAWN:
+        from spacemap_gui.tabs.tab5_segmentation import find_matched_mask_file
+
+        mask_file, _ = find_matched_mask_file(image_name, mask_save_dir)
+        if mask_file and mask_file.exists():
+            seg_config.use_input_geojson = True
+            seg_config.input_geojson_path = str(mask_file)
+            notes.append(f"Using mask: {mask_file.name}")
+        else:
+            notes.append(f"Warning: Mask enabled but not found for {image_name}. Running without mask.")
+    if spatial["geojson_path"] and (spatial["rules"] or spatial["edge_config"]):
+        seg_config.annotation_geojson_path = spatial["geojson_path"]
+        seg_config.spatial_rules = spatial["rules"]
+        seg_config.spatial_tissue_label = spatial["tissue_label"]
+        seg_config.spatial_min_cells_per_bed_target = spatial["min_cells_per_bed_target"]
+        seg_config.spatial_require_clean_path = spatial["require_clean_path"]
+        seg_config.spatial_edge_config = spatial["edge_config"]
+        notes.append(f"Spatial annotation: {len(spatial['rules'])} annotation rule(s) from "
+                     f"{os.path.basename(spatial['geojson_path'])}")
+    return notes

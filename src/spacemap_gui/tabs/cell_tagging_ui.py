@@ -56,6 +56,7 @@ BATCH_COLUMN_KEY = "seg_tag_batch_column"
 # apart. These two keys only come into play when the user deliberately points
 # tagging at a different folder.
 GEOJSON_OVERRIDE_KEY = "seg_tag_geojson_override"
+GEOJSON_MATCHES_KEY = "seg_tag_geojson_matches"  # {cell table or image id: annotation file name}, chosen by hand
 GEOJSON_DIR_KEY = "seg_tag_geojson_dir"
 OUTPUT_DIR_KEY = "seg_tag_output_dir"
 OUTPUT_SUFFIX_KEY = "seg_tag_output_suffix"
@@ -121,17 +122,26 @@ def sample_id_from_csv(filename: str, strip_suffix: str = DEFAULT_CSV_SUFFIX) ->
     return stem
 
 
-def match_geojson(sample_id: str, geojson_dir: str) -> str | None:
+def match_geojson(sample_id: str, geojson_dir: str, chosen: str | None = None) -> str | None:
     """Annotation GeoJSON for one sample id, or None.
 
-    Reuses the segmentation matcher so this step resolves exactly the same file
-    the in-line tagging would have used.
+    *chosen* is an annotation file in *geojson_dir* picked by hand for this source (names that do not
+    match); otherwise the segmentation matcher finds it, so this step resolves exactly the same file the
+    in-line tagging would have used.
     """
     from spacemap.segmentation_cellpose import find_annotation_geojson
 
     if not sample_id or not geojson_dir or not os.path.isdir(geojson_dir):
         return None
+    if chosen:
+        path = os.path.join(geojson_dir, os.path.basename(str(chosen)))
+        return path if os.path.isfile(path) else None
     return find_annotation_geojson(str(sample_id), str(geojson_dir))
+
+
+def _state(state):
+    """The saved tagging settings: *state* when given (Studio), else this page's session."""
+    return st.session_state if state is None else state
 
 
 @st.cache_data(show_spinner=False, max_entries=32)
@@ -170,12 +180,18 @@ def batch_values(csv_path: str | None, column: str) -> list[str]:
     return _cached_batch_values(csv_path, column, file_signature(csv_path))
 
 
-def build_match_table(sample_ids: Sequence[str], geojson_dir: str, source_labels: Sequence[str] | None = None) -> pd.DataFrame:
-    """One row per sample: which annotation matched and what classes it holds."""
+def _saved_matches(matches=None) -> dict:
+    return dict(matches if matches is not None else _state(None).get(GEOJSON_MATCHES_KEY) or {})
+
+
+def build_match_table(sample_ids: Sequence[str], geojson_dir: str, source_labels: Sequence[str] | None = None,
+                      matches=None) -> pd.DataFrame:
+    """One row per sample: which annotation matched (by name, or chosen by hand) and what classes it holds."""
     rows = []
+    matches = _saved_matches(matches)
     labels = list(source_labels) if source_labels is not None else list(sample_ids)
     for label, sample_id in zip(labels, sample_ids):
-        path = match_geojson(sample_id, geojson_dir)
+        path = match_geojson(sample_id, geojson_dir, matches.get(label) or matches.get(sample_id))
         classes = geojson_classes(path)
         rows.append({
             "Source": label,
@@ -187,11 +203,15 @@ def build_match_table(sample_ids: Sequence[str], geojson_dir: str, source_labels
     return pd.DataFrame(rows)
 
 
-def collect_classes(sample_ids: Sequence[str], geojson_dir: str) -> list[str]:
+def collect_classes(sample_ids: Sequence[str], geojson_dir: str, source_labels: Sequence[str] | None = None,
+                    matches=None) -> list[str]:
     """Union of classification names across every matched annotation."""
     names: list[str] = []
-    for sample_id in sample_ids:
-        for class_name in geojson_classes(match_geojson(sample_id, geojson_dir)):
+    matches = _saved_matches(matches)
+    labels = list(source_labels) if source_labels is not None else list(sample_ids)
+    for label, sample_id in zip(labels, sample_ids):
+        chosen = matches.get(label) or matches.get(sample_id)
+        for class_name in geojson_classes(match_geojson(sample_id, geojson_dir, chosen)):
             if class_name not in names:
                 names.append(class_name)
     return names
@@ -232,8 +252,8 @@ def align_rules(classes: Sequence[str], tissue_label: str, saved_records: Any) -
     return aligned
 
 
-def build_engine_inputs() -> tuple[list, Any, str, int, bool]:
-    """Translate the saved UI state into engine objects.
+def build_engine_inputs(state=None) -> tuple[list, Any, str, int, bool]:
+    """Translate the saved UI state (or *state*) into engine objects.
 
     Returns ``(rules, edge_config, tissue_label, minimum_bed_cells,
     require_clean_path)`` ready for
@@ -241,8 +261,10 @@ def build_engine_inputs() -> tuple[list, Any, str, int, bool]:
     """
     from spacemap.cell_spatial_annotation import EdgeTagConfig, rules_from_records
 
-    tissue_label = str(st.session_state.get(TISSUE_LABEL_KEY, DEFAULT_TISSUE_LABEL))
-    rules = rules_from_records(normalize_rule_records(st.session_state.get(RULES_KEY, [])))
+    state = _state(state)
+
+    tissue_label = str(state.get(TISSUE_LABEL_KEY, DEFAULT_TISSUE_LABEL))
+    rules = rules_from_records(normalize_rule_records(state.get(RULES_KEY, [])))
     for rule in rules:
         rule.group_by_roi = rule.label.lower() != tissue_label.lower()
         # This panel uses one explicit bed selection; the other segmentation
@@ -250,27 +272,28 @@ def build_engine_inputs() -> tuple[list, Any, str, int, bool]:
         rule.bed = False
         rule.bed_target = ""
     edge_config = None
-    if st.session_state.get(EDGE_ENABLED_KEY, False):
+    if state.get(EDGE_ENABLED_KEY, False):
         edge_config = EdgeTagConfig(
-            reference=str(st.session_state.get(EDGE_REFERENCE_KEY, DEFAULT_TISSUE_LABEL)),
-            buffer_px=float(st.session_state.get(EDGE_BUFFER_KEY, 100.0)),
-            column=str(st.session_state.get(EDGE_COLUMN_KEY, "edge_cell")),
+            reference=str(state.get(EDGE_REFERENCE_KEY, DEFAULT_TISSUE_LABEL)),
+            buffer_px=float(state.get(EDGE_BUFFER_KEY, 100.0)),
+            column=str(state.get(EDGE_COLUMN_KEY, "edge_cell")),
         )
     minimum_bed_cells = max(
-        int(st.session_state.get(MIN_BED_CELLS_KEY, DEFAULT_MIN_CELLS_PER_BED_TARGET)),
+        int(state.get(MIN_BED_CELLS_KEY, DEFAULT_MIN_CELLS_PER_BED_TARGET)),
         1,
     )
-    require_clean_path = bool(st.session_state.get(CLEAN_PATH_KEY, False))
+    require_clean_path = bool(state.get(CLEAN_PATH_KEY, False))
     return rules, edge_config, tissue_label, minimum_bed_cells, require_clean_path
 
 
-def selected_bed_labels(records=None) -> list[str]:
+def selected_bed_labels(records=None, state=None) -> list[str]:
     """Restore the selection, migrating saved two-annotation rules once."""
-    if BED_LABELS_KEY in st.session_state:
-        return list(st.session_state[BED_LABELS_KEY])
+    state = _state(state)
+    if BED_LABELS_KEY in state:
+        return list(state[BED_LABELS_KEY])
     names = []
     for record in normalize_rule_records(
-        st.session_state.get(RULES_KEY, []) if records is None else records
+        state.get(RULES_KEY, []) if records is None else records
     ):
         if record["Bed (Use 2 Annotations)"] and record["Bed Comp. Target"]:
             names.extend([record["Annotation Label"], record["Bed Comp. Target"]])
@@ -303,15 +326,19 @@ def run_per_image(
     x_col: str,
     y_col: str,
     progress=None,
+    state=None,
+    matches=None,
 ) -> list[dict[str, Any]]:
     """Tag one CSV per image. Returns one result record per input file."""
     from spacemap.cell_spatial_annotation import annotate_cells
 
-    rules, edge_config, tissue_label, minimum_bed_cells, require_clean_path = build_engine_inputs()
+    state = _state(state)
+    matches = dict(matches if matches is not None else state.get(GEOJSON_MATCHES_KEY) or {})
+    rules, edge_config, tissue_label, minimum_bed_cells, require_clean_path = build_engine_inputs(state)
     method = _validate_distance_engine(require_clean_path)
     _log_console(f"Spatial cell tagging engine: {method}")
-    bed_labels = selected_bed_labels()
-    overwrite_existing = bool(st.session_state.get(OVERWRITE_COLUMNS_KEY, True))
+    bed_labels = selected_bed_labels(state=state)
+    overwrite_existing = bool(state.get(OVERWRITE_COLUMNS_KEY, True))
     os.makedirs(output_dir, exist_ok=True)
     results: list[dict[str, Any]] = []
 
@@ -320,7 +347,7 @@ def run_per_image(
             progress(position, len(csv_names), csv_name)
         sample_id = sample_id_from_csv(csv_name, csv_suffix)
         record: dict[str, Any] = {"Source": csv_name, "Matched by": sample_id}
-        geojson_path = match_geojson(sample_id, geojson_dir)
+        geojson_path = match_geojson(sample_id, geojson_dir, matches.get(csv_name) or matches.get(sample_id))
         if not geojson_path:
             record.update({"Status": "skipped — no annotation matched", "Cells": 0, "Columns added": 0})
             results.append(record)
@@ -334,7 +361,7 @@ def run_per_image(
                 min_cells_per_bed_target=minimum_bed_cells,
                 require_clean_path=require_clean_path,
                 bed_labels=bed_labels, overwrite_existing=overwrite_existing,
-                use_gpu=bool(st.session_state.get(USE_GPU_KEY, False)),
+                use_gpu=bool(state.get(USE_GPU_KEY, False)),
             )
             out_name = f"{sample_id_from_csv(csv_name, '')}{output_suffix}.csv"
             out_path = os.path.join(output_dir, out_name)
@@ -365,6 +392,8 @@ def run_merged(
     x_col: str,
     y_col: str,
     progress=None,
+    state=None,
+    matches=None,
 ) -> tuple[pd.DataFrame, list[dict[str, Any]]]:
     """Tag a merged cell table one image at a time.
 
@@ -375,11 +404,13 @@ def run_merged(
     """
     from spacemap.cell_spatial_annotation import annotate_cells, spatial_columns_for_rules
 
-    rules, edge_config, tissue_label, minimum_bed_cells, require_clean_path = build_engine_inputs()
+    state = _state(state)
+    matches = dict(matches if matches is not None else state.get(GEOJSON_MATCHES_KEY) or {})
+    rules, edge_config, tissue_label, minimum_bed_cells, require_clean_path = build_engine_inputs(state)
     method = _validate_distance_engine(require_clean_path)
     _log_console(f"Spatial cell tagging engine: {method}")
-    bed_labels = selected_bed_labels()
-    overwrite_existing = bool(st.session_state.get(OVERWRITE_COLUMNS_KEY, True))
+    bed_labels = selected_bed_labels(state=state)
+    overwrite_existing = bool(state.get(OVERWRITE_COLUMNS_KEY, True))
     frame = pd.read_csv(csv_path)
     if batch_column not in frame.columns:
         raise ValueError(f"Column '{batch_column}' is not in {os.path.basename(csv_path)}.")
@@ -408,7 +439,7 @@ def run_merged(
             "Columns overwritten": len(existing_output_columns) if overwrite_existing else 0,
             "Columns preserved": 0 if overwrite_existing else len(existing_output_columns),
         }
-        geojson_path = match_geojson(key, geojson_dir)
+        geojson_path = match_geojson(key, geojson_dir, matches.get(key))
         if not geojson_path:
             parts.append(subset)
             record.update({"Status": "skipped — no annotation matched", "Cells": int(len(subset)), "Columns added": 0})
@@ -422,7 +453,7 @@ def run_merged(
                 min_cells_per_bed_target=minimum_bed_cells,
                 require_clean_path=require_clean_path,
                 bed_labels=bed_labels, overwrite_existing=overwrite_existing,
-                use_gpu=bool(st.session_state.get(USE_GPU_KEY, False)),
+                use_gpu=bool(state.get(USE_GPU_KEY, False)),
             )
             parts.append(annotated)
             record.update({
@@ -915,7 +946,7 @@ def render_cell_tagging_panel(project_root: Path) -> None:
     with st.expander("Cell table ↔ annotation matching", expanded=matched < len(sample_ids)):
         st.dataframe(match_table, hide_index=True, width="stretch")
 
-    all_classes = collect_classes(sample_ids, geojson_dir)
+    all_classes = collect_classes(sample_ids, geojson_dir, source_labels)
     if not all_classes:
         return
 

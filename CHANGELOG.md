@@ -130,6 +130,14 @@ Tabs 7 and 9, and a Z1 option for Resolve. Grouped by tab.
 
 ### Tab 5 — Segmentation
 
+- **An annotation file can be chosen by hand for an image or cell table** whose
+  name does not match its annotation (`tab4_annot_geojson_matches` for the
+  segmentation mask, `seg_tag_geojson_matches` for cell tagging). The matching
+  tables show the chosen file; Studio sets these choices.
+- The segmentation region (whole image, annotation classes or drawn mask) and
+  the spatial columns are set up by one function, and cell tagging runs from
+  saved settings, so Studio runs them exactly as this tab does.
+
 - Segmentation QC plot settings (colours, bins, scale, plot type, variables)
   are now saved.
 

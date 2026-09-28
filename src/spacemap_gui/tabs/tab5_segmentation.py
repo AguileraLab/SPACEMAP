@@ -1764,44 +1764,10 @@ def _run_batch_segmentation_v2(to_proc, input_dir, mask_save_dir, output_dir, us
             # Mask and spatial annotation. The annotation route restricts Cellpose
             # to one class of the reviewed GeoJSON and reuses the same file to tag
             # the extracted cells, so no separate annotation pass is needed.
-            spatial = spatial_ui.build_spatial_config(img_name)
-            if use_annotation_mask:
-                if spatial["geojson_path"] and spatial["mask_classes"]:
-                    seg_config.use_input_geojson = True
-                    seg_config.input_geojson_path = spatial["geojson_path"]
-                    seg_config.mask_class_names = list(spatial["mask_classes"])
-                    status_container.write(
-                        f"Segmenting inside '{', '.join(spatial['mask_classes'])}' "
-                        f"from {os.path.basename(spatial['geojson_path'])}"
-                    )
-                else:
-                    seg_config.use_input_geojson = False
-                    status_container.write(f"Warning: no annotation mask for {img_name}. Running without mask.")
-            elif use_mask:
-                mask_file, _ = find_matched_mask_file(img_name, mask_save_dir)
-                if mask_file and mask_file.exists():
-                    seg_config.use_input_geojson = True
-                    seg_config.input_geojson_path = str(mask_file)
-                    status_container.write(f"Using mask: {mask_file.name}")
-                else:
-                    seg_config.use_input_geojson = False
-                    status_container.write(f"Warning: Mask enabled but not found for {img_name}. Running without mask.")
-            else:
-                seg_config.use_input_geojson = False
-
-            if spatial["geojson_path"] and (spatial["rules"] or spatial["edge_config"]):
-                seg_config.annotation_geojson_path = spatial["geojson_path"]
-                seg_config.spatial_rules = spatial["rules"]
-                seg_config.spatial_tissue_label = spatial["tissue_label"]
-                seg_config.spatial_min_cells_per_bed_target = spatial[
-                    "min_cells_per_bed_target"
-                ]
-                seg_config.spatial_require_clean_path = spatial["require_clean_path"]
-                seg_config.spatial_edge_config = spatial["edge_config"]
-                status_container.write(
-                    f"Spatial annotation: {len(spatial['rules'])} annotation rule(s) from "
-                    f"{os.path.basename(spatial['geojson_path'])}"
-                )
+            mask_source = (spatial_ui.MASK_SOURCE_ANNOTATION if use_annotation_mask
+                           else spatial_ui.MASK_SOURCE_DRAWN if use_mask else spatial_ui.MASK_SOURCE_NONE)
+            for note in spatial_ui.apply_region_and_tags(seg_config, img_name, mask_source, mask_save_dir):
+                status_container.write(note)
                 
             image_log_data = {
                 'Image_Name': img_name,
