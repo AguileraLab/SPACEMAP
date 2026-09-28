@@ -22,6 +22,7 @@ from xml.etree import ElementTree as ET
 import tifffile
 
 OME_NS = "http://www.openmicroscopy.org/Schemas/OME/2016-06"
+XSI_NS = "http://www.w3.org/2001/XMLSchema-instance"
 MAP_NAMESPACE = "openmicroscopy.org/omero/client/mapAnnotation"
 _DECLARATION = re.compile(r"^\s*<\?xml[^>]*\?>")
 
@@ -173,6 +174,7 @@ def enrich_ome(path, channels, image_notes=()):
     annotation). *image_notes*: (title, {key: value}) pairs, each an annotation of the image.
     """
     ET.register_namespace("", OME_NS)
+    ET.register_namespace("xsi", XSI_NS)
     with tifffile.TiffFile(path) as tif:
         text = tif.pages[0].description
     root = _parse(text)
@@ -212,3 +214,128 @@ def enrich_ome(path, channels, image_notes=()):
         root.remove(structured)
     xml = '<?xml version="1.0" encoding="UTF-8"?>' + ET.tostring(root, encoding="unicode")
     tifffile.tiffcomment(path, xml.encode("utf-8"))
+
+
+# Tags an OME Image holds before its Pixels, in the schema's order (copied from a parent when the child lacks them).
+_IMAGE_HEAD = ("AcquisitionDate", "ExperimenterRef", "Description", "ExperimentRef", "ExperimenterGroupRef",
+               "InstrumentRef", "ObjectiveSettings", "ImagingEnvironment", "StageLabel")
+
+
+def _exposure_plane(pixels, index, value, unit):
+    return ET.SubElement(pixels, _q("Plane"), TheZ="0", TheT="0", TheC=str(index), ExposureTime=str(value), ExposureTimeUnit=unit)
+
+
+def inherit_ome(parent_path, child_path, channel_indices, notes=None):
+    """Give an image made from another (an ROI crop, a background-removed copy) all of its parent's metadata, in place.
+
+    ``channel_indices[j]`` is the parent channel written as child channel ``j``. Each child channel keeps
+    its own name and colour (a rename or recolour chosen when it was made; the parent's name is then
+    noted) and gets the parent channel's other attributes, its exposure plane and its annotations. The
+    parent's image annotations, instruments, acquisition date and objective are copied, and *notes*
+    (how this image was made) are added. SPACEMAP's non-standard ``Channel/@Exposure`` becomes OME's
+    ``Plane/@ExposureTime``, so the result is valid OME. A parent that is not OME (a QPTIFF) is read
+    with :func:`source_metadata` instead.
+    """
+    import copy
+
+    ET.register_namespace("", OME_NS)
+    ET.register_namespace("xsi", XSI_NS)
+    with tifffile.TiffFile(parent_path) as tif:
+        parent_xml = tif.ome_metadata if tif.is_ome else None
+    with tifffile.TiffFile(child_path) as tif:
+        child = _parse(tif.pages[0].description)
+    image = child.find(_q("Image"))
+    pixels = image.find(_q("Pixels"))
+    channels = pixels.findall(_q("Channel"))
+    if len(channels) != len(channel_indices):
+        raise ValueError(f"{Path(child_path).name} has {len(channels)} channels; {len(channel_indices)} parent channels were given.")
+    structured = child.find(_q("StructuredAnnotations"))
+    if structured is None:
+        structured = ET.SubElement(child, _q("StructuredAnnotations"))
+    count = [0]
+
+    def adopt(annotation):
+        clone = copy.deepcopy(annotation)
+        count[0] += 1
+        clone.set("ID", f"Annotation:SPACEMAP:Inherited:{count[0]}")
+        structured.append(clone)
+        return clone.get("ID")
+
+    def refer(channel, annotation_id):
+        reference = ET.Element(_q("AnnotationRef"), ID=annotation_id)
+        light_path = channel.find(_q("LightPath"))
+        channel.insert(list(channel).index(light_path) if light_path is not None else len(channel), reference)
+
+    if parent_xml is None:
+        found = source_metadata(parent_path)
+        for j, (channel, index) in enumerate(zip(channels, channel_indices)):
+            exposure = found["exposures"][index] if index < len(found["exposures"]) else None
+            if exposure and _number(exposure[0]):
+                channel.attrib.pop("Exposure", None)
+                _exposure_plane(pixels, j, _number(exposure[0]), exposure[1])
+            record = found["channels"][index] if index < len(found["channels"]) else {}
+            if record:
+                annotation = _map_annotation(structured, f"Annotation:SPACEMAP:Inherited:C{j}", record)
+                refer(channel, annotation.get("ID"))
+        head = [(f"Acquisition: {Path(parent_path).name}", found["image"])] if found["image"] else []
+    else:
+        parent = _parse(parent_xml)
+        parent_image = parent.find(_q("Image"))
+        parent_pixels = parent_image.find(_q("Pixels"))
+        parent_channels = parent_pixels.findall(_q("Channel"))
+        planes = {}
+        for plane in parent_pixels.findall(_q("Plane")):
+            planes.setdefault(int(plane.get("TheC", 0)), plane)
+        parent_structured = parent.find(_q("StructuredAnnotations"))
+        annotations = {item.get("ID"): item for item in (list(parent_structured) if parent_structured is not None else [])}
+        for j, (channel, index) in enumerate(zip(channels, channel_indices)):
+            if index >= len(parent_channels):
+                continue
+            source = parent_channels[index]
+            for key, value in source.attrib.items():
+                if key not in {"ID", "Name", "Color", "SamplesPerPixel", "Exposure"}:
+                    channel.set(key, value)
+            old_exposure = channel.attrib.pop("Exposure", None) or source.get("Exposure")
+            if index in planes:
+                plane = copy.deepcopy(planes[index])
+                plane.set("TheC", str(j))
+                pixels.append(plane)
+            elif _number(old_exposure):
+                _exposure_plane(pixels, j, _number(old_exposure), "ms")
+            for reference in source.findall(_q("AnnotationRef")):
+                if reference.get("ID") in annotations:
+                    refer(channel, adopt(annotations[reference.get("ID")]))
+            if source.get("Name") and source.get("Name") != channel.get("Name"):
+                renamed = _map_annotation(structured, f"Annotation:SPACEMAP:Renamed:C{j}", {"Name in the parent image": source.get("Name")})
+                refer(channel, renamed.get("ID"))
+        # The parent's instruments (before the Images, as OME orders them) and the image's own details.
+        position = list(child).index(image)
+        for offset, instrument in enumerate(parent.findall(_q("Instrument"))):
+            if child.find(f"{_q('Instrument')}[@ID='{instrument.get('ID')}']") is None:
+                child.insert(position + offset, copy.deepcopy(instrument))
+        for tag in _IMAGE_HEAD:
+            item = parent_image.find(_q(tag))
+            if item is not None and image.find(_q(tag)) is None:
+                order = [_local(child_item.tag) for child_item in image]
+                after = [k for k, name in enumerate(order) if name in _IMAGE_HEAD[_IMAGE_HEAD.index(tag) + 1:] or name == "Pixels"]
+                image.insert(after[0] if after else len(image), copy.deepcopy(item))
+        for reference in parent_image.findall(_q("AnnotationRef")):
+            if reference.get("ID") in annotations:
+                ET.SubElement(image, _q("AnnotationRef"), ID=adopt(annotations[reference.get("ID")]))
+        head = []
+    for number, (title, record) in enumerate(head + ([("SPACEMAP", notes)] if notes else [])):
+        if record:
+            annotation = _map_annotation(structured, f"Annotation:SPACEMAP:Made:{number}", {str(k): str(v) for k, v in record.items()})
+            description = ET.Element(_q("Description"))
+            description.text = title
+            annotation.insert(0, description)
+            ET.SubElement(image, _q("AnnotationRef"), ID=annotation.get("ID"))
+    # OME's order inside Pixels: Channels, then TiffData, then Planes.
+    planes = [item for item in pixels if _local(item.tag) == "Plane"]
+    for plane in planes:
+        pixels.remove(plane)
+    pixels.extend(sorted(planes, key=lambda plane: int(plane.get("TheC", 0))))
+    if not len(structured):
+        child.remove(structured)
+    xml = '<?xml version="1.0" encoding="UTF-8"?>' + ET.tostring(child, encoding="unicode")
+    tifffile.tiffcomment(child_path, xml.encode("utf-8"))

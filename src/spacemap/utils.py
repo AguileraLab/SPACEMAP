@@ -195,6 +195,9 @@ def create_ome_metadata(channel_names, channel_colors, SizeX, SizeY, pixel_type,
     """
     ome_ns = "http://www.openmicroscopy.org/Schemas/OME/2016-06"
     ome = ET.Element('OME', xmlns=ome_ns)
+    # Where the OME schema is, as standard OME files say (validators need it; viewers ignore it).
+    ome.set('xmlns:xsi', 'http://www.w3.org/2001/XMLSchema-instance')
+    ome.set('xsi:schemaLocation', ome_ns + ' ' + ome_ns + '/ome.xsd')
     image = ET.SubElement(ome, 'Image', ID='Image:0', Name='Merged Image')
     pixels = ET.SubElement(
         image,
@@ -459,6 +462,7 @@ def save_roi_pyramidal_ome_tiff(layers, channel_names, channel_colors, output_pa
                     tile=tile_size,
                     description=ome_xml if c == 0 else None,
                     planarconfig='CONTIG',
+                    metadata=None,  # the OME description alone: no second, tifffile 'shaped' one
                 )
                 prev_img = padded_img
                 for i in range(n_pyramid_levels):
@@ -472,6 +476,7 @@ def save_roi_pyramidal_ome_tiff(layers, channel_names, channel_colors, output_pa
                         compression='deflate',
                         tile=tile_size,
                         planarconfig='CONTIG',
+                        metadata=None,  # the OME description alone: no second, tifffile 'shaped' one
                     )
                     prev_img = downsampled_img
         log_time(f"ROI OME-TIFF saved: {output_path}")

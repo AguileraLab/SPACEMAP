@@ -966,6 +966,7 @@ def subtract_background_image(
                     tile=tile_size,
                     description=ome_xml if index == 0 else None,
                     planarconfig="CONTIG",
+                    metadata=None,  # the OME description alone: no second, tifffile 'shaped' one
                 )
 
                 previous = corrected
@@ -987,6 +988,17 @@ def subtract_background_image(
                         compression="deflate",
                         tile=tile_size,
                         planarconfig="CONTIG",
+                        metadata=None,  # the OME description alone: no second, tifffile 'shaped' one
                     )
                     previous = downsampled
+    # The new image keeps its parent's metadata (exposure, wavelengths, acquisition notes).
+    try:
+        from spacemap.image_metadata import inherit_ome
+
+        inherit_ome(image_path, output_path, list(range(len(names))), notes={
+            "Background removed from": Path(image_path).name,
+            "Levels subtracted": "; ".join(f"{name}: {value:g}" for name, value in thresholds.items()) or "none",
+        })
+    except Exception as exc:  # the pixels are written; missing notes must not fail the step
+        print(f"Could not copy the parent image's metadata to {Path(output_path).name}: {exc}")
     return output_path

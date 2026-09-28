@@ -109,3 +109,67 @@ def test_the_matched_points_figure_is_saved_and_closed(tmp_path):
     _save_feature_matches(output)
     assert feature_matches_path(output) == tmp_path / "S1_he_registered_feature_matches.png"
     assert feature_matches_path(output).stat().st_size > 1000 and not plt.get_fignums()
+
+
+def _notes(root):
+    return {
+        annotation.get("ID"): {m.get("K"): m.text for m in annotation.iter(f"{OME}M")}
+        for annotation in root.iter(f"{OME}MapAnnotation")
+    }
+
+
+def _channel_notes(root, channel):
+    found = {}
+    everything = _notes(root)
+    for reference in channel.findall(f"{OME}AnnotationRef"):
+        found.update(everything.get(reference.get("ID"), {}))
+    return found
+
+
+def test_crops_and_background_removed_images_keep_the_parent_metadata(tmp_path):
+    import json
+
+    from spacemap.background_detection import subtract_background_image
+    from spacemap.registration import process_single_image_rois
+
+    codex, he = _sources(tmp_path)
+    merged = tmp_path / "S1_merged.ome.tiff"
+    merge_multi_round_ome_tiff([str(codex), str(he)], str(merged), 0.5, None, provenance={"CODEX": codex.name})
+    boundary = tmp_path / "S1.geojson"
+    boundary.write_text(json.dumps({"type": "FeatureCollection", "features": [{
+        "type": "Feature", "properties": {"name": "roi_1", "classification": {"name": "roi_1"}},
+        "geometry": {"type": "Polygon", "coordinates": [[[50, 40], [250, 40], [250, 200], [50, 200], [50, 40]]]}}]}))
+    rois = tmp_path / "rois"
+    rois.mkdir()
+    process_single_image_rois(str(merged), str(boundary), str(rois), {"codex": 0.5},
+                              channel_config={"keep": ["DAPI", "CD8", "HE_Red"], "rename": {"CD8": "CD8a"}})
+    crop = next(rois.glob("*.ome.tiff"))
+    with tifffile.TiffFile(crop) as tif:
+        assert len(tif.series) == 1 and not tif.is_shaped and tif.series[0].shape[0] == 3 and len(tif.series[0].levels) == 4
+        root = ET.fromstring(tif.ome_metadata)
+    channels = root.findall(f".//{OME}Channel")
+    assert [channel.get("Name") for channel in channels] == ["DAPI", "CD8a", "HE_Red"]
+    assert all("Exposure" not in channel.attrib for channel in channels)  # OME's own field instead
+    planes = {int(plane.get("TheC")): plane for plane in root.iter(f"{OME}Plane")}
+    assert planes[0].get("ExposureTime") == "2500" and planes[1].get("ExposureTime") == "200000"  # CD8 is parent channel 2
+    cd8 = _channel_notes(root, channels[1])
+    assert cd8["Biomarker"] == "CD8" and cd8["Name in the parent image"] == "CD8" and cd8["Source file"] == "S1_codex.qptiff"
+    everything = list(_notes(root).values())
+    assert any(record.get("SlideID") == "slide_42" for record in everything)  # the slide's acquisition record
+    assert any(record.get("CODEX") == "S1_codex.qptiff" for record in everything)  # how the parent was made
+    assert any(record.get("Cropped from") == "S1_merged.ome.tiff" and record.get("ROI") for record in everything)
+    # Removing background from the crop keeps all of it too.
+    cleaned = tmp_path / "S1_roi_1_bg.ome.tiff"
+    subtract_background_image(crop, {"DAPI": 10.0, "CD8a": 5.0}, cleaned)
+    with tifffile.TiffFile(cleaned) as tif:
+        assert len(tif.series) == 1 and not tif.is_shaped
+        root = ET.fromstring(tif.ome_metadata)
+    channels = root.findall(f".//{OME}Channel")
+    assert _channel_notes(root, channels[1])["Biomarker"] == "CD8"
+    assert {int(p.get("TheC")): p.get("ExposureTime") for p in root.iter(f"{OME}Plane")}[1] == "200000"
+    records = list(_notes(root).values())
+    assert any(record.get("Background removed from") == crop.name for record in records) and any(record.get("SlideID") for record in records)
+    # SPACEMAP reads the exposure back from OME's field.
+    from spacemap.background_subtraction_utils import get_channel_info
+
+    assert get_channel_info(str(cleaned))[2][0]["exposure"] == "2"

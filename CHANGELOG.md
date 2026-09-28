@@ -113,9 +113,25 @@ Tabs 7 and 9, and a Z1 option for Resolve. Grouped by tab.
 
 ### Tab 2 — Background Subtraction
 
+- **A background-removed image keeps all of its parent image's metadata**
+  (exposure, wavelengths, acquisition notes), and notes which levels or blank
+  channels were subtracted.
+
 - Blank-subtraction input source and selected image are now saved.
 
 ### Tab 3 — ROI Extraction
+
+- **Each ROI crop keeps all of its parent image's metadata**: exposure times,
+  excitation/emission wavelengths and every acquisition note (per channel and for
+  the slide), plus which image and box it was cut from. A marker renamed or
+  recoloured for the crop keeps the new name and colour and notes its name in the
+  parent. Checked with Bio-Formats: valid OME-XML, one pyramidal image.
+- **Fixed: ROI crops were read as one image per plane by tifffile-based tools**
+  (napari, Python scripts): a second, tifffile-added description made every page
+  its own series. QuPath (Bio-Formats) was not affected. The same fix applies to
+  background-removed images and CODEX-to-CODEX registration.
+- Exposure is written in OME's own field (`Plane/@ExposureTime`) instead of a
+  non-standard `Channel/@Exposure`; SPACEMAP reads either.
 
 - **Fixed:** marker names showed as empty boxes and colours as black when
   blanks had been saved in the project (seen for INNATE's P11). Black was also
