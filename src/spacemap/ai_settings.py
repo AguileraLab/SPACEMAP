@@ -41,6 +41,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "models_dir": "",
     # GPU memory mode for the local model: auto, bfloat16, float32, int8 or int4 (model_runtime.PRECISIONS).
     "precision": "auto",
+    # Stop the local model server when the SPACEMAP that started it stops (model_service/guard.py).
+    "stop_with_spacemap": True,
     "allow_downloads": True,
     "api": {
         "provider": "",

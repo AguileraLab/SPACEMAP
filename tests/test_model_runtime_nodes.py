@@ -100,3 +100,12 @@ def test_the_guard_stops_the_server_when_spacemap_stops():
 @pytest.mark.parametrize("pid", [0, 1])
 def test_no_pid_is_not_a_server(pid):
     assert not model_runtime._pid_matches(pid)
+
+
+def test_stopping_with_spacemap_can_be_turned_off(tmp_path, monkeypatch):
+    from spacemap import ai_settings
+
+    monkeypatch.setattr(ai_settings, "config_dir", lambda: tmp_path)
+    assert ai_settings.load_settings()["stop_with_spacemap"] is True
+    ai_settings.update_settings(stop_with_spacemap=False)
+    assert ai_settings.load_settings()["stop_with_spacemap"] is False  # unknown keys used to be dropped
