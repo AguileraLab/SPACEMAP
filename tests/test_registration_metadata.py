@@ -173,3 +173,23 @@ def test_crops_and_background_removed_images_keep_the_parent_metadata(tmp_path):
     from spacemap.background_subtraction_utils import get_channel_info
 
     assert get_channel_info(str(cleaned))[2][0]["exposure"] == "2"
+
+
+def test_a_crop_blanks_outside_its_shape_unless_asked_to_keep_the_box(tmp_path):
+    import json
+
+    from spacemap.registration import process_single_image_rois
+
+    image = tmp_path / "S2.ome.tiff"
+    tifffile.imwrite(image, np.full((1, 100, 100), 7, np.uint16), metadata={"axes": "CYX", "Channel": {"Name": ["DAPI"]}})
+    boundary = tmp_path / "S2.geojson"
+    boundary.write_text(json.dumps({"type": "FeatureCollection", "features": [{  # a triangle: its box has corners outside it
+        "type": "Feature", "properties": {"name": "tri"},
+        "geometry": {"type": "Polygon", "coordinates": [[[10, 10], [90, 10], [10, 90], [10, 10]]]}}]}))
+    for keep, folder in ((False, "shape"), (True, "box")):
+        (tmp_path / folder).mkdir()
+        process_single_image_rois(str(image), str(boundary), str(tmp_path / folder), {"codex": 0.5}, keep_outside=keep)
+    shape = tifffile.imread(next((tmp_path / "shape").glob("*.ome.tiff")))
+    box = tifffile.imread(next((tmp_path / "box").glob("*.ome.tiff")))
+    assert shape.shape == box.shape and shape[-1, -1] == 0 and shape[0, 0] == 7  # outside the triangle: 0
+    assert (box == 7).all()  # the whole box kept

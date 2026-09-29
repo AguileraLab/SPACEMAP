@@ -1131,9 +1131,12 @@ def create_mask_from_geometry(geometry, width, height, offset_x, offset_y):
     return mask
 
 
-def process_single_image_rois(image_path, geojson_path, rois_dir, mpp, channel_names=None, channel_colors=None, channel_metadata=None, progress_callback=None, channel_config=None):
+def process_single_image_rois(image_path, geojson_path, rois_dir, mpp, channel_names=None, channel_colors=None, channel_metadata=None, progress_callback=None, channel_config=None, keep_outside=False):
     """
     Process ROIs for a single image (OME-TIFF or QPTIFF).
+
+    Each ROI is cut out as its bounding box; pixels outside the ROI's shape are set to 0
+    unless *keep_outside* is True (the whole box is kept).
     """
     log_time(f"Processing ROIs for: {image_path}")
     
@@ -1340,7 +1343,9 @@ def process_single_image_rois(image_path, geojson_path, rois_dir, mpp, channel_n
                             # Reuse the handle opened above: re-opening the stack per
                             # channel costs more than decoding the crop itself.
                             roi_data = read_channel_from_open_tif(tif, target_channel_idx, region=(y1, y2, x1, x2))
-                            if roi_data.shape == mask.shape:
+                            if keep_outside:
+                                pass
+                            elif roi_data.shape == mask.shape:
                                 roi_data = roi_data * mask
                             else:
                                 log_time(f"Warning: Mask shape {mask.shape} != ROI shape {roi_data.shape}")
