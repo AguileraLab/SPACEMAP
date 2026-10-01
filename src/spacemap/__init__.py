@@ -5,9 +5,14 @@ A comprehensive, publication-ready pipeline for spatial multiplex imaging analys
 from image registration to advanced immune phenotyping.
 """
 
-__version__ = "1.0.0"
-__author__ = "SPACEMAP Development Team"
-__email__ = "contact@spacemap.org"
+from importlib.metadata import PackageNotFoundError, version
+
+try:
+    __version__ = version("spacemap-ai")
+except PackageNotFoundError:
+    __version__ = "0+unknown"
+__author__ = "Bassel Dawod and Todd A. Aguilera"
+__email__ = "basbees@gmail.com"
 
 # Patch skimage.feature.plot_matches for scikit-image 0.25+ compatibility with palom
 try:
@@ -136,7 +141,7 @@ __all__ = [
     'registration',
     'segmentation_cellpose',
     'segmentation_deepcell',
-    'ph_leiden_utils', 
+    'ph_leiden_utils',
     'ph_som_utils',
     'ph_thres_utils',
     'ph_scimap_utils',

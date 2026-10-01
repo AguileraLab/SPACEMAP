@@ -6,6 +6,7 @@ services:
         # Add "ai" to bake the AI assistant's dependencies into the image, or
         # "ai,gguf" to include the CPU-friendly llama.cpp backend.
         SPACEMAP_EXTRAS: ""
+        SPACEMAP_TORCH_INDEX_URL: ${SPACEMAP_TORCH_INDEX_URL-https://download.pytorch.org/whl/cpu}
     image: spacemap:latest
     ports:
       - "8501:8501"
@@ -21,7 +22,8 @@ services:
       - spacemap-home:/home/spacemap/.spacemap
 
     # Uncomment to give the container a GPU.
-    # Requires the NVIDIA Container Toolkit on the host.
+    # Requires NVIDIA Container Toolkit and a CUDA-enabled image.
+    # See docs/installation.md before enabling this block.
     #
     # deploy:
     #   resources:

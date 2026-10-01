@@ -17,8 +17,8 @@ Two conventions are enforced across the tab:
 
 from __future__ import annotations
 
+from spacemap_gui import terminal
 import os
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
@@ -52,8 +52,7 @@ CONFIG_KEYS = (
 
 def log_annotation(message: str, subtab: str = "") -> None:
     """Print a timestamped line and record it in the page process log."""
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{timestamp}] TAB4-ANNOTATION{f'/{subtab}' if subtab else ''}: {message}", flush=True)
+    terminal.say("tab4", message, step=subtab or None)
     record_process_event(TAB_CONTEXT, "Tissue annotation step", message=message)
 
 

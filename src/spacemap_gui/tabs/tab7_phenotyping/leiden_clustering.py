@@ -1,6 +1,6 @@
 """
 Leiden Clustering Subtab
-Professional Leiden clustering with notebook-synchronized parameters.
+Leiden clustering, with the same parameters as notebook Step6A.
 """
 
 import streamlit as st
@@ -17,7 +17,6 @@ import matplotlib.pyplot as plt
 # Import shared utilities
 from .common import (
     LOW_EXPRESSION_METRIC_OPTIONS,
-    build_cluster_marker_score_map,
     build_cluster_marker_score_map_from_heatmap,
     render_assisted_assignment,
     build_marker_source_note,
@@ -29,12 +28,10 @@ from .common import (
     get_enable_row_filter_help_text,
     get_filter_column_help_text,
     get_filter_value_help_text,
-    get_marker_list,
     get_low_expression_default_threshold,
     get_low_expression_filter_help_text,
     get_low_expression_metric_help_text,
     get_low_expression_metric_label,
-    get_marker_selection_help_text,
     get_marker_workspace_panel,
     render_method_marker_selection,
     get_normalization_flag_help_text,
@@ -43,9 +40,7 @@ from .common import (
     initialize_optional_column_widget_state,
     normalize_cluster_id,
     normalize_phenotype_map_keys,
-    normalize_optional_column_name,
     get_output_column_help_text,
-    project_root_calc,
     read_dataframe_parquet_safe,
     get_random_seed_help_text,
     build_leiden_heatmap_figure,
@@ -56,11 +51,10 @@ from .common import (
     render_publication_heatmap,
     render_save_assignments,
     render_export_split_data,
-    STANDARD_PHENOTYPES,
     get_all_phenotype_options,
     render_add_custom_phenotype_ui,
     render_settings_export_import,
-    render_phenotyping_run_log_controls,
+    render_method_intro,
     begin_phenotyping_run_audit,
     resolve_notebook_marker_defaults,
     write_dataframe_parquet_atomic,
@@ -76,6 +70,7 @@ except ImportError:
     CellVisualizer = None
 
 import plotly.graph_objects as go
+from spacemap_gui import terminal
 
 try:
     from spacemap import ph_leiden_utils
@@ -90,6 +85,11 @@ except ImportError:
 LEIDEN_LOW_EXPR_CLUSTER_ID = -1
 LEIDEN_LOW_EXPR_DEFAULT_PHENOTYPE = "Others"
 LEIDEN_LOW_EXPR_LABEL = "Low expression bucket"
+
+
+def _log_console(message: str, level: str = "info") -> None:
+    """One timestamped terminal line for this tab (see spacemap_gui.terminal)."""
+    terminal.say('tab7', message, step='Leiden', level=level)
 
 
 def _dataio_load(path, columns=None):
@@ -134,8 +134,24 @@ def _render_running_leiden_job(job_dir: str):
     job = read_job(job_dir)
     if job["status"] not in {"starting", "running"}:
         st.rerun()
-    st.info("Leiden is running. You can refresh this page or return later; the run will continue.")
-    st.code(read_log(job_dir) or "Starting Leiden…", language=None)
+    started = Path(job_dir).name.split("-", 1)[0]
+    try:
+        started = datetime.strptime(started, "%Y%m%dT%H%M%S").strftime("%H:%M on %d %b")
+    except ValueError:
+        pass
+    st.info(
+        f"A Leiden run started at {started} is still in progress. The Run button comes back when "
+        "it finishes. You can leave or refresh this page; the run continues on its own. "
+        "Results appear below when it is done."
+    )
+    if st.button("Stop this run", key="leiden_stop_job_btn",
+                 help="Cancel the run in progress so a new one can be started."):
+        from spacemap_workflows.leiden_job import stop_job
+
+        st.warning(stop_job(job_dir))
+        st.rerun()
+    st.markdown("**Progress of the current run**")
+    st.code(read_log(job_dir) or "Starting Leiden...", language=None)
     st.caption(f"Run files: {job_dir}")
 
 
@@ -233,10 +249,26 @@ def _autoload_existing_leiden_from_csv(global_full_path: str | None, project_roo
         logger.warning(f"Auto-load check failed: {e}")
         st.session_state['leiden_loaded_source_path'] = global_full_path
 
+LEIDEN_GUIDE = """\
+**What it does.** Groups cells with similar marker levels. Each cell is linked to the cells most like it, and Leiden finds tightly connected groups (clusters) in that network. It does not know cell types: you name the clusters afterwards.
+
+**Steps**
+1. Choose the input table and the markers to cluster on.
+2. Set the parameters. **Resolution** matters most: higher gives more, smaller clusters; lower gives fewer, larger ones.
+3. Run. Large tables run in the background, so you can leave the tab while it works.
+4. Under **Results**, read the heatmap (average marker level per cluster) and give each cluster a phenotype name. Clusters given the same name are merged.
+5. Save the names into the table, then check example cells under **Visual Validation**.
+
+**Tip.** Too many clusters is easier to fix than too few: several clusters can share a name, but one cluster cannot be split here.
+"""
+
+
 def render_leiden(project_root, global_input_path):
-    st.subheader("Leiden Clustering Phenotyping")
-    render_phenotyping_run_log_controls(Path(project_root), "leiden", "Leiden Clustering")
-    st.markdown("Professional Leiden clustering with notebook-synchronized parameters and interactive phenotype assignment.")
+    render_method_intro(
+        project_root, "leiden", "Leiden Phenotyping",
+        "Group similar cells into clusters, then name each cluster as a phenotype.",
+        LEIDEN_GUIDE, notebook="Step6A_phenotype_leiden.ipynb", log_label="Leiden Clustering",
+    )
     job = latest_job(project_root)
     job_running = bool(job and job["status"] in {"starting", "running"})
     
@@ -327,7 +359,7 @@ def render_leiden(project_root, global_input_path):
         return norm_data, norm_cols_local
 
     # --- FILE SELECTION WITH PERSISTENCE ---
-    st.markdown("##### Input File Selection")
+    st.markdown("### 1. Input File")
     
     # Load cached directory
     cached_input_dir = cached_params.get('input_dir', str(project_root / 'outputs/batch_corrected'))
@@ -418,6 +450,7 @@ def render_leiden(project_root, global_input_path):
         str(marker_workspace.get("affix_position", "Suffix")),
         str(marker_workspace.get("correction_affix", "_corr")),
     )
+    st.markdown("### 2. Marker Selection")
     _, markers_selected, marker_workspace_note = render_method_marker_selection(
         key_prefix="leiden",
         method_name="Leiden",
@@ -430,7 +463,8 @@ def render_leiden(project_root, global_input_path):
     )
     
     # --- CONFIGURATION PANEL ---
-    with st.expander("Configuration & Parameters", expanded=True):
+    st.markdown("### 3. Configuration")
+    with st.expander("Parameters", expanded=True):
         with st.form("leiden_config_form", clear_on_submit=False):
             col1, col2 = st.columns([1, 1])
             
@@ -448,7 +482,6 @@ def render_leiden(project_root, global_input_path):
                 cell_id_col = st.selectbox(
                     "Cell ID Column", 
                     cell_id_options,
-                    index=cell_id_options.index(st.session_state.get("leiden_cell_id_col", default_cell_id)) if st.session_state.get("leiden_cell_id_col", default_cell_id) in cell_id_options else 0,
                     format_func=lambda value: value or "(None)",
                     help=get_cell_id_column_help_text(),
                     key="leiden_cell_id_col"
@@ -466,7 +499,6 @@ def render_leiden(project_root, global_input_path):
                 batch_id_col = st.selectbox(
                     "Batch ID Column",
                     batch_id_options,
-                    index=idx_batch_id,
                     format_func=lambda value: value or "(None)",
                     help=get_batch_id_column_help_text(),
                     key="leiden_batch_id_col"
@@ -630,8 +662,9 @@ def render_leiden(project_root, global_input_path):
                     "Use GPU when available",
                     value=cached_params.get('use_gpu', True),
                     help=(
-                        "Run the k-NN step that transfers cluster labels from the sketch to the remaining "
-                        "cells on the GPU, using an exact brute-force search. Results match the CPU path; "
+                        "Leiden clusters a representative sample of cells, then gives every other cell the "
+                        "cluster of its most similar sampled cells (nearest neighbours). This option runs "
+                        "that matching step on the GPU with an exact search. Results match the CPU path; "
                         "only the speed differs. Falls back to CPU automatically when no GPU is present. "
                         "The Leiden graph partitioning itself still runs on the CPU."
                     ),
@@ -771,7 +804,7 @@ def render_leiden(project_root, global_input_path):
     # --- LOAD EXISTING RESULTS / START FRESH ---
     if full_input_path and os.path.exists(full_input_path):
         st.divider()
-        st.markdown("##### Existing Leiden Results")
+        st.markdown("### 4. Load Previous Results (optional)")
 
         can_load_existing = False
         try:
@@ -887,12 +920,19 @@ def render_leiden(project_root, global_input_path):
         st.warning("Please select at least one marker to proceed")
 
     existing_run_log = logger.get_streamlit_buffer("leiden_run_log_lines")
-    if existing_run_log:
-        with st.expander("Last Leiden Tab Terminal", expanded=False):
-            st.caption("Timestamped messages mirrored from the shell terminal during the last Leiden run.")
+    if existing_run_log and not job_running:
+        with st.expander("Terminal output of the previous run", expanded=False):
+            st.caption("Messages from the last Leiden run that finished.")
             st.code("\n".join(existing_run_log), language=None)
-    
-    if st.button("Run Leiden Clustering", type="primary", disabled=(n_markers == 0 or job_running)):
+
+    st.markdown("### 5. Run Leiden Clustering")
+    if st.button(
+        "Run Leiden Clustering",
+        type="primary",
+        disabled=(n_markers == 0 or job_running),
+        help=("Unavailable while a run is in progress; see below, where it can be stopped."
+              if job_running else "Start clustering in the background with the settings above."),
+    ):
         if not full_input_path or not os.path.exists(full_input_path):
             st.error("Please select a valid input file.")
             return
@@ -960,8 +1000,7 @@ def render_leiden(project_root, global_input_path):
     # --- INTERACTIVE VISUALIZATION & PHENOTYPE ASSIGNMENT ---
     if 'leiden_temp_file' in st.session_state and Path(st.session_state['leiden_temp_file']).exists():
         st.divider()
-        st.subheader("Interactive Visualization & Phenotype Assignment")
-        st.caption("Professional phenotype assignment interface synchronized with notebook workflow")
+        st.subheader("Results & Phenotype Assignment")
         
         temp_file = st.session_state['leiden_temp_file']
         df_results = read_dataframe_parquet_safe(
@@ -1703,7 +1742,7 @@ def render_leiden(project_root, global_input_path):
     # --- VISUAL VALIDATION COMPONENT ---
     if st.session_state.get('viz_enabled'):
         st.divider()
-        with st.expander("Visual Validation of Clusters", expanded=True):
+        with st.expander("Visual Validation of Representative Cells", expanded=True):
             st.markdown("#### Visualize Representative Cells")
             st.caption("Inspect random cells from specific clusters to validate phenotype assignments.")
             
@@ -1965,7 +2004,7 @@ def render_leiden(project_root, global_input_path):
                                                             names_for_plot.append(raw_m) # Use clean name for display
                                                         else:
                                                             # Warn or skip?
-                                                            print(f"Warning: Marker {m} (raw: {raw_m}) not found in OME channels: {ome_channels}")
+                                                            _log_console(f"Warning: Marker {m} (raw: {raw_m}) not found in OME channels: {ome_channels}", level="warning")
                                                             
                                                 # FALLBACK: If OME channels missing or no matches found, fallback to index
                                                 if not marker_indices_for_plot:
@@ -2016,7 +2055,7 @@ def render_leiden(project_root, global_input_path):
                                                     save_path = save_root / fname
                                                     
                                                     fig.savefig(save_path, bbox_inches='tight', dpi=150)
-                                                    print(f"[CellVisualizer] Saved: {save_path.name}")
+                                                    _log_console(f"Saved: {save_path.name}")
                                                     
                                                     # Append to CSV log
                                                     csv_path = save_root / "visualized_cells_metadata.csv"
@@ -2037,7 +2076,7 @@ def render_leiden(project_root, global_input_path):
                                                     meta_df.to_csv(csv_path, mode='a', header=not csv_path.exists(), index=False)
                                                     
                                                 except Exception as save_err:
-                                                    print(f"Auto-save failed: {save_err}")
+                                                    _log_console(f"Auto-save failed: {save_err}", level="error")
                                                 
                                                 plt.close(fig)
                                                 

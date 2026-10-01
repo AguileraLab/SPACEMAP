@@ -20,6 +20,7 @@ from spacemap_gui.file_browser import render_file_browser
 from spacemap.utils import hex_to_rgb
 from spacemap_gui.ui_utils import directory_input_with_browse, st_file_selector
 from spacemap_gui.process_log import record_process_event
+from spacemap_gui import terminal
 
 # Lazy-load sentinels – set by _ensure_heavy_imports()
 _HEAVY_LOADED = False
@@ -40,6 +41,11 @@ merge_polygons = None           # type: ignore[assignment]
 split_sort_polygons = None      # type: ignore[assignment]
 classify_point_in_polygon_lists = None  # type: ignore[assignment]
 get_channel_info = None  # type: ignore[assignment]
+
+
+def _log_console(message: str, level: str = "info") -> None:
+    """One timestamped terminal line for this tab (see spacemap_gui.terminal)."""
+    terminal.say('tab4', message, step='Cell Annotation', level=level)
 
 
 def _ensure_heavy_imports():
@@ -96,8 +102,8 @@ def _ensure_heavy_imports():
 # ==============================================================================
 
 def log_step(step_name: str):
-    """Log to console with timestamp."""
-    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {step_name}")
+    """Cell Annotation progress line, also recorded in the page process log."""
+    _log_console(step_name)
     record_process_event("tab4", "Annotation step", message=step_name)
 
 
@@ -237,7 +243,7 @@ def get_cached_channel_image(file_path, channel_index):
                     return ch_data, full_shape
 
     except Exception as e:
-        print(f"Error loading channel {channel_index}: {e}")
+        _log_console(f"Error loading channel {channel_index}: {e}", level="error")
     
     return None, (0, 0)
 
@@ -283,7 +289,7 @@ def load_preview_channels(file_path: str, indices_to_load: list) -> tuple:
                 full_shape = shape
 
     except Exception as e:
-        print(f"Error load_preview_channels: {e}")
+        _log_console(f"Error load_preview_channels: {e}", level="error")
     return loaded_data, full_shape, is_rgb
 
 
@@ -527,7 +533,7 @@ def process_merge_and_clean(image_stem: str, geojson_files_with_actions: list,
                 if name_lower in keep_annots:
                     keep_polys_by_name.setdefault(name, []).append((geom, color_rgb))
         except Exception as e:
-            print(f"Error reading {fpath}: {e}")
+            _log_console(f"Error reading {fpath}: {e}", level="error")
             
     final_features = []
     tissue_geom = None
@@ -801,7 +807,7 @@ def generate_zones_for_geojson(fpath: str, features_df: pd.DataFrame, tissue_lab
                 json.dump(data, f)
         return True
     except Exception as e:
-        print(f"Error generating zones: {e}")
+        _log_console(f"Error generating zones: {e}", level="error")
         return False
 
 
@@ -854,10 +860,10 @@ def process_cell_annotation_dynamic(
             edge_config=edge,
         )
         for warning in summary.get("warnings", []):
-            print(f"  Annotation warning: {warning}")
+            _log_console(f"  Annotation warning: {warning}", level="warning")
         return True
     except Exception as e:
-        print(f"Error annotating cell CSV: {e}")
+        _log_console(f"Error annotating cell CSV: {e}", level="error")
         import traceback
         traceback.print_exc()
         return False
@@ -1261,7 +1267,7 @@ def render_unified_annotation(project_root: Path):
     for k, v in defaults.items():
         if k not in keys_list:
             st.session_state[k] = v
-            print(f"DEBUG LOOP: {k} not in keys_list. Initializing to {v}", flush=True)
+            _log_console(f"DEBUG LOOP: {k} not in keys_list. Initializing to {v}")
             updated = True
         else:
             val = st.session_state[k]
@@ -1269,15 +1275,15 @@ def render_unified_annotation(project_root: Path):
                 continue
             if isinstance(val, list) and val == [] and v != []:
                 st.session_state[k] = v
-                print(f"DEBUG LOOP: {k} is empty list. Initializing to {v}", flush=True)
+                _log_console(f"DEBUG LOOP: {k} is empty list. Initializing to {v}")
                 updated = True
             elif isinstance(val, str) and val == "" and v != "":
                 st.session_state[k] = v
-                print(f"DEBUG LOOP: {k} is empty string. Initializing to {v}", flush=True)
+                _log_console(f"DEBUG LOOP: {k} is empty string. Initializing to {v}")
                 updated = True
             
     if updated:
-        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] TAB4-LEGACY: Initialized default configuration values", flush=True)
+        _log_console(f"TAB4-LEGACY: Initialized default configuration values")
         st.rerun()
             
     if 'annot_rules' in keys_list and isinstance(st.session_state.annot_rules, pd.DataFrame):
@@ -1391,7 +1397,7 @@ def render_unified_annotation(project_root: Path):
             browser_key_prefix="cell_out_dir_ann",
         )
         
-        with st.expander("🔍 Advanced Matching Settings", expanded=False):
+        with st.expander("Advanced Matching Settings", expanded=False):
             st.text_input(
                 "Prefix Extraction Regex",
                 value=st.session_state.get('annot_match_regex', r'^(P\d+(_P\d+)?_roi_\d+)'),
@@ -1592,7 +1598,7 @@ def render_unified_annotation(project_root: Path):
                            # Rules configuration
         if not st.session_state.annot_rules.empty:
             with st.form("annotation_settings_form"):
-                st.caption("💡 **Tip:** Edit rules, features, and colors offline, then click **Save Project** at the bottom to save your changes.")
+                st.caption("**Tip:** Edit rules, features, and colors offline, then click **Save Project** at the bottom to save your changes.")
                 
                 st.markdown("**Annotation Rules**")
                 rule_config = {
@@ -1622,7 +1628,7 @@ def render_unified_annotation(project_root: Path):
                 )
                 
                 # Color selection grid
-                st.markdown("🎨 **Label Colors**")
+                st.markdown("**Label Colors**")
                 color_cols = st.columns(4)
                 for idx, row in display_rules.iterrows():
                     lbl = row["Label"]
@@ -2006,7 +2012,7 @@ def render_unified_annotation(project_root: Path):
                     def log_step(msg: str):
                         ts = datetime.now().strftime("[%Y-%m-%d %H:%M:%S]")
                         full_msg = f"{ts} {msg}"
-                        print(full_msg)
+                        _log_console(msg)
                         step_status.write(full_msg)
                         status.text(msg)
                         record_process_event("tab4", "Annotation step", message=msg)
@@ -2029,7 +2035,7 @@ def render_unified_annotation(project_root: Path):
                                     labels = load_geojson_labels_cached(os.path.join(st.session_state.annot_input_dirs[dir_idx], fname))
                                     file_label_map[map_key] = labels
                                 except Exception as le:
-                                    print(f"Error loading labels for {fname}: {le}")
+                                    _log_console(f"Error loading labels for {fname}: {le}", level="error")
                                     
                             for l in labels:
                                 rule = st.session_state.annot_rules[st.session_state.annot_rules["Label"].str.lower() == l.lower()]
@@ -2887,7 +2893,6 @@ def render_visualization(project_root: Path):
 def render():
     """Render the cell-level annotation workflow inside the Annotation tab."""
     import streamlit as st
-    from pathlib import Path
     from spacemap_gui.ui_utils import require_active_project
     project_root = require_active_project()
     if project_root is None:

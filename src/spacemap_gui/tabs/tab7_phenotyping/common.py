@@ -5,6 +5,14 @@ import os
 os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
 os.environ.setdefault("SPACEMAP_TAB_LOGS", "1")
 
+from spacemap_gui import terminal
+
+
+def _log_console(message: str, level: str = "info") -> None:
+    """One timestamped terminal line for this tab (see spacemap_gui.terminal)."""
+    terminal.say('tab7', message, step=None, level=level)
+
+
 # Force flush for progress visibility in Streamlit
 class _FlushStdout:
     def __init__(self, stream):
@@ -33,10 +41,8 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
-import plotly.graph_objects as go
 from pathlib import Path
 import time
-import importlib
 import ast
 import hashlib
 import logging
@@ -1657,7 +1663,9 @@ def get_analysis_marker_label(marker: str) -> str:
         flags=re.IGNORECASE,
     )
 
-MARKER_CONFIG_PATH = project_root_calc / "marker_configs.json"
+from spacemap.marker_config import marker_config_path
+
+MARKER_CONFIG_PATH = marker_config_path()
 
 
 def _normalize_marker_list(markers: object) -> list[str]:
@@ -1769,7 +1777,7 @@ def _extract_markers_from_notebook(notebook_name="Step6A_phenotype_leiden.ipynb"
         
         return corr_markers, non_corr_markers
     except Exception as e:
-        print(f"Warning: Could not extract markers from notebook: {e}")
+        _log_console(f"Warning: Could not extract markers from notebook: {e}", level="warning")
         return [], []
 
 
@@ -2974,7 +2982,9 @@ def begin_phenotyping_run_audit(
     event_type: str = "analysis_run",
 ) -> dict | None:
     """Capture the immutable start of a method run when logging is enabled."""
-    if not bool(st.session_state.get(f"{method_key}_create_log", True)):
+    from spacemap_gui import run_log
+
+    if not run_log.enabled("tab7"):
         return None
     now = datetime.now().astimezone()
     return {
@@ -3132,28 +3142,14 @@ def render_phenotyping_run_log_controls(
 ) -> bool:
     """Render a persisted log checkbox and an explicit settings snapshot action."""
     label = method_name or PHENOTYPING_METHOD_LABELS.get(method_key, method_key)
-    state_key = f"{method_key}_create_log"
-    if state_key not in st.session_state:
-        st.session_state[state_key] = True
+    # The method's detail log follows Tab 7's single "Record run log" switch at
+    # the top of the page; there is no second box to keep in step with it.
+    from spacemap_gui import run_log
 
-    def _save_log_preference() -> None:
-        try:
-            from spacemap_gui.persistence import save_active_project_state
-
-            save_active_project_state("tab7_phenotyping")
-        except Exception as exc:
-            logger.warning(f"Could not save {label} log preference: {exc}")
-
-    enabled = st.checkbox(
-        "Create reproducibility processing log (CSV)",
-        key=state_key,
-        on_change=_save_log_preference,
-        help=(
-            "Append run duration, markers, method settings, phenotype assignments, "
-            "input/output identity, CPU, GPU, RAM, host, Python, and code revision."
-        ),
-    )
-    with st.expander("Log details and settings snapshots", expanded=False):
+    enabled = run_log.enabled("tab7")
+    with st.expander(f"{label} run details and settings snapshots", expanded=False):
+        if not enabled:
+            st.caption(f"'{run_log.LABEL}' is off for this tab, so {label} runs are not being recorded.")
         log_path = get_phenotyping_audit_log_path(Path(project_root), method_key)
         st.caption(f"{label} log: `{log_path}`")
         if log_path.exists():
@@ -3185,6 +3181,36 @@ def render_phenotyping_run_log_controls(
                 save_active_project_state("tab7_phenotyping")
                 st.success(f"Settings snapshot appended to {written}")
         return enabled
+
+
+def render_method_intro(
+    project_root: Path,
+    method_key: str,
+    title: str,
+    summary: str,
+    guide=None,
+    *,
+    notebook: str | None = None,
+    log_label: str | None = None,
+) -> None:
+    """Open every Phenotyping subtab the same way.
+
+    Title, a one-line plain-language summary, a collapsed "How it works" guide
+    that names the matching notebook, then the run-log controls. ``guide`` is
+    Markdown text, or a callable that draws its own content inside the expander.
+    """
+    st.subheader(title)
+    st.caption(summary)
+    if guide is not None or notebook:
+        with st.expander(f"How {title.replace(' Phenotyping', '')} works", expanded=False):
+            if callable(guide):
+                guide()
+            elif guide:
+                st.markdown(guide)
+            if notebook:
+                st.caption(f"The same steps can be run as a script in `notebooks/{notebook}`.")
+    render_phenotyping_run_log_controls(Path(project_root), method_key, log_label or title)
+
 
 def render_data_filter_ui(
     available_columns: list[str],
@@ -4035,7 +4061,7 @@ def render_add_custom_phenotype_ui(key_prefix: str) -> None:
             label_visibility="collapsed",
         )
     with col_btn:
-        if st.button("➕ Add", key=f"{key_prefix}_add_custom_pheno_btn"):
+        if st.button("Add", key=f"{key_prefix}_add_custom_pheno_btn"):
             name = new_pheno.strip()
             if name:
                 existing = get_all_phenotype_options(include_unassigned=False)
@@ -4736,7 +4762,7 @@ def build_leiden_heatmap_figure(
         return fig, [_norm_cluster_id(c) for c in cluster_order], marker_order, cell_counts.to_dict(), heatmap_z_ordered
 
     except Exception as e:
-        print(f"Error in build_leiden_heatmap_figure: {e}")
+        _log_console(f"Error in build_leiden_heatmap_figure: {e}", level="error")
         return None, [], [], {}, pd.DataFrame()
 
 
@@ -5596,6 +5622,79 @@ def render_unified_csv_export_options(
     return checkbox_values
 
 
+class PendingSaveBlocked(RuntimeError):
+    """Saved-but-unwritten changes must be resolved before another save."""
+
+
+def _save_assignments_as_pending(
+    input_path: Path,
+    df_results_linkable: pd.DataFrame,
+    result_anchor_col: str,
+    using_internal_anchor: bool,
+    update_cols: list,
+    cluster_col: str,
+    output_col: str,
+    get_pheno,
+    *,
+    source_note: str = "",
+) -> list[str] | None:
+    """Save assignments as pending columns instead of rewriting the whole CSV.
+
+    Same result as the full rewrite: cells present in the results get the new
+    value, every other cell keeps its current one, matched through the cell ID
+    column. Returns the columns saved, or None when the fast path does not apply
+    (no real cell ID column, or duplicate IDs), in which case the caller rewrites
+    the CSV as before.
+    """
+    from spacemap import dataio, pending_columns
+
+    if using_internal_anchor or result_anchor_col == TAB7_INTERNAL_CELL_ID_COL:
+        return None
+    anchor = result_anchor_col
+    available = dataio.columns(input_path)
+    if anchor not in available:
+        return None
+    if pending_columns.has_stale(input_path):
+        raise PendingSaveBlocked(
+            "Changes saved earlier no longer match the CSV (it was rewritten since). Open the "
+            "file panel at the top of the tab and re-apply or discard them, then save again."
+        )
+    targets = [column for column in update_cols if column in df_results_linkable.columns]
+    write_phenotype = cluster_col in df_results_linkable.columns
+    wanted = [anchor] + [
+        column for column in dict.fromkeys(targets + ([output_col] if write_phenotype else []))
+        if column in available and column != anchor
+    ]
+    base = dataio.load(input_path, columns=wanted)
+    if base[anchor].duplicated().any():
+        return None
+    result_ids = df_results_linkable[result_anchor_col]
+    mask = base[anchor].isin(result_ids.values)
+    ids_in_analysis = base.loc[mask, anchor]
+
+    new_columns: dict[str, pd.Series] = {}
+    for column in targets:
+        id_to_value = dict(zip(result_ids, df_results_linkable[column]))
+        series = base[column].copy() if column in base.columns else pd.Series(np.nan, index=base.index)
+        series.loc[mask] = ids_in_analysis.map(id_to_value)
+        new_columns[column] = series
+    if write_phenotype:
+        id_to_pheno = dict(zip(result_ids, df_results_linkable[cluster_col].apply(get_pheno)))
+        series = (base[output_col].copy() if output_col in base.columns
+                  else pd.Series(np.nan, index=base.index)).astype(object)
+        series.loc[mask] = ids_in_analysis.map(id_to_pheno)
+        new_columns[output_col] = series
+    if not new_columns:
+        return None
+    return pending_columns.save(
+        input_path,
+        new_columns,
+        anchor_column=anchor,
+        anchor_values=base[anchor],
+        source_note=source_note,
+    )
+
+
 def render_save_assignments(
     df_results: pd.DataFrame,
     phenotype_map: dict,
@@ -5674,7 +5773,32 @@ def render_save_assignments(
 
             updated_input = False
 
+            fast_saved = None
             if input_path and input_path.exists():
+                try:
+                    fast_saved = _save_assignments_as_pending(
+                        input_path,
+                        df_results_linkable,
+                        result_anchor_col,
+                        using_internal_anchor,
+                        selected_update_cols,
+                        cluster_col,
+                        output_col,
+                        get_pheno,
+                        source_note=f"Tab 7 {PHENOTYPING_METHOD_LABELS.get(key_prefix, key_prefix)}",
+                    )
+                except PendingSaveBlocked as blocked:
+                    st.error(str(blocked))
+                    return
+            if fast_saved:
+                st.success(
+                    f"Saved {', '.join(f'`{name}`' for name in fast_saved)} in seconds. Tabs 7, 8 and 9 "
+                    "already show the new values. They are written into the CSV itself when you press "
+                    "**Write pending changes into the CSV** in the file panel at the top of the tab."
+                )
+                saved_output_path = input_path
+                updated_input = True
+            elif input_path and input_path.exists():
                 st.info(f"Reading input file: {input_path}")
                 df_in = pd.read_csv(input_path)
                 df_in_linkable, input_anchor_col, _ = ensure_cell_id_anchor(df_in, cell_id_col)
@@ -5709,7 +5833,7 @@ def render_save_assignments(
 
                     df_in_linkable.to_csv(input_path, index=False)
                     st.success(
-                        f"✅ Updated unified input file with '{output_col}'"
+                        f"Updated unified input file with '{output_col}'"
                         + (f" and {selected_update_cols}." if selected_update_cols else ".")
                     )
                     st.caption(f"Updated file: {input_path}")
@@ -5745,7 +5869,7 @@ def render_save_assignments(
                 with open(map_file, 'w') as f:
                     json.dump(cur_map, f)
 
-                st.success(f"✅ Local results saved to {output_dir}")
+                st.success(f"Local results saved to {output_dir}")
 
             if updated_input or save_local_copy:
                 try:
@@ -5770,7 +5894,7 @@ def render_save_assignments(
                 )
 
             if not updated_input and not save_local_copy:
-                st.warning("⚠️ No files were saved. Please check 'Save separate local copy' or ensure global input file is configured.")
+                st.warning("No files were saved. Please check 'Save separate local copy' or ensure global input file is configured.")
                 finish_phenotyping_run_audit(
                     assignment_audit,
                     status="no_output",
@@ -5808,7 +5932,7 @@ def render_export_split_data(
     with st.expander("Export Split Data (Batch Split)", expanded=False):
         st.markdown("Split the dataset into multiple CSV files based on a column (e.g., 'batch_id').")
 
-        st.info("💡 Tip: Ensure you have saved your assignments to the unified CSV above before splitting.")
+        st.info("Tip: Ensure you have saved your assignments to the unified CSV above before splitting.")
 
         df_results_linkable, result_anchor_col, _ = ensure_cell_id_anchor(df_results, cell_id_col)
         split_cols = [column for column in df_results_linkable.columns.tolist() if column != TAB7_INTERNAL_CELL_ID_COL]
@@ -5820,20 +5944,20 @@ def render_export_split_data(
         export_split_dir = sp_c2.text_input("Export Directory", str(project_root / 'outputs/split_batches'), key=f"{key_prefix}_split_dir")
 
         if st.button("Split & Export CSVs", type="primary", width="stretch", key=f"{key_prefix}_split_export_btn"):
-            print(f"\n{'='*40}\nSTARTING SPLIT EXPORT\nTarget Dir: {export_split_dir}\nSplit Column: {split_col}\n{'='*40}")
+            _log_console(f"{'='*40}\nSTARTING SPLIT EXPORT\nTarget Dir: {export_split_dir}\nSplit Column: {split_col}\n{'='*40}")
             try:
                 input_path = None
                 if st.session_state.get('global_pheno_file') and st.session_state.get('global_pheno_dir'):
                     input_path = Path(st.session_state.global_pheno_dir) / st.session_state.global_pheno_file
-                    print(f"Global source file configured: {input_path}")
+                    _log_console(f"Global source file configured: {input_path}")
 
                 df_to_split = None
                 if input_path and input_path.exists():
-                    print(f"Reading source file from disk...")
+                    _log_console(f"Reading source file from disk...")
                     st.caption(f"Splitting source file: {input_path}")
                     df_to_split = pd.read_csv(input_path)
                     df_to_split, input_anchor_col, _ = ensure_cell_id_anchor(df_to_split, cell_id_col)
-                    print(f"Loaded {len(df_to_split)} rows.")
+                    _log_console(f"Loaded {len(df_to_split)} rows.")
                     
                     if output_col not in df_to_split.columns or phenotype_map:
                         if input_anchor_col in df_to_split.columns and result_anchor_col in df_results_linkable.columns:
@@ -5860,7 +5984,7 @@ def render_export_split_data(
                             st.warning("Could not apply local phenotype assignments because the current results could not be linked back to the source table.")
                 else:
                     st.warning("Source file not found; using in-memory df_results.")
-                    print("Source file detection failed. Using in-memory DataFrame.")
+                    _log_console("Source file detection failed. Using in-memory DataFrame.", level="error")
                     df_to_split = df_results_linkable.copy()
                     if phenotype_map:
                         df_to_split[output_col] = df_to_split[cluster_col].apply(
@@ -5873,14 +5997,14 @@ def render_export_split_data(
                 if split_col not in df_to_split.columns:
                     # Attempt to map from df_results if possible
                     if input_anchor_col in df_to_split.columns and result_anchor_col in df_results_linkable.columns and split_col in df_results_linkable.columns:
-                        print(f"Mapping missing split column '{split_col}' from memory using ID merge...")
+                        _log_console(f"Mapping missing split column '{split_col}' from memory using ID merge...")
                         st.info(f"Mapping missing split column '{split_col}' from memory...")
                         mapping = df_results_linkable.set_index(result_anchor_col)[split_col].to_dict()
                         df_to_split[split_col] = df_to_split[input_anchor_col].map(mapping)
 
                 if split_col not in df_to_split.columns:
                     msg = f"Column '{split_col}' not found in dataset. Available: {list(df_to_split.columns)}"
-                    print(msg)
+                    _log_console(msg)
                     st.error(msg)
                 else:
                     if TAB7_INTERNAL_CELL_ID_COL in df_to_split.columns:
@@ -5892,30 +6016,30 @@ def render_export_split_data(
                     out_path = Path(clean_dir)
                     
                     if clean_dir != export_split_dir:
-                         print(f"Sanitized export directory (removed whitespace): \n'{export_split_dir}' -> '{clean_dir}'")
+                         _log_console(f"Sanitized export directory (removed whitespace): \n'{export_split_dir}' -> '{clean_dir}'")
 
-                    print(f"Attempting to create directory: {out_path.resolve()}")
+                    _log_console(f"Attempting to create directory: {out_path.resolve()}")
                     try:
                         out_path.mkdir(parents=True, exist_ok=True)
                         if not out_path.exists():
-                            print(f"FAILED: Directory does not exist after mkdir: {out_path}")
-                            st.error(f"❌ Failed to create directory: {out_path}")
+                            _log_console(f"FAILED: Directory does not exist after mkdir: {out_path}", level="error")
+                            st.error(f"Failed to create directory: {out_path}")
                             return
                         if not os.access(out_path, os.W_OK):
-                            print(f"FAILED: Directory not writable: {out_path}")
-                            st.error(f"❌ Directory exists but is not writable: {out_path}")
+                            _log_console(f"FAILED: Directory not writable: {out_path}", level="error")
+                            st.error(f"Directory exists but is not writable: {out_path}")
                             return
                     except Exception as e:
-                        print(f"EXCEPTION creating directory: {e}")
-                        st.error(f"❌ Error creating output directory: {e}")
+                        _log_console(f"EXCEPTION creating directory: {e}")
+                        st.error(f"Error creating output directory: {e}")
                         return
 
-                    print(f"Directory checks passed. Directory should exist: {out_path.exists()}")
+                    _log_console(f"Directory checks passed. Directory should exist: {out_path.exists()}")
 
                     groups = df_to_split.groupby(split_col)
                     progress = st.progress(0)
                     total = len(groups)
-                    print(f"Found {total} groups for splitting on '{split_col}'.")
+                    _log_console(f"Found {total} groups for splitting on '{split_col}'.")
 
                     for i, (val, grp) in enumerate(groups):
                         safe_val = str(val).replace('/', '_').replace('\\', '_')
@@ -5924,14 +6048,14 @@ def render_export_split_data(
                         try:
                             grp.to_csv(fpath, index=False)
                             if i < 3:
-                                print(f"Wrote file: {fpath}")
+                                _log_console(f"Wrote file: {fpath}")
                         except Exception as e:
-                            print(f"FAILED to write {fpath}: {e}")
+                            _log_console(f"FAILED to write {fpath}: {e}", level="error")
                             st.error(f"Failed to write {fpath}: {e}")
                         progress.progress((i + 1) / total)
 
                     st.success(f"Exported {total} files to `{out_path.resolve()}`")
-                    print(f"Export loop finished. Total files intended: {total}")
+                    _log_console(f"Export loop finished. Total files intended: {total}")
                     
                     # Verify file existence to reassure user
                     if total > 0:
@@ -5940,7 +6064,7 @@ def render_export_split_data(
                              ex_str = ", ".join([f.name for f in files_found[:3]])
                              st.caption(f"Verified files on disk: {ex_str} ... (+{len(files_found)-3} more)")
                          else:
-                             st.error(f"⚠️ Export reported success but no CSV files found in {out_path}. Check permissions.")
+                             st.error(f"Export reported success but no CSV files found in {out_path}. Check permissions.")
             except Exception as e:
                 st.error(f"Export failed: {e}")
 
@@ -6430,7 +6554,7 @@ def render_settings_export_import(
             except Exception:
                 pass
 
-    with st.expander(f"⚙️ Export / Import {subtab_name} Settings", expanded=False):
+    with st.expander(f"Export / Import {subtab_name} Settings", expanded=False):
         col_exp, col_imp = st.columns(2)
 
         # ---- Export side ----
@@ -6448,7 +6572,7 @@ def render_settings_export_import(
             payload = st.session_state.get(f"_sett_exp_{uid}_payload")
             if payload:
                 st.download_button(
-                    "⬇ Download Settings JSON",
+                    "Download Settings JSON",
                     payload,
                     file_name=f"tab7_{uid}_settings.json",
                     mime="application/json",
@@ -6478,7 +6602,7 @@ def render_settings_export_import(
                         if errs:
                             for msg in errs:
                                 st.warning(msg)
-                        st.success("✅ Settings restored successfully! Reloading...")
+                        st.success("Settings restored successfully! Reloading...")
                         st.rerun()
                     except Exception as exc:
                         st.error(f"Failed to apply settings: {exc}")

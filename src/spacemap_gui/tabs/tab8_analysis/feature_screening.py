@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from spacemap_gui import terminal
 import copy
 import hashlib
 import io
@@ -83,8 +84,6 @@ from .feature_screening_core import (
     save_feature_screening_run,
     zone_distance_interval_mask,
     zone_distance_mask,
-    _draw_cell_segmentation_patches,
-    _draw_zone_distance_contour,
 )
 
 
@@ -99,7 +98,7 @@ def _to_float(value: Any, default: float = float("nan")) -> float:
         return default
 
 def _log_terminal_event(message: str) -> None:
-    print(f"[Tab8 Feature Screening] {message}", flush=True)
+    terminal.say("tab8", message, step="Feature Screening")
     logs = st.session_state.setdefault("_tab8_fs_logs", [])
     logs.append(message)
     st.session_state["_tab8_fs_logs"] = logs[-500:]
@@ -466,7 +465,7 @@ def _render_reference_defaults_action(project_root: Path, unified_csv_path: str 
         snap["_exported_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
         snap_json = json.dumps(snap, indent=2, default=_json_settings_default)
         st.download_button(
-            "⬇ Export Settings",
+            "Export Settings",
             data=snap_json.encode("utf-8"),
             file_name="tab8_settings.json",
             mime="application/json",
@@ -475,7 +474,7 @@ def _render_reference_defaults_action(project_root: Path, unified_csv_path: str 
             width="stretch",
         )
     with col_import:
-        st.caption("⬆ Import settings from a previously exported JSON file")
+        st.caption("Import settings from a previously exported JSON file")
         import_counter = int(st.session_state.get("_tab8_fs_import_counter", 0))
         uploaded = st.file_uploader(
             "Import settings JSON",
@@ -496,7 +495,7 @@ def _render_reference_defaults_action(project_root: Path, unified_csv_path: str 
                     _apply_settings_snapshot(valid)
                     _save_settings_to_cache(project_root, unified_csv_path)
                     st.session_state["_tab8_fs_import_counter"] = import_counter + 1
-                    st.toast(f"Imported {len(valid)} settings. Apply configuration to use them.", icon="✅")
+                    st.toast(f"Imported {len(valid)} settings. Apply configuration to use them.", icon=":material/check_circle:")
                     st.rerun()
                 else:
                     st.error("Invalid settings file: expected a JSON object.")
@@ -7819,7 +7818,7 @@ def _build_fdr_hits_summary_df(
 
         rows.append({
             "Zone":                       zone_label,
-            "★ Selected":                 "★" if is_selected else "",
+            "Selected zone":              "Yes" if is_selected else "",
             "Endpoint":                   endpoint,
             "Stratum":                    stratum,
             "Family":                     str(row.get("feature_family") or "").replace("_", " ").title(),
@@ -7838,7 +7837,7 @@ def _build_fdr_hits_summary_df(
             "Rep. ROI – High group":      rep_high,
             "Rep. ROI – Low group":       rep_low,
             "Comment":                    (
-                "⭐ Top-ranked feature (most reproducible cross-zone)"
+                "Top-ranked feature (most reproducible across zones)"
                 if is_top else ""
             ),
             # hidden sort keys
@@ -8267,13 +8266,13 @@ def _render_live_results(results: dict[str, Any], config: dict[str, Any]) -> Non
 
                 st.caption(
                     f"{len(fdr_hits_df)} FDR-significant hit(s) across all scanned zones. "
-                    "★ marks rows belonging to the selected zone. ⭐ marks the top-ranked feature. "
+                    "'Selected zone' marks rows from the zone chosen above; 'Comment' names the top-ranked feature. "
                     "'Rep. ROI' columns show the patient/ROI with the highest and lowest feature value "
                     "in the zone, as a starting point for visual inspection."
                 )
                 display_cols = [
                     c for c in [
-                        "Zone", "★ Selected", "Endpoint", "Stratum", "Family", "Feature",
+                        "Zone", "Selected zone", "Endpoint", "Stratum", "Family", "Feature",
                         "FDR q", "p value", "Direction", "HR [95% CI]", "n (High / Low)",
                         "Zone bootstrap recovery", "Feature rank", "Feature bootstrap recovery",
                         "FDR significant in N zones", "Consecutive FDR band",
@@ -8536,7 +8535,7 @@ def _render_live_results(results: dict[str, Any], config: dict[str, Any]) -> Non
             for eb in endpoint_balance:
                 groups_str = ", ".join(f"{k}: {v}" for k, v in eb.get("groups", {}).items())
                 balance_ratio = eb.get("balance_ratio", 0.0)
-                warning = " ⚠️ Unbalanced" if balance_ratio < 0.33 else ""
+                warning = " (unbalanced)" if balance_ratio < 0.33 else ""
                 st.text(f"{eb.get('endpoint', '?')}: {groups_str}  (ratio: {balance_ratio:.2f}){warning}")
     with result_tabs[9]:
         from .roi_explorer import _render_roi_explorer

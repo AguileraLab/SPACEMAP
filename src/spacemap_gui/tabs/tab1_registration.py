@@ -6,13 +6,13 @@ import hashlib
 import io
 import json
 import os
+from collections import Counter
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any, TextIO
 
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -23,14 +23,13 @@ import cv2
 
 from spacemap.registration import (
     extract_dapi_channel,
-    merge_channels,
     preprocess_he_image,
     register_images,
     register_codex_to_codex,
     merge_multi_round_ome_tiff,
     resolve_reference_channel,
 )
-from spacemap.utils import get_channel_info_qptiff, hex_to_rgb, log_time
+from spacemap.utils import get_channel_info_qptiff, hex_to_rgb
 from spacemap.background_subtraction_utils import (
     get_channel_info,
     get_image_mpp,
@@ -38,7 +37,6 @@ from spacemap.background_subtraction_utils import (
     normalize_image_stem,
     is_supported_image_file,
 )
-from spacemap_gui.file_browser import render_file_browser
 from spacemap_gui.ui_utils import (
     directory_input_with_browse,
     show_preflight_errors,
@@ -46,10 +44,16 @@ from spacemap_gui.ui_utils import (
     validate_selected_files,
 )
 from spacemap_gui.process_log import record_process_event
+from spacemap_gui import terminal
 
 # -----------------------------------------------------------------------------
 # Data structures
 # -----------------------------------------------------------------------------
+
+def _log_console(message: str, level: str = "info") -> None:
+    """One timestamped terminal line for this tab (see spacemap_gui.terminal)."""
+    terminal.say('tab1', message, step=None, level=level)
+
 
 @dataclass
 class ChannelRecord:
@@ -96,7 +100,7 @@ class ImageContainer:
         try:
             names, colors, metadata = get_channel_info_qptiff(str(file_path))
         except Exception as exc:
-            print(f"Channel parse failed for {file_path.name}: {exc}")
+            _log_console(f"Channel parse failed for {file_path.name}: {exc}", level="error")
             names, colors, metadata = [], [], []
 
         if not names:
@@ -417,6 +421,61 @@ def _build_role_file_map(
             mapping[identity] = filename
 
     return mapping
+
+
+PAIR_AUTO, PAIR_SKIP = "<Auto>", "<Skip>"
+
+
+def find_pairs(
+    codex_names: List[str],
+    he_names: List[str],
+    codex_prefix: str,
+    codex_suffix: str,
+    he_prefix: str,
+    he_suffix: str,
+    choices: Dict[str, str],
+    same_folder: bool = False,
+) -> Dict[str, Any]:
+    """Tab 1's pairs, shared by classic Tab 1 and Studio.
+
+    The naming rule pairs images automatically: each name without the rule's prefix and suffix is its
+    sample (``P11_codex`` and ``P11_he`` are both ``P11``). Every image stays pairable by hand, whatever
+    its name: *choices* maps a CODEX file to ``<Auto>``, ``<Skip>`` or any H&E image. A CODEX image the
+    rule does not accept has no automatic H&E; its sample is its name. When both roles share a folder,
+    images the other role's rule claims are left out. Two CODEX images with the same sample would write
+    the same ``<sample>_merged`` image, so neither is paired until one is renamed or skipped.
+
+    Returns {"rows": [{sample, codex, auto, choice, he, follows_rule, duplicate}], "he_files": [...],
+    "unpaired_he": [...]}.
+    """
+    codex_map = _build_role_file_map(codex_names, codex_prefix, codex_suffix, he_prefix, he_suffix)
+    he_map = _build_role_file_map(he_names, he_prefix, he_suffix, codex_prefix, codex_suffix)
+    ruled_codex, ruled_he = set(codex_map.values()), set(he_map.values())
+    codex_files = sorted(ruled_codex | {name for name in codex_names if not (same_folder and name in ruled_he)})
+    he_files = sorted(ruled_he | {name for name in he_names if not (same_folder and name in ruled_codex)})
+    auto = {codex_file: he_map.get(identity) for identity, codex_file in codex_map.items()}
+    samples = {codex_file: _derive_pair_identity(codex_file, codex_prefix, codex_suffix) for codex_file in codex_files}
+    counts = Counter(samples.values())
+    rows, used = [], set()
+    for codex_file in codex_files:
+        choice = (choices or {}).get(codex_file, PAIR_AUTO)
+        if choice not in (PAIR_AUTO, PAIR_SKIP) and choice not in he_files:
+            choice = PAIR_AUTO
+        he = None if choice == PAIR_SKIP else auto.get(codex_file) if choice == PAIR_AUTO else choice
+        duplicate = counts[samples[codex_file]] > 1
+        if duplicate:
+            he = None
+        rows.append({
+            "sample": samples[codex_file],
+            "codex": codex_file,
+            "auto": auto.get(codex_file),
+            "choice": choice,
+            "he": he,
+            "follows_rule": codex_file in ruled_codex,
+            "duplicate": duplicate,
+        })
+        used.add(he)
+    return {"rows": rows, "he_files": he_files, "unpaired_he": [name for name in he_files if name not in used]}
 
 
 def _parse_channel_schema_csv(uploaded_file) -> List[Dict[str, Any]]:
@@ -1157,7 +1216,7 @@ def load_thumbnail(file_path: str, is_codex: bool = True) -> Optional[np.ndarray
         return _build_he_preview_image(file_path)
 
     except Exception as e:
-        print(f"Thumbnail load error: {e}")
+        _log_console(f"Thumbnail load error: {e}", level="error")
         return None
 
 
@@ -1203,7 +1262,7 @@ def load_reference_thumbnail(
         colored[:, :, 2] = normalized
         return colored
     except Exception as e:
-        print(f"Reference thumbnail load error: {e}")
+        _log_console(f"Reference thumbnail load error: {e}", level="error")
         return None
 
 @st.cache_data
@@ -1216,7 +1275,7 @@ def load_preview_channels(file_path: str, indices_to_load: List[int]) -> Tuple[D
         return {int(idx): np.asarray(img) for idx, img in preview_data.items()}, full_shape, False
             
     except Exception as e:
-        print(f"Preview load error: {e}")
+        _log_console(f"Preview load error: {e}", level="error")
         return {}, (0,0), False
 
 def create_composite_thumbnail(img_data_dict: Dict[int, np.ndarray], channel_colors: Dict[int, str]) -> np.ndarray:
@@ -1593,25 +1652,32 @@ def render_batch_registration(project_root: Path):
             f"H&E {detected_he_default:.4f} µm/px"
         )
         
+        # Keyed so the pairing rule is saved with the project.
+        for affix_key, affix_default in (
+            ("tab1_batch_codex_prefix", ""), ("tab1_batch_codex_suffix", "_codex"),
+            ("tab1_batch_he_prefix", ""), ("tab1_batch_he_suffix", "_he"),
+        ):
+            if st.session_state.get(affix_key) is None:
+                st.session_state[affix_key] = affix_default
         c4, c5, c6, c7 = st.columns(4)
         codex_prefix = c4.text_input(
             "CODEX Prefix",
-            value="",
+            key="tab1_batch_codex_prefix",
             help="Optional exact prefix to strip before matching, applied to the normalized stem without extension. Example: 'CODEX_' turns 'CODEX_CRC02.ome.tif' into 'CRC02'."
         )
         suffix_codex = c5.text_input(
             "CODEX Suffix",
-            value="_codex",
+            key="tab1_batch_codex_suffix",
             help="Optional exact suffix to strip before matching. If CODEX prefix and suffix are both empty, files matching the H&E rule are excluded from the CODEX candidate set automatically."
         )
         he_prefix = c6.text_input(
             "H&E Prefix",
-            value="",
+            key="tab1_batch_he_prefix",
             help="Optional exact prefix to strip before matching, applied to the normalized stem without extension."
         )
         suffix_he = c7.text_input(
             "H&E Suffix",
-            value="_he",
+            key="tab1_batch_he_suffix",
             help="Optional exact suffix to strip before matching. Example: with empty CODEX affixes and H&E suffix '-HE', 'CRC02.ome.tif' pairs with 'CRC02-HE.ome.tif'."
         )
 
@@ -1623,13 +1689,9 @@ def render_batch_registration(project_root: Path):
             help="Subfolder name under the Output Directory where intermediate/temporary files (resized H&E, anchor channel, registered H&E) will be saved."
         )
 
-        if "tab1_create_log" not in st.session_state:
-            st.session_state["tab1_create_log"] = True
-        create_log = st.checkbox(
-            "Create Processing Log (CSV)",
-            help="If enabled, writes detailed CSV logs under Output Directory/log/session_YYMMDD_HHMMSS",
-            key="tab1_create_log",
-        )
+        # Detail logs follow the tab's single "Record run log" switch at the top of the page.
+        from spacemap_gui import run_log
+        create_log = run_log.enabled("tab1")
 
         # Scan for candidates (cached in session state)
         scan_cache_key = (codex_dir, he_dir, codex_prefix, suffix_codex, he_prefix, suffix_he)
@@ -1643,26 +1705,14 @@ def render_batch_registration(project_root: Path):
                     codex_file_names = sorted([f for f in os.listdir(codex_dir) if is_supported_image_file(f)])
                     he_file_names = sorted([f for f in os.listdir(he_dir) if is_supported_image_file(f)])
 
-                    codex_files = _build_role_file_map(
-                        codex_file_names,
-                        codex_prefix,
-                        suffix_codex,
-                        he_prefix,
-                        suffix_he,
+                    # Every image is pairable by hand; the naming rule gives the automatic pairs.
+                    scan = find_pairs(
+                        codex_file_names, he_file_names, codex_prefix, suffix_codex, he_prefix, suffix_he, {},
+                        same_folder=os.path.realpath(codex_dir) == os.path.realpath(he_dir),
                     )
-                    he_files = _build_role_file_map(
-                        he_file_names,
-                        he_prefix,
-                        suffix_he,
-                        codex_prefix,
-                        suffix_codex,
-                    )
-
-                    codex_candidate_files = sorted(codex_files.values())
-                    he_candidate_files = sorted(he_files.values())
-
-                    for prefix_val, codex_file in codex_files.items():
-                        auto_pairs_by_codex[codex_file] = he_files.get(prefix_val)
+                    codex_candidate_files = [row["codex"] for row in scan["rows"]]
+                    he_candidate_files = scan["he_files"]
+                    auto_pairs_by_codex = {row["codex"]: row["auto"] for row in scan["rows"]}
                 except Exception as e:
                     st.error(f"Error scanning directories: {e}")
             st.session_state["tab1_scan_cache"] = (codex_candidate_files, he_candidate_files, auto_pairs_by_codex)
@@ -1698,18 +1748,18 @@ def render_batch_registration(project_root: Path):
             pairs = []
             used_he_files = []
             if codex_candidate_files and he_candidate_files:
-                for codex_file in codex_candidate_files:
-                    prefix = _derive_pair_identity(codex_file, codex_prefix, suffix_codex)
-                    auto_he = auto_pairs_by_codex.get(codex_file)
-                    selection = st.session_state.get(f"tab1_pair_override_{codex_file}", "<Auto>")
-
-                    if selection == "<Skip>":
+                found = find_pairs(
+                    codex_candidate_files, he_candidate_files, codex_prefix, suffix_codex, he_prefix, suffix_he,
+                    {f: st.session_state.get(f"tab1_pair_override_{f}", PAIR_AUTO) for f in codex_candidate_files},
+                )
+                duplicates = sorted({row["sample"] for row in found["rows"] if row["duplicate"]})
+                if duplicates:
+                    st.warning("Two CODEX images give the same sample name (" + ", ".join(duplicates) + "), so they would "
+                               "write the same merged image; skip one or change the naming rule.")
+                for row in found["rows"]:
+                    if not row["he"]:
                         continue
-
-                    chosen_he = auto_he if selection == "<Auto>" else selection
-                    if not chosen_he or chosen_he not in he_candidate_files:
-                        continue
-
+                    prefix, codex_file, chosen_he, selection = row["sample"], row["codex"], row["he"], row["choice"]
                     used_he_files.append(chosen_he)
                     pairs.append(
                         _build_pair_entry(
@@ -1777,7 +1827,7 @@ def render_batch_registration(project_root: Path):
 
             # Wrap table in a form to prevent reloads on individual check clicks
             with st.form("detected_pairs_form"):
-                st.caption("💡 **Tip:** Highlight multiple checkboxes (click first, hold `Shift`, click last) and press `Spacebar` to toggle them instantly offline.")
+                st.caption("**Tip:** Highlight multiple checkboxes (click first, hold `Shift`, click last) and press `Spacebar` to toggle them instantly offline.")
                 edited_df = st.data_editor(
                     df,
                     hide_index=True,
@@ -2125,7 +2175,7 @@ def render_batch_registration(project_root: Path):
             def log_step(msg: str):
                 ts = datetime.now().strftime("[%Y-%m-%d %H:%M:%S]")
                 full_msg = f"{ts} {msg}"
-                print(full_msg) # Terminal log
+                _log_console(msg)
                 step_status.write(full_msg) # UI Log
                 status_text.text(msg) # Simple text status
                 record_process_event("tab1", "Registration step", message=msg)
@@ -2254,7 +2304,10 @@ def render_batch_registration(project_root: Path):
                     
                     configs = [c_conf, final_h_conf] if c_conf else None
                     
-                    merge_multi_round_ome_tiff(images_to_merge, final_out, mpp_codex, configs, overwrite=overwrite)
+                    merge_multi_round_ome_tiff(
+                        images_to_merge, final_out, mpp_codex, configs, overwrite=overwrite,
+                        provenance={"CODEX": os.path.basename(p["CODEX Path"]), "H&E": os.path.basename(p["H&E Path"])},
+                    )
                     
                     processed_count += 1
                     elapsed = time.time() - start_time
@@ -3007,7 +3060,6 @@ def render_multi_stack_registration(project_root: Path):
 def render():
     """Main render function for Tab 1."""
     import streamlit as st
-    from pathlib import Path
     from spacemap_gui.ui_utils import require_active_project
     project_root = require_active_project()
     if project_root is None:

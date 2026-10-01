@@ -1,20 +1,18 @@
 import streamlit as st
 import os
 from pathlib import Path
-import tifffile
 import numpy as np
 from PIL import Image
 Image.MAX_IMAGE_PIXELS = None  # Disable DecompressionBombError for large images
 import json
-from shapely.geometry import shape, Polygon
-from spacemap.registration import process_rois, process_single_image_rois
-from spacemap.utils import log_time, hex_to_rgb, extract_rois_with_geometry_from_geojson, resolve_roi_label
+from shapely.geometry import Polygon
+from spacemap.registration import process_single_image_rois
+from spacemap.utils import hex_to_rgb, extract_rois_with_geometry_from_geojson, resolve_roi_label
 from spacemap.background_subtraction_utils import get_channel_info, load_preview_channels_compatible, is_supported_image_file, normalize_image_stem
 import pandas as pd
 import base64
 from io import BytesIO
 from PIL import ImageDraw
-from spacemap_gui.file_browser import render_file_browser
 from spacemap_gui.ui_utils import directory_input_with_browse
 from spacemap_gui.process_log import record_process_event
 import cv2
@@ -24,6 +22,14 @@ from datetime import datetime
 from typing import Any, cast, Optional, Dict
 from spacemap_gui.tabs.tab1_registration import get_image_metadata_log, _prefix_keys
 import csv
+
+
+from spacemap_gui import terminal
+
+
+def _log_console(message: str, level: str = "info") -> None:
+    """One timestamped terminal line for this tab (see spacemap_gui.terminal)."""
+    terminal.say('tab3', message, step=None, level=level)
 
 
 def sync_single_to_multi_dirs():
@@ -45,21 +51,11 @@ def sync_multi_to_single_dirs():
 
 # Tab 3 specific logging
 def log_tab3(message: str):
-    """Print timestamped log for Tab 3 - only if user is in Tab 3."""
-    legacy = os.getenv("SPACEMAP_CONSOLE_LOGS")
-    if legacy is not None:
-        if legacy != "1":
-            return
-    elif os.getenv("SPACEMAP_TAB_LOGS", "1") != "1":
-        return
-    
-    # Only log if user is actually in Tab 3
+    """Tab 3 progress line, printed only while the user is on Tab 3."""
     user_tab = os.environ.get("_spacemap_user_tab", "")
     if user_tab and user_tab != "tab3":
         return
-    
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-    print(f"[{timestamp}] TAB3: {message}", flush=True)
+    terminal.say("tab3", message)
     record_process_event("tab3", "ROI extraction step", message=message)
 
 # Monkey patch for streamlit-drawable-canvas compatibility with newer Streamlit versions
@@ -95,7 +91,7 @@ def load_preview_channels(file_path, indices_to_load):
         return loaded_data, full_shape, is_rgb
 
     except Exception as e:
-        print(f"Error loading preview: {e}")
+        _log_console(f"Error loading preview: {e}", level="error")
         return {}, (0,0), False
         
     return loaded_data, full_shape, is_rgb
@@ -417,13 +413,9 @@ def render_single_image(project_root):
             start_dir_fallback=str(project_root),
         )
 
-        if "tab3_create_log" not in st.session_state:
-            st.session_state["tab3_create_log"] = True
-        create_log = st.checkbox(
-            "Create Processing Log (CSV)",
-            help="If enabled, wrote CSV logs.",
-            key="tab3_create_log",
-        )
+        # Detail logs follow the tab's single "Record run log" switch at the top of the page.
+        from spacemap_gui import run_log
+        create_log = run_log.enabled("tab3")
         if not input_dir:
             st.info("Please select an input directory to start.")
             return
@@ -599,16 +591,14 @@ def render_single_image(project_root):
                 for i, (ch, col, m) in enumerate(zip(channels, colors, meta)):
                     # Color state
                     color_key = f"roi_color_{i}"
-                    if color_key not in st.session_state:
-                        if isinstance(col, tuple):
-                            hex_col = '#{:02x}{:02x}{:02x}'.format(*col)
-                        else:
-                            hex_col = col
+                    hex_col = '#{:02x}{:02x}{:02x}'.format(*col) if isinstance(col, tuple) else col
+                    if _unset_colour(st.session_state.get(color_key), hex_col):
                         st.session_state[color_key] = hex_col
+                        st.session_state.pop(f"roi_cp_{i}", None)
                         
-                    # Name state
+                    # Name state (a blank saved name is filled from the image again)
                     name_key = f"roi_name_{i}"
-                    if name_key not in st.session_state:
+                    if not str(st.session_state.get(name_key) or "").strip():
                         st.session_state[name_key] = ch
                         
                     # Export state
@@ -663,7 +653,7 @@ def render_single_image(project_root):
             drawn_rois = st.session_state.get('tab3_canvas_objects', {}).get(selected_file, [])
             
             if current_mode == "Draw ROIs" and drawn_rois:
-                st.warning(f"⚠️ You have {len(drawn_rois)} drawn ROI(s). Click 'Save & Extract' to use them, or switch to View/Import mode to use existing GeoJSON.")
+                st.warning(f"You have {len(drawn_rois)} drawn ROI(s). Click 'Save & Extract' to use them, or switch to View/Import mode to use existing GeoJSON.")
                 extract_btn = st.button("Save & Extract Drawn ROIs", type="primary", help="Save drawn shapes to GeoJSON and extract ROIs.")
             else:
                 extract_btn = st.button("Extract ROIs", type="primary", help="Extract ROI images based on selected GeoJSON.")
@@ -1525,11 +1515,13 @@ def detect_tma_cores(
     detected_labels = []
     
     for r_idx, row in enumerate(rows):
-        if row_format == "A-Z":
-            row_lbl = chr(65 + r_idx) if r_idx < 26 else f"Row{r_idx+1}"
+        if row_format == "A-Z" and r_idx < 26:
+            row_lbl = chr(65 + r_idx)
         else:
-            row_lbl = f"R{r_idx+1}"
-            
+            # Numbered rows need a separator: "R1" + "12" and "R11" + "2" would
+            # both read "R112" and two cores would share one ROI name.
+            row_lbl = f"R{r_idx+1}_C"
+
         for c_idx, (_, _, box) in enumerate(row):
             col_lbl = str(c_idx + 1)
             label = f"{row_lbl}{col_lbl}"
@@ -1626,6 +1618,40 @@ def _friendly_shape_type(obj: dict[str, Any]) -> str:
     if raw == "rect":
         return "Rectangle"
     return str(raw).capitalize() if raw else "?"
+
+
+def _unset_colour(saved, image_colour) -> bool:
+    """True when a marker's colour should be taken from the image.
+
+    Missing, or black while the image gives the marker a real colour: black
+    would hide the marker in every viewer, and is what an interrupted save
+    leaves behind.
+    """
+    text = str(saved or "").strip().lower()
+    if not text:
+        return True
+    return text in ("#000000", "#000") and str(image_colour or "").strip().lower() not in ("#000000", "#000", "")
+
+
+def _follow_pipeline_input() -> None:
+    """Images Directory follows the last step that produced images (Tab 2, else Tab 1).
+
+    A folder chosen by hand is kept; Tab 3's own output folder never is.
+    See spacemap_gui.pipeline_folders.
+    """
+    from spacemap_gui.pipeline_folders import follow_pipeline
+
+    mappings = dict((st.session_state.get("active_project") or {}).get("directory_mappings") or {})
+    mappings.update({key: value for key, value in st.session_state.items()
+                     if isinstance(key, str) and key.endswith("_dir") and not key.startswith("proj_dir_")
+                     and isinstance(value, str)})
+    current = st.session_state.get("tab3_multi_input_dir") or st.session_state.get("tab3_input_dir")
+    value, note = follow_pipeline(current, mappings)
+    if note:
+        st.session_state["tab3_multi_input_dir"] = value
+        st.session_state["tab3_input_dir"] = value
+        log_tab3(note)
+        st.caption(note)
 
 
 def render_multiple_images(project_root):
@@ -1748,6 +1774,7 @@ def render_multiple_images(project_root):
     # --- LEFT COLUMN ---
     with col1:
         st.subheader("1. Directories")
+        _follow_pipeline_input()
         input_dir = directory_input_with_browse(
             label="Images Directory", text_key="tab3_multi_input_dir", default_value=str(project_root),
             browser_key_prefix="tab3_multi_input_dir", start_dir_fallback=str(project_root)
@@ -1765,9 +1792,9 @@ def render_multiple_images(project_root):
             browser_key_prefix="tab3_multi_output_dir", start_dir_fallback=str(project_root)
         )
         st.session_state["tab3_output_dir"] = output_dir
-        if "tab3_multi_create_log" not in st.session_state:
-            st.session_state["tab3_multi_create_log"] = True
-        create_log = st.checkbox("Create Log", key="tab3_multi_create_log")
+        # Detail logs follow the tab's single "Record run log" switch at the top of the page.
+        from spacemap_gui import run_log
+        create_log = run_log.enabled("tab3")
         
 
         
@@ -1929,9 +1956,12 @@ def render_multiple_images(project_root):
 
                      if isinstance(col, tuple): hex_c = '#{:02x}{:02x}{:02x}'.format(*col)
                      else: hex_c = col
-                     if k_name not in st.session_state:
-                         st.session_state[k_name] = str(st.session_state[rename_key].get(name, name))
-                     if k_col not in st.session_state:
+                     # A blank name or a black colour is never a real choice: it is what an
+                     # interrupted save left behind. Fill it from the image again, or the
+                     # table shows empty boxes and black is written into the ROI files.
+                     if not str(st.session_state.get(k_name) or "").strip():
+                         st.session_state[k_name] = str(st.session_state[rename_key].get(name) or name)
+                     if _unset_colour(st.session_state.get(k_col), hex_c):
                          st.session_state[k_col] = hex_c
 
                      r1, r2, r3, r4, r5 = st.columns([0.8, 0.8, 3, 1, 1.5])
@@ -2285,17 +2315,51 @@ def render_multiple_images(project_root):
 
                 elif boundary_method == "Auto TMA mode (automatic core detection)":
                     with st.expander("Auto TMA Core Detection Settings", expanded=True):
+                        # Keys start with tab3_ so these settings are saved in the
+                        # project file; the bare tma_ prefix belonged to no tab and
+                        # was silently dropped on every save.
+                        from spacemap_gui.ui_utils import seed_widget_state
+                        tma_keys = {
+                            "min": (f"tab3_tma_min_{active_img}", 30),
+                            "max": (f"tab3_tma_max_{active_img}", 150),
+                            "thresh": (f"tab3_tma_thresh_{active_img}", 0),
+                            "gap": (f"tab3_tma_row_gap_{active_img}", 0.5),
+                            "fmt": (f"tab3_tma_row_fmt_{active_img}", "A-Z"),
+                            "prefix": (f"tab3_tma_prefix_{active_img}", ""),
+                        }
+                        for tma_key, tma_default in tma_keys.values():
+                            seed_widget_state(tma_key, tma_default)
+                        seed_widget_state(tma_keys["fmt"][0], "A-Z", options=["A-Z", "1-N"])
+
                         c_t1, c_t2 = st.columns(2)
-                        min_size = c_t1.slider("Min Core Size (px)", min_value=10, max_value=300, value=30, step=5, key=f"tma_min_{active_img}")
-                        max_size = c_t2.slider("Max Core Size (px)", min_value=50, max_value=500, value=150, step=5, key=f"tma_max_{active_img}")
-                        
+                        min_size = c_t1.slider(
+                            "Min Core Size (px)", min_value=10, max_value=300, step=5, key=tma_keys["min"][0],
+                            help="Smallest blob, in thumbnail pixels, that counts as a tissue core. Raise it to ignore debris.",
+                        )
+                        max_size = c_t2.slider(
+                            "Max Core Size (px)", min_value=50, max_value=500, step=5, key=tma_keys["max"][0],
+                            help="Largest blob, in thumbnail pixels, that counts as one core. Lower it if touching cores are merged.",
+                        )
+
                         c_t3, c_t4 = st.columns(2)
-                        threshold_val = c_t3.slider("Sensitivity / Threshold (0=Auto)", min_value=0, max_value=255, value=0, step=5, key=f"tma_thresh_{active_img}")
-                        row_gap_factor = c_t4.slider("Row Gap Factor", min_value=0.1, max_value=2.0, value=0.5, step=0.1, key=f"tma_row_gap_{active_img}")
-                        
+                        threshold_val = c_t3.slider(
+                            "Sensitivity / Threshold (0=Auto)", min_value=0, max_value=255, step=5, key=tma_keys["thresh"][0],
+                            help="Brightness cut-off that separates tissue from glass. 0 picks it automatically.",
+                        )
+                        row_gap_factor = c_t4.slider(
+                            "Row Gap Factor", min_value=0.1, max_value=2.0, step=0.1, key=tma_keys["gap"][0],
+                            help="How far apart, relative to core size, two cores must be vertically to start a new row.",
+                        )
+
                         c_t5, c_t6 = st.columns(2)
-                        row_format = c_t5.selectbox("Row Label Format", ["A-Z", "1-N"], index=0, key=f"tma_row_fmt_{active_img}")
-                        col_prefix = c_t6.text_input("Core Name Prefix", value="", key=f"tma_prefix_{active_img}")
+                        row_format = c_t5.selectbox(
+                            "Row Label Format", ["A-Z", "1-N"], key=tma_keys["fmt"][0],
+                            help="Name cores by letter row (A1, B1, ...) or numbered row (R1_C1, R2_C1, ...).",
+                        )
+                        col_prefix = c_t6.text_input(
+                            "Core Name Prefix", key=tma_keys["prefix"][0],
+                            help="Optional text added to the start of every core name.",
+                        )
                         
                         if st.button("Detect TMA Cores", key=f"run_tma_{active_img}", type="primary"):
                             detected_objs, detected_labels = detect_tma_cores(
@@ -2790,7 +2854,7 @@ def _run_batch_extraction(to_process, input_dir, geojson_dir, output_dir, create
                 continue
 
             status.write(f"Processing {img}...")
-            print(f"Processing {img}...")
+            _log_console(f"Processing {img}...")
             
             row = {"Image": img, "Status": "Pending"}
             try:
@@ -2837,7 +2901,7 @@ def _run_batch_extraction(to_process, input_dir, geojson_dir, output_dir, create
                 
             except Exception as e:
                 row["Status"] = f"Error: {e}"
-                print(f"Error {img}: {e}")
+                _log_console(f"Error {img}: {e}", level="error")
                 record_process_event(
                     "tab3",
                     "ROI batch image failed",
@@ -3171,7 +3235,7 @@ def run_roi_extraction(input_path, geojson_dir, rois_dir, mpp, channel_config, g
         full_msg = f"{ts} {msg}"
         if status_container:
             status_container.write(full_msg)
-        print(full_msg)
+        _log_console(msg)
         record_process_event("tab3", "ROI extraction step", message=msg)
 
     # Logging Setup

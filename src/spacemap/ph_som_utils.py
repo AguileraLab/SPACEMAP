@@ -556,7 +556,6 @@ def meta_cluster_clusters(cluster_char_df, target_n=100, method='ward', metric='
     outlier nodes are actively getting in the way.
     """
     from sklearn.preprocessing import StandardScaler
-    from sklearn.cluster import AgglomerativeClustering
 
     if len(cluster_char_df) <= target_n:
         cluster_char_df['meta_cluster'] = cluster_char_df['som_cluster']
@@ -779,12 +778,9 @@ def launch_som_phenotype_assignment_app(char_df, reordered_cluster_ids, meta_clu
 
     import tkinter as tk
     from tkinter import ttk, messagebox
-    import matplotlib.pyplot as plt
     from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
     from matplotlib.figure import Figure
     import seaborn as sns  # noqa: F401 (kept for parity & potential extension)
-    import numpy as np
-    import pandas as pd
     from scipy.cluster.hierarchy import dendrogram, linkage
 
     class PhenotypeAssignmentApp:

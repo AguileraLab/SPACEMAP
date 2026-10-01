@@ -16,6 +16,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+from spacemap import dataio as _dataio
 import streamlit as st
 import matplotlib.pyplot as plt
 from datetime import datetime
@@ -35,11 +36,12 @@ from .common import (
     render_export_split_data,
     _extract_markers_from_notebook,
     render_settings_export_import,
-    render_phenotyping_run_log_controls,
+    render_method_intro,
     begin_phenotyping_run_audit,
     finish_phenotyping_run_audit,
     resolve_notebook_marker_defaults,
 )
+from spacemap_gui import terminal
 
 try:
     from spacemap_gui.cell_visualizer import CellVisualizer
@@ -134,8 +136,9 @@ def _timestamp() -> str:
     return time.strftime("%H:%M:%S")
 
 
-def _log_console(message: str) -> None:
-    print(message, flush=True)
+def _log_console(message: str, level: str = "info") -> None:
+    """One timestamped terminal line for this tab (see spacemap_gui.terminal)."""
+    terminal.say('tab7', message, step='Consensus ML', level=level)
 
 
 def _extract_ml_consensus_config() -> dict[str, Any]:
@@ -347,6 +350,19 @@ def _extract_ml_consensus_config() -> dict[str, Any]:
         return config
 
 
+MLC_GUIDE = """\
+**What it does.** Combines the results of several phenotyping methods. Cells on which enough methods agree are treated as reliable examples; a machine-learning model learns from them and then gives a phenotype to every cell, including the cells where the methods disagreed.
+
+**Steps**
+1. Run at least two other methods first (for example Leiden, SOM and Resolve) and save their labels.
+2. Choose the input table, the label columns to combine, and the markers.
+3. Set **How many methods must agree**, then run.
+4. Review the results, save the new label column, and check example cells.
+
+**Note.** Agreement between methods shows the methods are consistent, not that they are right. Check the result against the images.
+"""
+
+
 def render_consensus_ml(project_root: Path, global_input_path: str | None) -> None:
     """Render the Consensus ML subtab UI.
 
@@ -357,9 +373,11 @@ def render_consensus_ml(project_root: Path, global_input_path: str | None) -> No
     global_input_path : str | None
         Unified CSV path from global configuration.
     """
-    st.subheader("Consensus ML Phenotyping")
-    render_phenotyping_run_log_controls(Path(project_root), "mlc", "Consensus ML Phenotyping")
-    st.markdown("Machine learning phenotyping using consensus labels (Step9B).")
+    render_method_intro(
+        project_root, "mlc", "Consensus ML Phenotyping",
+        "Combine several methods: learn from cells they agree on, then label every cell.",
+        MLC_GUIDE, notebook="Step9B_ML_concensus.ipynb", log_label="Consensus ML Phenotyping",
+    )
 
     cache_dir = project_root / "outputs/phenotyping/cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -388,7 +406,7 @@ def render_consensus_ml(project_root: Path, global_input_path: str | None) -> No
 
     nb_config = _extract_ml_consensus_config()
 
-    st.markdown("##### Input File Selection")
+    st.markdown("### 1. Input File")
     use_global = st.checkbox("Use the project-wide input file", value=cached_params.get("use_global", True), key="mlc_use_global")
     full_input_path = global_input_path
 
@@ -464,7 +482,7 @@ def render_consensus_ml(project_root: Path, global_input_path: str | None) -> No
     )
 
     st.divider()
-    st.markdown("### 3. Configuration (Notebook Synchronized)")
+    st.markdown("### 3. Configuration")
 
     default_config = {
             "use_global": cached_params.get("use_global", True),
@@ -737,7 +755,7 @@ def render_consensus_ml(project_root: Path, global_input_path: str | None) -> No
                 try:
                     scan_cols = [c for c in phenotyping_methods if c in available_columns]
                     if scan_cols:
-                        df_scan = pd.read_csv(full_input_path, usecols=scan_cols)
+                        df_scan = _dataio.load(full_input_path, columns=scan_cols)
                         unique_vals = set()
                         for col in scan_cols:
                             unique_vals.update(df_scan[col].dropna().astype(str).unique().tolist())
@@ -886,21 +904,20 @@ def render_consensus_ml(project_root: Path, global_input_path: str | None) -> No
     st.markdown("### 4. Run Consensus ML Phenotyping")
 
     if st.button("Run Consensus ML Pipeline", type="primary", width="stretch", key="mlc_run"):
-        print(f"\n{'='*80}", flush=True)
-        print(f"[{_timestamp()}] ML-Consensus: Run button clicked", flush=True)
-        print(f"[{_timestamp()}] ML-Consensus: Input file: {full_input_path}", flush=True)
-        print(f"[{_timestamp()}] ML-Consensus: Markers count: {len(confirmed_markers) if confirmed_markers else 0}", flush=True)
+        _log_console(f"Run button clicked")
+        _log_console(f"Input file: {full_input_path}")
+        _log_console(f"Markers count: {len(confirmed_markers) if confirmed_markers else 0}")
 
         if not full_input_path or not os.path.exists(full_input_path):
-            print(f"[{_timestamp()}] ML-Consensus: ERROR - No valid unified CSV file selected", flush=True)
+            _log_console(f"ERROR - No valid unified CSV file selected", level="error")
             st.error("Please select a valid unified CSV file.")
             return
         if not confirmed_markers:
-            print(f"[{_timestamp()}] ML-Consensus: ERROR - No markers selected", flush=True)
+            _log_console(f"ERROR - No markers selected", level="error")
             st.error("No markers selected. Please save marker selection first.")
             return
         if run_ml_consensus_analysis is None or ConsensusConfig is None:
-            print(f"[{_timestamp()}] ML-Consensus: ERROR - ml_consensus module not loaded", flush=True)
+            _log_console(f"ERROR - ml_consensus module not loaded", level="error")
             st.error("Consensus ML utilities are not available. Please check ml_consensus.")
             return
 
@@ -913,10 +930,10 @@ def render_consensus_ml(project_root: Path, global_input_path: str | None) -> No
                 "MIN_CONSENSUS_METHODS cannot exceed the number of selected phenotyping methods."
             )
             return
-        print(f"[{_timestamp()}] ML-Consensus: ML method: {cfg.get('ml_method', 'random_forest')}", flush=True)
-        print(f"[{_timestamp()}] ML-Consensus: Phenotyping methods: {cfg.get('phenotyping_methods', [])}", flush=True)
-        print(f"[{_timestamp()}] ML-Consensus: Excluded phenotypes: {cfg.get('exclude_phenotypes', [])}", flush=True)
-        print(f"[{_timestamp()}] ML-Consensus: Validation reference: {cfg.get('validation_ground_truth_col') or 'internal pseudo-label split'}", flush=True)
+        _log_console(f"ML method: {cfg.get('ml_method', 'random_forest')}")
+        _log_console(f"Phenotyping methods: {cfg.get('phenotyping_methods', [])}")
+        _log_console(f"Excluded phenotypes: {cfg.get('exclude_phenotypes', [])}")
+        _log_console(f"Validation reference: {cfg.get('validation_ground_truth_col') or 'internal pseudo-label split'}")
         out_dir = project_root / "outputs/phenotyping/ML_consensus"
         output_phenotype_col = cfg.get("output_phenotype_col", "phenotype_ml_consensus")
         confidence_col = cfg.get("confidence_col", "ml_consensus_score")
@@ -940,13 +957,13 @@ def render_consensus_ml(project_root: Path, global_input_path: str | None) -> No
         filtered_mode = False
         cell_id_col = "cell_id"
 
-        print(f"[{_timestamp()}] ML-Consensus: Loading dataset...", flush=True)
+        _log_console(f"Loading dataset...")
         try:
             from spacemap.ph_accel_utils import read_csv_fast
             full_df = read_csv_fast(full_input_path)
             audit_input_rows = len(full_df)
             full_df, cell_id_col, _ = ensure_cell_id_anchor(full_df, cell_id_col)
-            print(f"[{_timestamp()}] ML-Consensus: Loaded {len(full_df):,} cells, {len(full_df.columns)} columns", flush=True)
+            _log_console(f"Loaded {len(full_df):,} cells, {len(full_df.columns)} columns")
         except Exception as exc:
             finish_phenotyping_run_audit(
                 run_audit,
@@ -955,22 +972,22 @@ def render_consensus_ml(project_root: Path, global_input_path: str | None) -> No
                 cluster_column="ml_consensus_cluster",
                 error=str(exc),
             )
-            print(f"[{_timestamp()}] ML-Consensus: ERROR loading CSV: {exc}", flush=True)
+            _log_console(f"ERROR loading CSV: {exc}", level="error")
             st.error(f"Failed to load CSV: {exc}")
             return
 
         if filter_enabled:
-            print(f"[{_timestamp()}] ML-Consensus: Applying filter {filter_col} == {filter_val}...", flush=True)
+            _log_console(f"Applying filter {filter_col} == {filter_val}...")
             if filter_col in full_df.columns:
                 filtered_df = full_df[full_df[filter_col].astype(str) == filter_val].copy()
                 filtered_df.reset_index(drop=True, inplace=True)
                 filtered_mode = True
                 preloaded_df = filtered_df
 
-                print(f"[{_timestamp()}] ML-Consensus: Filter applied: {len(filtered_df):,} cells match", flush=True)
+                _log_console(f"Filter applied: {len(filtered_df):,} cells match")
                 st.info(f"Filtering enabled: {filter_col} == {filter_val} | {len(filtered_df):,} cells")
             else:
-                print(f"[{_timestamp()}] ML-Consensus: Filter column '{filter_col}' not found, running on full dataset", flush=True)
+                _log_console(f"Filter column '{filter_col}' not found, running on full dataset")
                 st.warning(f"Filter column '{filter_col}' not found. Running on full dataset.")
                 preloaded_df = full_df
         else:
@@ -1011,9 +1028,9 @@ def render_consensus_ml(project_root: Path, global_input_path: str | None) -> No
         with st.status("Running Consensus ML Pipeline...", expanded=True) as status:
             try:
                 status.write(f"[{_timestamp()}] Starting ML consensus analysis...")
-                _log_console(f"[{_timestamp()}] ML-Consensus: Starting analysis")
-                _log_console(f"[{_timestamp()}] ML-Consensus: Unified CSV: {full_input_path}")
-                _log_console(f"[{_timestamp()}] ML-Consensus: Output dir: {out_dir}")
+                _log_console(f"Starting analysis")
+                _log_console(f"Unified CSV: {full_input_path}")
+                _log_console(f"Output dir: {out_dir}")
                 result_holder: dict[str, pd.DataFrame] = {}
 
                 def _capture_results(result_frame: pd.DataFrame) -> None:
@@ -1151,7 +1168,7 @@ def render_consensus_ml(project_root: Path, global_input_path: str | None) -> No
 
     if "mlc_temp_file" in st.session_state and Path(st.session_state["mlc_temp_file"]).exists():
         st.divider()
-        st.subheader("Results & Phenotype Refinement")
+        st.subheader("Results & Phenotype Assignment")
         st.caption("Interactive visualization and export of Consensus ML results")
 
         temp_file = st.session_state["mlc_temp_file"]
@@ -1261,7 +1278,7 @@ def render_consensus_ml(project_root: Path, global_input_path: str | None) -> No
     # --- VISUAL VALIDATION COMPONENT ---
     if st.session_state.get('viz_enabled', True):
         st.divider()
-        with st.expander("Visual Validation of Phenotypes", expanded=True):
+        with st.expander("Visual Validation of Representative Cells", expanded=True):
             st.markdown("#### Visualize Representative Cells")
             st.caption("Inspect random cells from specific phenotypes to validate assignments.")
             
@@ -1520,7 +1537,7 @@ def render_consensus_ml(project_root: Path, global_input_path: str | None) -> No
                                                 }
                                                 pd.DataFrame([meta_rec]).to_csv(csv_path, mode='a', header=not csv_path.exists(), index=False)
                                             except Exception as e:
-                                                print(f"Auto-save error: {e}")
+                                                _log_console(f"Auto-save error: {e}", level="error")
                                             
                                             plt.close(fig)
                                         except Exception as e:

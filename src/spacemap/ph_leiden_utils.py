@@ -8,7 +8,6 @@ hyperparameter optimization, and interactive annotation.
 
 # CRITICAL: Protobuf fix MUST be before ANY other imports
 # This prevents "Descriptors cannot be created directly" errors
-import sys
 import os
 
 # Force Python implementation before any protobuf-using library loads
@@ -408,12 +407,9 @@ def launch_phenotype_assignment_app(char_df, reordered_cluster_ids, meta_cluster
 
     import tkinter as tk
     from tkinter import ttk, messagebox
-    import matplotlib.pyplot as plt
     from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
     from matplotlib.figure import Figure
     import seaborn as sns  # noqa: F401 (kept for parity & potential extension)
-    import numpy as np
-    import pandas as pd
     from scipy.cluster.hierarchy import dendrogram, linkage
 
     class PhenotypeAssignmentApp:
@@ -616,7 +612,6 @@ def launch_phenotype_assignment_app(char_df, reordered_cluster_ids, meta_cluster
             self.assigned_clusters.update(self.selected_clusters); self.unassigned_clusters -= set(self.selected_clusters)
             self.clear_selection(); self.update_assignment_table(); self.update_statistics()
 
-        def add_assignment(self): self._add_assignment()
         def assign_btn_callback(self): self._add_assignment()
         def add_assignment_public(self): self._add_assignment()
         def add_assignment_alias(self): self._add_assignment()
@@ -932,7 +927,6 @@ def create_geometric_sketch(
     verbose: bool = True,
 ):
     """Create a density-aware geometric sketch of the dataset for HPO."""
-    import time
     try:
         import scanpy as sc
         import anndata as ad
@@ -998,7 +992,6 @@ def leiden_hpo(
     pd.DataFrame with one row per parameter combination.
     """
     import scanpy as sc
-    from copy import deepcopy
     results = []
     # Ensure unique & sorted for deterministic behavior
     pca_values = sorted(set(int(x) for x in pca_values))
@@ -1022,7 +1015,6 @@ def leiden_hpo(
             base = adata_sketch.copy()
             sc.pp.neighbors(base, n_pcs=n_pcs, n_neighbors=n_neighbors, random_state=random_seed)
             for resolution in resolution_values:
-                import time
                 t0 = time.time()
                 temp = base.copy()  # lightweight (views) but ensures isolation of cluster labels
                 sc.tl.leiden(temp, resolution=resolution, random_state=random_seed, key_added='leiden_clusters')
@@ -1191,11 +1183,9 @@ def intelligent_leiden_clustering(df, norm_cols, leiden_params, logger):
     Returns:
         Tuple of (cluster_assignments, umap_coords or None)
     """
-    import time
     import gc
     import numpy as np
     import scanpy as sc
-    from sklearn.neighbors import KNeighborsClassifier
     from datetime import datetime
     
     start_time = time.time()

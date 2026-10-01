@@ -20,8 +20,7 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 import streamlit as st
-from matplotlib.colors import Normalize, to_hex, to_rgb
-from matplotlib.cm import ScalarMappable
+from matplotlib.colors import to_hex, to_rgb
 
 try:
     from spacemap_gui.cell_visualizer import CellVisualizer

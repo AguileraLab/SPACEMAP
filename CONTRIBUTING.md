@@ -34,7 +34,8 @@ bash scripts/install_hooks.sh
 
 # Install the package and the development tools.
 python -m pip install -e ".[notebook]"
-python -m pip install pytest ruff
+python -m pip install --upgrade pip
+python -m pip install --group dev
 ```
 
 ---
@@ -61,9 +62,9 @@ git checkout -b fix/model-server-cpu-start
 
 Name it `<type>/<short-description>`, using the same types as commits below.
 
-### 3. Commit, with a reason
+### 3. Check, then commit with a reason
 
-Save checkpoints as you go. **Every commit must say why it was made** — that
+Run the checks below before saving a commit. Save checkpoints as you go. **Every commit must say why it was made** — that
 sentence is what appears in [docs/LEDGER.md](docs/LEDGER.md), and it is the one
 thing nobody can reconstruct from the diff a year later.
 
@@ -84,11 +85,25 @@ The `commit-msg` hook rejects a commit with no `Why:` line. That is deliberate.
 
 ```bash
 python -m pytest            # unit tests
-python -m ruff check src    # lint
-python scripts/update_ledger.py   # regenerate the ledger
+python -m ruff check src scripts
+python scripts/check_no_local_paths.py
+python scripts/check_streamlit_forms.py
 ```
 
-CI runs all three. The ledger check fails a PR that forgot to regenerate it.
+CI checks the code, packaging, GUI startup and repository hygiene. After the
+checks pass, commit your changes, then regenerate the ledger in a separate
+commit so it includes the content commit:
+
+```bash
+python scripts/update_ledger.py
+git add docs/LEDGER.md
+git commit -m "docs: refresh change ledger" -m "Why: record the reviewed changes."
+python scripts/update_ledger.py --check
+```
+
+Ledger-only commits are excluded from the generator. Preserve commits when
+merging: rebasing or squash-merging changes their hashes and requires another
+ledger refresh.
 
 ### 5. Push
 
@@ -154,3 +169,26 @@ Open an issue with the SPACEMAP version (`spacemap --version`), your operating
 system, what you expected, what happened, and the full error text. If it
 involves a specific image or CSV, describe its shape rather than attaching
 patient data.
+
+
+## Rebuilding the heatmap widget
+
+Users need no Node.js installation: the compiled widget and local Plotly
+library are shipped with the package. When changing its TypeScript, use Node
+20 and the committed lockfile:
+
+```bash
+cd src/spacemap_gui/tabs/tab7_phenotyping/heatmap_click_selector/frontend
+npm ci --ignore-scripts --no-audit --no-fund
+npm run build
+```
+
+Commit the changed source, lockfile and `build/` files, including the generated
+third-party notices. Do not commit `node_modules/`. CI checks that the build is
+current. From the repository root, check Python release archives with:
+
+```bash
+python -m pip install build
+python -m build
+python scripts/check_release_artifacts.py
+```

@@ -22,6 +22,9 @@ def tagging(monkeypatch):
         package.__path__ = [str(source / "spacemap")]
         monkeypatch.setitem(sys.modules, "spacemap", package)
     monkeypatch.setitem(sys.modules, "spacemap.cell_spatial_annotation", spatial)
+    # ``from spacemap import cell_spatial_annotation`` reads the package attribute, which an earlier
+    # import of the real module has already set: point it at the same module.
+    monkeypatch.setattr(sys.modules["spacemap"], "cell_spatial_annotation", spatial, raising=False)
     return importlib.import_module("spacemap_gui.tabs.cell_tagging_ui")
 
 
@@ -54,7 +57,7 @@ def test_merged_overwrite_clears_unmatched_failed_and_missing_id_rows(
     malformed = tmp_path / "broken.geojson"
     malformed.write_text("invalid json")
     monkeypatch.setattr(tagging.st, "session_state", _state(tagging, overwrite))
-    monkeypatch.setattr(tagging, "match_geojson", lambda key, _: {
+    monkeypatch.setattr(tagging, "match_geojson", lambda key, *_: {
         "good": str(annotation), "failed": str(malformed),
     }.get(key))
     frame = pd.DataFrame({

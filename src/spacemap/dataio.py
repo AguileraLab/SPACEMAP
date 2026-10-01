@@ -513,8 +513,26 @@ def _read_csv_head(source: Path, limit: int | None) -> pd.DataFrame:
         return pd.read_csv(source, nrows=limit, low_memory=False)
 
 
-def columns(path: str | Path) -> list[str]:
-    """Return the column names of a table without reading any rows."""
+def columns(path: str | Path, *, include_pending: bool = True) -> list[str]:
+    """Return the column names of a table without reading any rows.
+
+    Columns saved in the interface but not yet written into the CSV
+    (:mod:`spacemap.pending_columns`) are listed too, unless *include_pending*
+    is False.
+    """
+    names = _file_columns(path)
+    if include_pending and names:
+        try:
+            from . import pending_columns
+
+            names = names + [name for name in pending_columns.pending_names(path) if name not in names]
+        except Exception as exc:
+            logger.warning("Could not list pending columns for %s: %s", path, exc)
+    return names
+
+
+def _file_columns(path: str | Path) -> list[str]:
+    """Column names actually in the file (fast copy schema, else the CSV header)."""
     source = Path(path).expanduser()
     if not source.is_file():
         return []
@@ -571,10 +589,11 @@ def load(
     table is the slow path this module exists to avoid; prefer naming what the
     screen needs.
 
-    Labels assigned in the interface live in a small sidecar rather than being
-    written back into a multi-gigabyte table on every save, so they are merged
-    in here. Pass ``apply_labels=False`` to see the file exactly as it is on
-    disk -- which is what committing those labels needs.
+    Labels and whole columns saved in the interface (:mod:`spacemap.labels`,
+    :mod:`spacemap.pending_columns`) are kept beside the table rather than
+    written back into a multi-gigabyte CSV on every save, so they are merged in
+    here. Pass ``apply_labels=False`` to see the file exactly as it is on disk --
+    which is what writing those changes into the CSV needs.
 
     *categoricals* defaults to False and should stay that way for general use.
     Converting text columns to ``category`` saves a great deal of memory, but
@@ -598,13 +617,23 @@ def load(
                 f"Available columns include: {', '.join(sorted(available)[:8])}..."
             )
 
+    # Columns that exist only as saved-but-unwritten changes are added after
+    # the file is read; the file read itself asks only for real columns.
+    file_wanted = wanted
+    placeholder = None
+    if wanted:
+        in_file = set(_file_columns(source))
+        file_wanted = [name for name in wanted if name in in_file]
+        if not file_wanted:
+            placeholder = next(iter(_file_columns(source)), None)
+            file_wanted = [placeholder] if placeholder else None
+
     twin = fast_copy_path(source)
+    frame = None
     if fast_copies_enabled():
         if twin.is_file() and _twin_matches_source(twin, source):
             try:
-                frame = pd.read_parquet(twin, columns=wanted)
-                frame = _with_labels(frame, source, wanted, apply_labels)
-                return _apply_categoricals(frame) if categoricals else frame
+                frame = pd.read_parquet(twin, columns=file_wanted)
             except Exception as exc:
                 logger.warning("Fast copy unreadable (%s); falling back to CSV.", exc)
         elif build_fast_copy:
@@ -612,9 +641,32 @@ def load(
             # CSV for this call, so the user never waits for a conversion.
             start_fast_copy(source)
 
-    frame = _read_csv(source, wanted)
+    if frame is None:
+        frame = _read_csv(source, file_wanted)
+    frame = _with_pending_columns(frame, source, wanted, apply_labels)
     frame = _with_labels(frame, source, wanted, apply_labels)
+    if placeholder is not None and placeholder not in (wanted or []):
+        frame = frame.drop(columns=[placeholder])
     return _apply_categoricals(frame) if categoricals else frame
+
+
+def _with_pending_columns(
+    frame: pd.DataFrame,
+    source: Path,
+    wanted: list[str] | None,
+    enabled: bool,
+) -> pd.DataFrame:
+    """Merge columns saved in the interface but not yet written into the CSV."""
+    if not enabled:
+        return frame
+    try:
+        from . import pending_columns
+
+        return pending_columns.apply_to(frame, source, columns=wanted)
+    except Exception as exc:
+        # Pending columns must never stop data being read.
+        logger.warning("Could not apply pending columns for %s: %s", source.name, exc)
+        return frame
 
 
 def _with_labels(

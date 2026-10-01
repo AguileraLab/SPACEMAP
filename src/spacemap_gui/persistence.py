@@ -337,11 +337,10 @@ def get_default_bc_config() -> dict:
     }
 
 def log_persistence(msg: str):
-    """Print timestamped log for persistence tracking."""
-    if os.getenv("SPACEMAP_APP_LOGS", "0") != "1" and os.getenv("SPACEMAP_CONSOLE_LOGS") != "1":
-        return
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-    print(f"[{timestamp}] PERSISTENCE: {msg}", flush=True)
+    """Project-file messages (shown when SPACEMAP_APP_LOGS=1)."""
+    from spacemap_gui import terminal
+
+    terminal.say("project", msg, channel="app")
 
 # ============================================================================
 # DIRECTORY-SPECIFIC SETTINGS PERSISTENCE
@@ -440,11 +439,25 @@ def record_latest_unified_csv(filename: str | None) -> None:
     config["unified_csv_filename"] = name
 
 
+def _project_state_file(name: str) -> Path:
+    """Keep the project registry with the other state, preserving default-home upgrades."""
+    target = state_dir() / name
+    target.parent.mkdir(parents=True, exist_ok=True)
+    # An explicit storage override starts an independent workspace. Do not
+    # pull another installation's project list or active session into it.
+    if not target.exists() and not (os.environ.get("SPACEMAP_HOME") or os.environ.get("SPACEMAP_STATE_DIR")):
+        legacy = Path.home() / ".spacemap_gui" / name
+        try:
+            if legacy.is_file():
+                shutil.copy2(legacy, target)
+        except OSError as exc:
+            log_persistence(f"Could not copy legacy project state {name}: {exc}")
+    return target
+
+
 def get_projects_index_path() -> Path:
     """Get the path to the global projects index file, creating parent directories."""
-    path = Path.home() / ".spacemap_gui" / "projects.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    return path
+    return _project_state_file("projects.json")
 
 def load_projects_index() -> dict:
     """Load the dictionary of saved projects mapping project names to project roots."""
@@ -469,6 +482,43 @@ def save_project_to_index(name: str, root_path: str) -> None:
     except Exception as e:
         log_persistence(f"Error saving project to index: {e}")
 
+def project_config_path(root: str | Path) -> Path | None:
+    """The project's settings file, or None when the folder or file is missing."""
+    root = Path(root)
+    for candidate in (root / f"{root.name}.json", root / "experiment.json"):
+        try:
+            if candidate.is_file():
+                return candidate
+        except OSError:
+            continue
+    return None
+
+
+def find_moved_project(name: str, index: dict | None = None) -> Path | None:
+    """Where a project whose recorded folder is gone now lives, if it can be found.
+
+    Projects are usually moved together, so the folders that hold the other
+    projects in the list are searched for one with this name and its settings
+    file, then the ``project`` and ``projects`` folders beside this SPACEMAP.
+    """
+    index = load_projects_index() if index is None else index
+    parents: list[Path] = []
+    for other, root in index.items():
+        if other != name and root:
+            parents.append(Path(root).parent)
+    here = Path(__file__).resolve().parents[2]
+    parents += [here / "project", here / "projects", here.parent / "project"]
+    seen = set()
+    for parent in parents:
+        candidate = parent / name
+        if str(candidate) in seen:
+            continue
+        seen.add(str(candidate))
+        if project_config_path(candidate) is not None:
+            return candidate
+    return None
+
+
 def remove_project_from_index(name: str) -> None:
     """Remove a project from the global projects index file."""
     index = load_projects_index()
@@ -482,9 +532,7 @@ def remove_project_from_index(name: str) -> None:
             log_persistence(f"Error removing project from index: {e}")
 
 def get_active_session_path() -> Path:
-    path = Path.home() / ".spacemap_gui" / "active_session.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    return path
+    return _project_state_file("active_session.json")
 
 def save_active_session(project_name: str) -> None:
     path = get_active_session_path()
@@ -520,6 +568,7 @@ def load_project_config(project_root: str) -> dict:
     if not path.exists():
         return {}
     try:
+        _shrink_if_oversized(path)
         with open(path, "r", encoding="utf-8") as f:
             config = json.load(f) or {}
             
@@ -556,7 +605,21 @@ def load_project_config(project_root: str) -> dict:
             
             # Save the updated config back to disk to store the corrected paths
             save_project_config(current_root, config)
-            
+
+        from spacemap_gui.pipeline_folders import unlink_step_outputs
+
+        repaired = unlink_step_outputs(config, current_root)
+        if repaired:
+            log_persistence(f"Tab 2's output pointed at the ROI folder; set back to {repaired}.")
+            config.setdefault("audit_log", []).append({
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "tab_affected": "Background Subtraction",
+                "parameter_changed": "tab2_output_dir",
+                "old_value": "the ROI output folder (linked to Tab 3's input)",
+                "new_value": repaired,
+            })
+            save_project_config(current_root, config)
+
         return config
     except Exception as e:
         # A project that fails to load is NOT an empty project. Returning {} here
@@ -584,6 +647,59 @@ def load_project_config(project_root: str) -> dict:
         except Exception:
             pass
         return {}
+
+def _shrink_if_oversized(path: Path) -> None:
+    """Clean a project file that data has leaked into before it is loaded.
+
+    Reading a multi-GB file whole takes minutes and more memory than the node
+    may have, so it is streamed instead (``config_repair.shrink_project_file``):
+    every setting is kept, the data-sized entries are left out, and the
+    original is kept beside it for the user to delete. Raises if the file
+    cannot be cleaned, so it is never loaded whole.
+    """
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return
+    if size <= _SHRINK_ON_LOAD_BYTES:
+        return
+    from spacemap_gui.config_repair import shrink_project_file
+
+    log_persistence(
+        f"{path.name} is {size / 1e9:.1f} GB; a project file should be under 1 MB, so data has "
+        "leaked into it. Cleaning it (it is read once; every setting is kept)..."
+    )
+    try:
+        import streamlit as _st
+
+        spinner = _st.spinner(f"Cleaning the project file ({size / 1e9:.1f} GB of saved results)...")
+    except Exception:
+        spinner = None
+    try:
+        if spinner is not None:
+            with spinner:
+                backup, removed = shrink_project_file(path)
+        else:
+            backup, removed = shrink_project_file(path)
+    except Exception as exc:
+        raise RuntimeError(
+            f"{path.name} is {size / 1e9:.1f} GB and could not be cleaned automatically ({exc}). "
+            f"Restore it from a restore point in {RESTORE_POINT_DIRNAME}/ (Tab 0) or ask for help."
+        ) from exc
+    listed = ", ".join(f"{entry} ({bytes_ / 1e9:.1f} GB)" if bytes_ >= 1e8 else entry for entry, bytes_ in removed[:5])
+    note = (
+        f"The project file had grown to {size / 1e9:.1f} GB because results were saved into it: {listed}. "
+        f"They were removed and every setting was kept. The original is kept as {backup.name}; "
+        "delete it once the project opens as expected."
+    )
+    log_persistence(note)
+    try:
+        import streamlit as _st
+
+        _st.warning(note)
+    except Exception:
+        pass
+
 
 def sanitize_json_obj(obj):
     """Recursively convert numpy/pandas types to standard JSON-serializable types."""
@@ -784,6 +900,9 @@ def create_restore_point(
         return None
 
     try:
+        if source.stat().st_size > _SHRINK_ON_LOAD_BYTES:
+            log_persistence(f"Skipping restore point: {source.name} is data-sized, not a settings file")
+            return None
         with open(source, "r", encoding="utf-8") as handle:
             json.load(handle)
     except Exception as exc:
@@ -835,7 +954,7 @@ def prune_oversized_config_entries(config: dict) -> list[tuple[str, str, int]]:
                 removed.append((tab, key, 0))
                 continue
             try:
-                size = len(json.dumps(tab_config[key], default=str))
+                size = estimate_json_bytes(tab_config[key], limit=_MAX_CONFIG_VALUE_BYTES)
             except Exception:
                 tab_config.pop(key, None)
                 removed.append((tab, key, -1))
@@ -849,7 +968,7 @@ def prune_oversized_config_entries(config: dict) -> list[tuple[str, str, int]]:
 def _warn_if_config_oversized(config: dict, path: Path) -> None:
     """Log the largest offenders when a project config grows data-shaped."""
     try:
-        size = len(json.dumps(config, default=str))
+        size = estimate_json_bytes(config, limit=_MAX_PROJECT_CONFIG_BYTES)
     except Exception:
         return
     if size <= _PROJECT_CONFIG_WARN_BYTES:
@@ -860,7 +979,7 @@ def _warn_if_config_oversized(config: dict, path: Path) -> None:
             continue
         for key, value in tab_cfg.items():
             try:
-                offenders.append((len(json.dumps(value, default=str)), f"{tab}:{key}"))
+                offenders.append((estimate_json_bytes(value, limit=_MAX_PROJECT_CONFIG_BYTES), f"{tab}:{key}"))
             except Exception:
                 continue
     offenders.sort(reverse=True)
@@ -897,11 +1016,39 @@ def save_project_config(project_root: str, config: dict) -> None:
         except Exception as exc:  # never let bundling block a save
             log_persistence(f"Could not attach portable state: {exc}")
 
+        # Tab settings were checked one by one above. Any other section that has
+        # grown data-sized is left out of this write too (config is a copy here).
+        config = dict(config)
+        for section in list(config):
+            if section == "tab_configurations":
+                continue
+            try:
+                section_size = estimate_json_bytes(config[section], limit=_MAX_PROJECT_CONFIG_BYTES)
+            except Exception:
+                continue
+            if section_size > _MAX_PROJECT_CONFIG_BYTES // 2:
+                config.pop(section)
+                log_persistence(f"Left '{section}' out of {path.name}: it is data-sized ({section_size / 1e6:.0f} MB+).")
+
         # Sanitize config to prevent JSON serialization errors on numpy/pandas types
         sanitized_config = sanitize_json_obj(config)
         
         # Serialize to string FIRST to prevent file corruption/truncation on TypeErrors
         json_str = json.dumps(sanitized_config, indent=2)
+
+        # Last line of defence: a project file records settings. Never write one
+        # that is data-sized; keep the previous file instead and say so.
+        if len(json_str) > _MAX_PROJECT_CONFIG_BYTES:
+            message = (
+                f"Did not save {path.name}: it would be {len(json_str) / 1e6:.0f} MB, and a project file "
+                "records settings (under 1 MB). The previous file is unchanged."
+            )
+            log_persistence(f"ERROR: {message}")
+            try:
+                st.error(message)
+            except Exception:
+                pass
+            return
         
         # One restore point per session rather than a full copy on every save.
         # These configs reach 8 MB+, and sync_project_state saves whenever any
@@ -1099,6 +1246,24 @@ def values_equal(v1, v2) -> bool:
         if v1_norm == v2_norm:
             return True
         
+    return False
+
+
+def same_folder_setting(value, stored) -> bool:
+    """values_equal, and two spellings of one folder count as the same.
+
+    A storage folder may also be accessible through a symbolic link. A project
+    opened through one path and saved with the other showed every folder as changed, so
+    each page update saved the project and updated the page again.
+    """
+    if values_equal(value, stored):
+        return True
+    if isinstance(value, str) and isinstance(stored, str) and value.strip() and stored.strip():
+        try:
+            return os.path.realpath(os.path.expanduser(value.strip())) == \
+                os.path.realpath(os.path.expanduser(stored.strip()))
+        except (OSError, ValueError):
+            return False
     return False
 
 
@@ -1312,7 +1477,10 @@ def get_all_system_defaults(project_root_str: str) -> dict:
         "tab9_actual_save_svg": True,
         "tab9_actual_marker_legend_colored_labels": False,
     })
-    
+
+    # Every tab's single "Record run log" switch starts on (see spacemap_gui.run_log).
+    defaults.update({f"tab{index}_create_log": True for index in range(10)})
+
     return defaults
 
 
@@ -1403,6 +1571,9 @@ def is_transient_key(key: str) -> bool:
     # ``tab9_actual_load_cells`` is a real reproducibility parameter, not a
     # load event, and must remain serializable.
     if key in [
+        # Tab 8 results: whole per-cell tables (tab8_nb_result reached 44 GB once).
+        "tab8_nb_result", "tab8_triad_instances_df", "tab8_triad_p1_summary_df",
+        "tab8_triad_run_df_inputs", "tools_edit_csv_df",
         "tab9_viz_shared_df", "tab9_viz_unified_cache_df", "tab9_viz_shared_df_path", 
         "tab9_viz_shared_df_mtime", "tab9_viz_unified_cache_key", 
         "global_visualization_file_empty", "global_spatial_file_empty", "global_pheno_file_empty",
@@ -1478,7 +1649,7 @@ def is_transient_key(key: str) -> bool:
     # Rendered figures and result payloads are session-only caches. They are not
     # reproducibility settings, and serializing them writes the repr of raw PNG
     # bytes into the project JSON, which later fails to render as an image.
-    if lk.endswith(("_bytes", "_results", "_visualizations", "_run_details")):
+    if lk.endswith(("_bytes", "_result", "_results", "_visualizations", "_run_details")):
         return True
 
     # Computed artifacts that dominate the project file. Each is written from a
@@ -1610,6 +1781,82 @@ def is_transient_key(key: str) -> bool:
 # setting (a long path list is a few KB) and far below anything data-shaped.
 _MAX_CONFIG_VALUE_BYTES = 256 * 1024
 
+# Ceiling on the whole project file. A healthy one is well under 1 MB; nothing
+# larger is ever written.
+_MAX_PROJECT_CONFIG_BYTES = 32 * 1024 * 1024
+
+# A project file larger than this is cleaned by streaming before it is loaded
+# (see spacemap_gui.config_repair), instead of being read into memory whole.
+_SHRINK_ON_LOAD_BYTES = 64 * 1024 * 1024
+
+
+def estimate_json_bytes(value, limit: int | None = None) -> int:
+    """About how many bytes *value* takes once written into the project file.
+
+    It measures what the writer really writes (``sanitize_json_obj``): a
+    DataFrame becomes one JSON object per row and an array one entry per
+    element, however deeply they are nested in dicts and lists. Measuring with
+    ``json.dumps(value, default=str)`` instead sees only a table's short printed
+    summary, which is how a per-cell table nested in a dict passed the size cap
+    and grew a project file to 44 GB. Counting stops once *limit* is passed, so
+    a huge table costs no more to measure than a small setting.
+    """
+    from pathlib import PurePath
+
+    import numpy as np
+    import pandas as pd
+
+    budget = float("inf") if limit is None else limit
+    total = 0
+    stack = [value]
+    seen: set[int] = set()
+    while stack:
+        if total > budget:
+            return total
+        item = stack.pop()
+        if item is None or isinstance(item, (bool, int, float, np.number, np.bool_)):
+            total += 8
+        elif isinstance(item, str):
+            total += len(item) + 2
+        elif isinstance(item, (bytes, bytearray, memoryview)):
+            total += 4 * len(item) + 3  # written as a repr string
+        elif isinstance(item, PurePath):
+            total += len(str(item)) + 2
+        elif isinstance(item, pd.DataFrame):
+            rows = len(item)
+            per_row = sum(len(str(column)) + 12 for column in item.columns) + 4
+            total += rows * per_row  # a lower bound: keys repeat on every row
+            if total <= budget and rows:
+                total += len(json.dumps(sanitize_json_obj(item), default=str)) - rows * per_row
+        elif isinstance(item, pd.Series):
+            total += len(item) * 12
+            if total <= budget and len(item):
+                total += len(json.dumps(sanitize_json_obj(item), default=str)) - len(item) * 12
+        elif isinstance(item, np.ndarray):
+            total += 2 * item.size + 2  # at least one digit and a separator each
+            if total <= budget and item.size:
+                total += len(json.dumps(sanitize_json_obj(item), default=str)) - 2 * item.size
+        elif isinstance(item, (dict, list, tuple, set, frozenset)):
+            if id(item) in seen:
+                continue
+            seen.add(id(item))
+            total += 2 + 2 * len(item)
+            if total > budget:
+                return total
+            if isinstance(item, dict):
+                total += sum(len(str(key)) + 4 for key in item)
+                stack.extend(item.values())
+            else:
+                stack.extend(item)
+        elif hasattr(item, "to_dict") and callable(getattr(item, "to_dict")):
+            try:
+                stack.append(item.to_dict())
+            except Exception:
+                total += len(str(item)) + 2
+        else:
+            total += len(str(item)) + 2
+    return total
+
 
 def update_stored_config_key(config: dict, key: str, value) -> None:
     """Update a specific configuration parameter in the nested JSON configuration structure."""
@@ -1640,9 +1887,9 @@ def update_stored_config_key(config: dict, key: str, value) -> None:
     # a per-cell table once turned this file into gigabytes. Cap the serialized
     # size of every entry so no key, present or future, can do that again.
     try:
-        encoded_size = len(json.dumps(serialized_val, default=str))
+        encoded_size = estimate_json_bytes(serialized_val, limit=_MAX_CONFIG_VALUE_BYTES)
     except Exception:
-        return  # not JSON-serializable: not a setting
+        return  # cannot be measured: not a setting
     if encoded_size > _MAX_CONFIG_VALUE_BYTES:
         log_persistence(
             f"Skipped '{key}': {encoded_size / 1e6:.1f} MB exceeds the "
@@ -1764,6 +2011,24 @@ def ensure_threshold_directory_mapping(config: dict, project_root: str) -> tuple
     return current, changed
 
 
+def is_action_widget_key(key) -> bool:
+    """Whether ``key`` belongs to a button (a one-shot event, never a setting)."""
+    if not isinstance(key, str):
+        return False
+    if key in _discover_action_widget_keys() or key.startswith(_discover_action_widget_prefixes()):
+        return True
+    if key.endswith(_discover_action_widget_suffixes()):
+        return True
+    if any(infix in key for infix in _discover_action_widget_infixes()):
+        return True
+    return key.lower().endswith(("_btn", "_button"))
+
+
+def is_logging_switch(key) -> bool:
+    """Run-log and process-log checkboxes, which always start switched on."""
+    return isinstance(key, str) and key.endswith(("_create_log", "_process_log_enabled"))
+
+
 def sync_project_state() -> None:
     """Centralized State Sync Manager to keep st.session_state aligned with the active project's config.
     Ensures that loaded project settings override defaults and are restored when Streamlit deletes them.
@@ -1867,7 +2132,13 @@ def sync_project_state() -> None:
                 st.session_state[k] = pd.DataFrame(stored_val) if stored_val else pd.DataFrame(columns=["Process", "Filename"])
             else:
                 st.session_state[k] = stored_val
-                
+
+        # Logging switches start on in every session so every run is recorded.
+        # A user can still switch one off, but only for the current session.
+        for k in list(st.session_state.keys()):
+            if is_logging_switch(k):
+                st.session_state[k] = True
+
         st.session_state["_project_just_hydrated"] = False
         log_persistence("Forced initial configuration state sync (hydration) and bypassed change detection.")
         if pruned_transient_keys or threshold_mapping_migrated:
@@ -1927,7 +2198,11 @@ def sync_project_state() -> None:
     DIRECTORY_GROUPS = [
         {"batch_codex_dir", "annot_image_dir"},
         {"tab1_batch_output_dir", "registration_output_dir", "tab2_input_dir_reg"},
-        {"tab2_output_dir", "bg_subtraction_output_dir", "tab3_input_dir", "tab3_multi_input_dir"},
+        # Tab 3's input used to be in this group, so choosing the ROI folder as its
+        # input made Tab 2 write there. It now follows the pipeline instead
+        # (spacemap_gui.pipeline_folders).
+        {"tab2_output_dir", "bg_subtraction_output_dir"},
+        {"tab3_input_dir", "tab3_multi_input_dir"},
         {
             "tab3_output_dir", "tab3_multi_output_dir", "roi_output_dir",
             "tab4_input_dir", "batch_input_dir", "vis_img_dir", "viz_roi_dir",
@@ -1981,7 +2256,7 @@ def sync_project_state() -> None:
         # Check global tab key
         if key in st.session_state:
             val = st.session_state[key]
-            if not values_equal(val, stored_val):
+            if not same_folder_setting(val, stored_val):
                 changed_group_val = val
                 for group in DIRECTORY_GROUPS:
                     if key in group:
@@ -1993,7 +2268,7 @@ def sync_project_state() -> None:
         # Check project tab key
         if proj_key in st.session_state:
             val = st.session_state[proj_key]
-            if not values_equal(val, stored_val):
+            if not same_folder_setting(val, stored_val):
                 changed_group_val = val
                 for group in DIRECTORY_GROUPS:
                     if key in group:
@@ -2009,7 +2284,7 @@ def sync_project_state() -> None:
     if changed_group_keys and changed_group_val is not None:
         for k in changed_group_keys:
             old_val = directory_mappings.get(k)
-            if not values_equal(old_val, changed_group_val):
+            if not same_folder_setting(old_val, changed_group_val):
                 directory_mappings[k] = changed_group_val
                 safe_set_session_state(k, changed_group_val)
                 safe_set_session_state(f"proj_dir_{k}", changed_group_val)
@@ -2057,13 +2332,13 @@ def sync_project_state() -> None:
         global_changed = False
         if global_in_state:
             val_global = st.session_state[key]
-            if not values_equal(val_global, stored_dir_val):
+            if not same_folder_setting(val_global, stored_dir_val):
                 global_changed = True
                 
         proj_changed = False
         if proj_in_state:
             val_proj = st.session_state[proj_key]
-            if not values_equal(val_proj, stored_dir_val):
+            if not same_folder_setting(val_proj, stored_dir_val):
                 proj_changed = True
                 
         if global_changed:
@@ -2224,7 +2499,10 @@ def hydrate_project_state(config: dict, project_root: str) -> None:
         del st.session_state[key]
         
     # The root must be set before restoring, because interface-state routing and
-    # ${PROJECT_ROOT} expansion both key off it.
+    # ${PROJECT_ROOT} expansion both key off it. One spelling of it: a project
+    # opened through a symbolic link and saved using its resolved path
+    # otherwise showed every folder as changed.
+    project_root = str(Path(project_root).resolve())
     st.session_state["active_project_root"] = project_root
     config = restore_portable_state(config, project_root)
 

@@ -65,3 +65,14 @@ outputs/
 .DS_Store
 .vscode/
 .idea/
+
+# Saved-but-unwritten phenotype columns beside a unified table (spacemap.pending_columns)
+*.csv.pending/
+
+# Ship the compiled heatmap widget so installs need no JavaScript toolchain.
+node_modules/
+!src/spacemap_gui/tabs/tab7_phenotyping/heatmap_click_selector/frontend/build/
+!src/spacemap_gui/tabs/tab7_phenotyping/heatmap_click_selector/frontend/build/**
+
+# Local backup checkouts are not release inputs.
+SPACEMAP_stage_*/

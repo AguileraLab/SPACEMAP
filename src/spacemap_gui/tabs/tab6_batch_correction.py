@@ -75,12 +75,17 @@ from spacemap_gui.persistence import (
     save_directory_settings,
     get_default_bc_config,
 )
+from spacemap_gui import terminal
+
+def _log_console(message: str, level: str = "info") -> None:
+    """One timestamped terminal line for this tab (see spacemap_gui.terminal)."""
+    terminal.say('tab6', message, step=None, level=level)
+
 
 # Logging helper
 def log_step(step_name: str):
-    """Print timestamped log to stdout for debugging."""
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-    print(f"[{timestamp}] TAB6: {step_name}", flush=True)
+    """Tab 6 progress line, also recorded in the page process log."""
+    terminal.say("tab6", step_name)
     record_process_event("tab6", "Batch correction step", message=step_name)
 
 
@@ -106,7 +111,9 @@ def _transform_vector(x: pd.Series, transform: str, arcsinh_cofactor: float, log
 
 def _load_phenotyping_marker_defaults(config_path: Path | None = None) -> list[str]:
     """Load the marker panel used by the default Tab 7 phenotyping methods."""
-    marker_config_path = config_path or Path(__file__).resolve().parents[3] / "marker_configs.json"
+    from spacemap.marker_config import marker_config_path as shared_marker_config_path
+
+    marker_config_path = config_path or shared_marker_config_path()
     try:
         with marker_config_path.open("r", encoding="utf-8") as config_file:
             config = json.load(config_file)
@@ -263,7 +270,6 @@ def _write_csv_atomic(df: pd.DataFrame, output_path: str | Path) -> Path:
 def render():
     """Main render function for Tab 6."""
     import streamlit as st
-    from pathlib import Path
     from spacemap_gui.ui_utils import require_active_project
     project_root = require_active_project()
     if project_root is None:
@@ -290,7 +296,7 @@ def render():
             apply_post_correction_qc_filters = _APQ
             BATCH_UTILS_AVAILABLE = True
         except ImportError as e:
-            print(f"Error importing batch_correction_utils: {e}")
+            _log_console(f"Error importing batch_correction_utils: {e}", level="error")
             BATCH_UTILS_AVAILABLE = False
             BatchCorrector = None  # type: ignore[assignment]
 
@@ -370,7 +376,7 @@ def render_setup(project_root: Path):
         updated = True
         
     if updated:
-        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] TAB6: Initialized default configuration values", flush=True)
+        _log_console(f"Initialized default configuration values")
         st.rerun()
     
     # 1. Directories
@@ -981,7 +987,7 @@ def render_setup(project_root: Path):
     scan_label = "Scan Batches" if unified_mode else "Scan Files"
     if col_scan.button(scan_label):
         source_label = st.session_state.bc_unified_csv_path if unified_mode else st.session_state.bc_input_dir
-        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] BATCH_CORRECTION: Scanning '{source_label}'", flush=True)
+        _log_console(f"Scanning '{source_label}'")
         source_is_valid = False
         files: list[str] = []
         if unified_mode:
@@ -1536,7 +1542,7 @@ def render_setup(project_root: Path):
             cols = ["Process", "Filename"] + [c for c in df_editor.columns if c not in ["Process", "Filename"]]
             df_editor = df_editor[cols]
 
-        st.info("💡 You can copy-paste from Excel directly into this table.")
+        st.info("You can copy-paste from Excel directly into this table.")
         
         with st.form("bc_file_list_form"):
             edited_df = st.data_editor(
@@ -1943,7 +1949,7 @@ def render_setup(project_root: Path):
         current_batch_col = st.session_state.bc_config.get('batch_id_col', 'batch_id')
         if current_batch_col in st.session_state.bc_metadata_cols:
             st.warning(
-                f"⚠️ Conflict detected: The Batch ID column '{current_batch_col}' is also defined in your "
+                f"Conflict detected: The Batch ID column '{current_batch_col}' is also defined in your "
                 "Metadata columns (File List). The calculator above might overwrite your manual metadata values, "
                 "or vice-versa. Please rename the Batch ID column or remove it from the metadata list if you intend "
                 "to use the auto-calculation."
@@ -2064,7 +2070,7 @@ def render_setup(project_root: Path):
         """Helper to calculate and render step-by-step filtration statistics."""
         loaded_df = st.session_state.get('bc_loaded_data')
         if loaded_df is None:
-            st.info("💡 **Tip**: Click **'Load and Apply Filters'** below to import the dataset and view the step-by-step cell loss report.")
+            st.info("**Tip**: Click **'Load and Apply Filters'** below to import the dataset and view the step-by-step cell loss report.")
             return
 
         summary = st.session_state.get('bc_filter_summary')
@@ -2077,7 +2083,7 @@ def render_setup(project_root: Path):
                 summary = _get_filtration_summary(loaded_df, st.session_state.bc_config, markers, files_with_filter_col)
                 st.session_state.bc_filter_summary = summary
             
-        st.markdown("### 📊 Active Filter Impact Analysis")
+        st.markdown("### Active Filter Impact Analysis")
         st.markdown("This report shows how many cells will be retained for batch correction after applying each filter:")
         
         col_stat1, col_stat2, col_stat3, col_stat4 = st.columns(4)
@@ -2555,7 +2561,7 @@ def render_setup(project_root: Path):
             summary = st.session_state.get('bc_filter_summary')
             if summary:
                 st.success(
-                    f"🎉 **Data Load & Filtration Complete!**\n\n"
+                    f"**Data Load & Filtration Complete!**\n\n"
                     f"Here is the step-by-step breakdown of cells retained:\n"
                     f"- **1. Total Loaded Cells**: `{summary['total_loaded']:,}` cells from `{total_files}` files.\n"
                     f"- **2. Filter Column (`{t_col}={t_val}`)**: `{summary['tissue_kept']:,}` cells retained (lost `{summary['tissue_lost']:,}`).\n"
@@ -2998,28 +3004,26 @@ def render_qc_correction(project_root: Path):
             help="Use parametric priors (faster) vs non-parametric priors."
         )
         
-        _correction_modes = ["monotonic", "per_cluster"]
-        _saved_mode = st.session_state.bc_config.get('correction_mode', 'monotonic')
+        _correction_modes = ["cycombine", "monotonic", "per_cluster"]
+        _saved_mode = st.session_state.bc_config.get('correction_mode', 'cycombine')
         correction_mode = c_conf1.selectbox(
-            "Correction application",
+            "Correction method",
             _correction_modes,
             index=_correction_modes.index(_saved_mode) if _saved_mode in _correction_modes else 0,
             format_func=lambda v: {
-                "monotonic": "Monotonic (recommended)",
-                "per_cluster": "Per-cluster ComBat (legacy)",
+                "cycombine": "cyCombine (recommended)",
+                "monotonic": "Monotonic (keeps each batch's cell order)",
+                "per_cluster": "Earlier cyCombine approximation",
             }[v],
             help=(
-                "How the estimated batch effect is applied to cells.\n\n"
-                "**Monotonic** uses the SOM to estimate the batch effect within matched "
-                "cell populations, then applies one shift/scale per batch and marker. "
-                "Cell ranking inside a batch is preserved exactly, so the correction can "
-                "never reorder cells or blur the negative/positive boundary that defines "
-                "a phenotype.\n\n"
-                "**Per-cluster ComBat** is the literal cyCombine translation: ComBat runs "
-                "separately inside each SOM node. Two cells in the same batch with the "
-                "same input value can then come out different, which reorders markers that "
-                "have a large true-negative population. Choose this only to reproduce an "
-                "earlier run."
+                "**cyCombine** is cyCombine's own method, ported from its R code and checked to give the same "
+                "result as R: similar cells are grouped with an SOM (8 x 8, 10 passes, seed 473), then ComBat "
+                "corrects each group, and each marker stays within the group's measured range. SOM iterations "
+                "and Min cells per cluster do not apply to it.\n\n"
+                "**Monotonic** estimates the batch effect within the same SOM groups, then applies one shift and "
+                "scale per batch and marker, so the order of cells inside a batch never changes.\n\n"
+                "**Earlier cyCombine approximation** is SPACEMAP's earlier version (a different SOM and ComBat "
+                "library). Choose it only to reproduce an earlier run."
             ),
         )
 
@@ -3142,7 +3146,7 @@ def render_qc_correction(project_root: Path):
         })
                 
         if run_btn:
-            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] BATCH_CORRECTION: Running Batch Correction cyCombine mode", flush=True)
+            _log_console(f"Running Batch Correction cyCombine mode")
             correction_started_at = time.perf_counter()
             record_process_event(
                 "tab6",
@@ -3699,10 +3703,10 @@ def render_visualization(project_root: Path):
 
     # Layout using Tabs
     vis_tab1, vis_tab2, vis_tab3, vis_tab4 = st.tabs([
-        "📊 Marker Distributions",
-        "🌀 PCA & UMAP Batch Mixing",
-        "📈 Correction Distance & Variance",
-        "📊 Batch Integration Metrics (EMD & Silhouette)"
+        "Marker Distributions",
+        "PCA & UMAP Batch Mixing",
+        "Correction Distance & Variance",
+        "Batch Integration Metrics (EMD & Silhouette)"
     ])
     
     unique_batches = sorted(df[batch_col].dropna().unique())

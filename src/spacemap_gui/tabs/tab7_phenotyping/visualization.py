@@ -42,6 +42,7 @@ except ImportError:
 
 from .common import get_named_marker_panels, logger, _extract_markers_from_notebook
 from .cell_visualization import render_cell_visualization
+from spacemap_gui import terminal
 
 NOTEBOOK_NAME = "Step8_Comparison.ipynb"
 _VIZ_SHARED_DF_KEY = "viz_shared_df"
@@ -53,12 +54,13 @@ def _timestamp() -> str:
     return time.strftime("%H:%M:%S")
 
 
-def _log_console(message: str) -> None:
-    print(message, flush=True)
+def _log_console(message: str, level: str = "info") -> None:
+    """One timestamped terminal line for this tab (see spacemap_gui.terminal)."""
+    terminal.say('tab7', message, step='Visualization', level=level)
 
 
 def _log_terminal_event(message: str) -> None:
-    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [Visualization] {message}", flush=True)
+    _log_console(message)
 
 
 def _get_csv_columns_fast(path: str) -> list[str]:
@@ -1371,7 +1373,7 @@ def _render_umap_explorer(
                     min_value=0, max_value=n_filtered_cells,
                     value=int(subsample_default or 0),
                     step=10000,
-                    help="Subsample for faster computation. Remaining cells projected via k-NN. Set 0 for all cells.",
+                    help="Compute the UMAP on this many randomly chosen cells, then place every other cell next to its most similar computed cells. Faster on large tables. Set 0 to use all cells.",
                     key="umap_subsample",
                 )
                 random_seed = st.number_input(
@@ -3419,7 +3421,7 @@ def render_visualization(project_root: Path, global_input_path: str | None) -> N
                  st.session_state['viz_val_confirmed_markers'] = expected_markers
                  st.session_state['viz_val_last_file'] = unified_csv_path
                  if expected_markers:
-                     st.info(f"✓ Auto-selected {len(expected_markers)} markers from notebook configuration")
+                     st.info(f"Auto-selected {len(expected_markers)} markers from notebook configuration")
 
             pending_marker_selection = st.session_state.pop('viz_val_marker_pending_selection', None)
             if isinstance(pending_marker_selection, list):
@@ -3573,7 +3575,7 @@ def render_visualization(project_root: Path, global_input_path: str | None) -> N
                 
                 # Check if markers changed since load
                 if loaded_markers != markers_final:
-                    st.warning("⚠️ Marker selection has changed. Please reload data above.")
+                    st.warning("Marker selection has changed. Please reload data above.")
                 else:
                     phenotype_first_cols = [
                         c for c in full_df.columns
@@ -3809,7 +3811,7 @@ def render_visualization(project_root: Path, global_input_path: str | None) -> N
                                                
                                                except Exception as inner_e:
                                                    st.error(f"Error processing cell {cell_row.get('cell_id', 'unknown')}: {inner_e}")
-                                                   print(f"!!! VIZ ERROR: {inner_e}")
+                                                   _log_console(f"!!! VIZ ERROR: {inner_e}", level="error")
                                           
                                           # SUMMARY TABLE & CSV
                                           if summary_rows:
@@ -3831,7 +3833,7 @@ def render_visualization(project_root: Path, global_input_path: str | None) -> N
                                      logger.error(f"Outer Viz Error: {e}")
 
             else:
-                st.info("👆 Please load and normalize data to proceed.")
+                st.info("Please load and normalize data to proceed.")
 
     # =========================================================================
     # UMAP EXPLORER SUBTAB

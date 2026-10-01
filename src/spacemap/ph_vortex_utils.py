@@ -22,7 +22,6 @@ import numpy as np
 import pandas as pd
 from scipy.spatial import cKDTree
 from sklearn.metrics import davies_bouldin_score, silhouette_score
-from sklearn.neighbors import KNeighborsClassifier
 
 warnings.filterwarnings("ignore")
 

@@ -1,28 +1,21 @@
-# Conda environment for SPACEMAP.
+# From the repository folder:
+#   conda env create -f environment.yml
+#   conda activate spacemap
+#   spacemap doctor
+#   spacemap
 #
-# Conda supplies the compiled geospatial and imaging libraries that are awkward
-# to build with pip; the Python package itself is installed afterwards:
-#
-#     conda env create -f environment.yml
-#     conda activate spacemap
-#     pip install -e .
-#
-# The AI assistant is optional and is not installed here. Enable it from
-# Tab 0 inside the interface, which prints the command for this environment.
+# Python 3.10 is required by the current imaging stack: palom needs
+# scikit-image <0.20, whose wheels stop at Python 3.10.
+# The pinned openslide-python binding needs the OpenSlide 3.x native ABI.
+# Conda supplies Python and the matching OpenSlide library. Pip installs
+# SPACEMAP and JupyterLab from pyproject.toml in editable mode.
+# AI packages and DeepCell are optional; see docs/installation.md.
 name: spacemap
 channels:
   - conda-forge
 dependencies:
-  - python=3.11
+  - python=3.10
+  - openslide<4
   - pip
-  # Numeric stack, pinned where the pipeline is sensitive to the ABI.
-  - numpy=1.26.*
-  - scipy>=1.12
-  - libopenblas
-  # Compiled libraries behind rasterio, geopandas, shapely and opencv.
-  - gdal
-  - geos
-  - proj
-  - hdf5
-  # Developer tools
-  - pytest>=7.4.4
+  - pip:
+      - -e .[notebook]

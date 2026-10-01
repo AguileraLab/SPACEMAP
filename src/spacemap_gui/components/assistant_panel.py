@@ -77,10 +77,7 @@ from spacemap_assistant.model_client import (
 )
 from spacemap_assistant.model_runtime import (
     ModelRuntimeError,
-    gpu_status,
     runtime_status,
-    start_runtime,
-    stop_runtime,
 )
 from spacemap_assistant.online_access import (
     build_online_evidence_content,
@@ -1798,7 +1795,7 @@ def _submit_prompt(
         if not nvidia_api_key_saved():
             answer = (
                 "Your question was saved, but no NVIDIA API key is saved. Open "
-                "**Model > Provider and API key** to enter it."
+                "**AI setup > Answer with an online model instead** to enter it."
             )
             store.add_message(
                 conversation_id,
@@ -2184,6 +2181,7 @@ def _submit_prompt(
                 timeout_seconds=settings.timeout_seconds,
             )
         else:
+            _ensure_local_model_running()
             client = LocalModelClient(timeout_seconds=settings.timeout_seconds)
         if is_execution_request and not online_provider:
             health = client.health()
@@ -2580,7 +2578,7 @@ def _submit_prompt(
         if online_provider and not recovered_from_online:
             answer = (
                 "I saved your question, but the NVIDIA hosted model did not answer. Open "
-                "**Model > Provider and API key** to check the key and test the connection.\n\n"
+                "**AI setup > Answer with an online model instead** to check the key and test the connection.\n\n"
                 f"Connection detail: `{recovery_error}`"
             )
         elif not online_provider:
@@ -2593,9 +2591,9 @@ def _submit_prompt(
                 )
             else:
                 answer = (
-                    "I saved your question, but the local Gemma model is not ready. "
-                    "Open **Model > Local model**, start it on a GPU node, and wait until it says **Ready**.\n\n"
-                    f"Connection detail: `{error}`"
+                    "I saved your question, but the local model could not answer. "
+                    f"**AI setup** (Tab 0 > AI Assistant, or Setup on this page) shows what is missing.\n\n"
+                    f"Detail: `{error}`"
                 )
         if not recovered_from_online:
             store.log_activity("model_unavailable", recovery_error, level="warning")
@@ -2955,7 +2953,7 @@ def _render_conversation_controls(
     with columns[0]:
         if st.button(
             "New Chat",
-            icon="➕",
+            icon=":material/add:",
             width="stretch",
             key=f"assistant_new_chat_{page_id}_{'compact' if compact else 'full'}",
         ):
@@ -3602,7 +3600,7 @@ def _render_admin_access() -> None:
     with st.form("assistant_admin_access_add", clear_on_submit=True):
         folder = st.text_input(
             "Exact folder to allow",
-            placeholder="/work/.../a_specific_data_project",
+            placeholder="/path/to/a_data_project",
         )
         permission_label = st.selectbox("Permission", ["Read only", "Read + write"])
         confirmed = st.checkbox(
@@ -3779,79 +3777,27 @@ def _refresh_cluster() -> None:
     _append_compute_terminal(partition_terminal + "\n\n" + jobs_terminal)
 
 
-def _render_local_runtime_controls() -> None:
-    st.markdown("### Google Gemma 4 12B")
+def _ensure_local_model_running() -> None:
+    """Start the chosen local model when it is downloaded but stopped, and wait for it.
+
+    Asking a question is enough: nobody has to open the setup and press Start
+    first. Raises ModelUnavailable with the reason when it cannot start.
+    """
+    from spacemap_assistant.model_runtime import ensure_running
+
     status = runtime_status()
     if status.ready:
-        st.success(f"Ready · {status.gpu} · {status.precision}")
-    elif status.running:
-        st.warning("Starting and loading the model. This can take several minutes.")
-    elif status.installed:
-        st.info("Installed, but stopped.")
-    else:
-        st.error(status.message)
-    st.caption(GEMMA_NOTICE)
-    st.caption(
-        "Auto uses full BF16 quality on GPUs with at least 40 GB, or lighter 4-bit mode on smaller GPUs. "
-        "The server refuses CPU mode because it would be too slow."
-    )
-    precision = st.selectbox(
-        "GPU memory mode",
-        ["auto", "4bit", "bf16"],
-        format_func=lambda value: {
-            "auto": "Auto (recommended)",
-            "4bit": "4-bit (less GPU memory)",
-            "bf16": "BF16 (best quality, 40+ GB GPU)",
-        }[value],
-        disabled=status.running,
-    )
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        if st.button("Start Gemma", type="primary", disabled=status.running or not status.installed, width="stretch"):
-            try:
-                new_status = start_runtime(precision)
-                _store().log_activity(
-                    "gemma_started",
-                    "Local Gemma server was started.",
-                    details={"pid": new_status.pid, "precision": precision},
-                )
-                st.success("Gemma is loading. Select Refresh Status in a few minutes.")
-            except ModelRuntimeError as error:
-                _store().log_activity("gemma_start_failed", str(error), level="warning")
-                st.error(str(error))
-    with col2:
-        if st.button("Stop Gemma", disabled=not status.running, width="stretch"):
-            try:
-                stop_runtime()
-                _store().log_activity("gemma_stopped", "Local Gemma server was stopped.")
-                st.success("Gemma stopped.")
-                st.rerun()
-            except ModelRuntimeError as error:
-                st.error(str(error))
-    with col3:
-        if st.button("Refresh Status", width="stretch"):
-            st.rerun()
-
-    if st.button("Check Visible GPU", width="stretch"):
-        gpu = gpu_status()
-        if gpu.get("available"):
-            st.success(f"{gpu.get('name')} · {gpu.get('memory_gib')} GB · {gpu.get('count')} GPU(s)")
-        else:
-            st.info(
-                "No GPU is visible. The model will run on the CPU, which works but is "
-                "much slower. A small quantized (GGUF) model is the better choice here."
-            )
-
-    from spacemap.userpaths import logs_dir
-
-    server_log = logs_dir() / "model-server.log"
-    if server_log.is_file():
-        with st.expander("Model server startup log", expanded=False):
-            try:
-                lines = server_log.read_text(encoding="utf-8", errors="replace").splitlines()[-120:]
-                st.code(_redact_log_text("\n".join(lines)), language="text", wrap_lines=True)
-            except OSError as error:
-                st.warning(str(error))
+        return
+    if not status.installed:
+        raise ModelUnavailable(status.message)
+    with st.status(f"Starting {status.message.split(' is ')[0]} (about a minute on a GPU)...") as box:
+        try:
+            ensure_running(on_wait=lambda current, seconds: box.update(
+                label=f"{current.message} {seconds:.0f} s"))
+        except ModelRuntimeError as error:
+            box.update(label="The local model could not start.", state="error")
+            raise ModelUnavailable(str(error)) from error
+        box.update(label="The local model is ready.", state="complete")
 
 
 def _partition_rows(partitions: list[Any]) -> list[dict[str, Any]]:
@@ -3975,31 +3921,6 @@ def _render_cluster_controls() -> None:
     st.code(terminal, language="text", wrap_lines=True, height=340)
 
 
-def _render_compute_manager() -> None:
-    provider_tab, model_tab, cluster_tab = st.tabs(
-        ["Provider and API key", "Local model", "Cluster"]
-    )
-    with provider_tab:
-        _render_provider_controls()
-    with model_tab:
-        _render_local_runtime_controls()
-    with cluster_tab:
-        from spacemap_assistant.cluster import cluster_available, cluster_enabled
-
-        if not cluster_available():
-            st.info(
-                "No Slurm client commands were found on this machine, so cluster "
-                "features are unavailable. This is normal on a workstation or laptop."
-            )
-        elif not cluster_enabled():
-            st.info(
-                "A Slurm cluster was detected but cluster submission is switched off. "
-                "Turn it on in **Tab 0 → AI Assistant → Run model jobs on a cluster**."
-            )
-        else:
-            _render_cluster_controls()
-
-
 def _redact_log_text(value: str) -> str:
     text = str(value).replace("\x1b", "")
     text = re.sub(r"(?i)(api[_-]?key|password|token|secret)\s*[=:]\s*\S+", r"\1=[REDACTED]", text)
@@ -4096,7 +4017,7 @@ def render_assistant_launcher(page_id: str, assistant_page: Any) -> None:
         """,
         unsafe_allow_html=True,
     )
-    with st.popover("AI Assistant", icon="💬", width="stretch"):
+    with st.popover("AI Assistant", icon=":material/chat:", width="stretch"):
         st.caption(f"Current context: {context.get('page_title', page_id)} · Planning mode")
         _render_compact_live_action_status()
         quick = st.columns(2)
@@ -4111,7 +4032,7 @@ def render_assistant_launcher(page_id: str, assistant_page: Any) -> None:
                 _submit_prompt("What should I do next?", page_id, store, conversation_id)
                 st.rerun()
         _render_chat(page_id, compact=True)
-        st.page_link(assistant_page, label="Open Full Assistant Workspace", icon="🤖", width="stretch")
+        st.page_link(assistant_page, label="Open Full Assistant Workspace", icon=":material/smart_toy:", width="stretch")
 
 
 def render_assistant_workspace() -> None:
@@ -4123,16 +4044,10 @@ def render_assistant_workspace() -> None:
         f"Safe assistant and reviewed actions · Current scientific context: {context.get('page_title')}"
     )
 
-    chat_tab, actions_tab, instructions_tab, memory_tab, compute_tab, admin_tab, settings_tab = st.tabs(
-        [
-            "Chat",
-            "Actions",
-            "Instructions & Safety",
-            "Memory",
-            "Model & Compute",
-            "Admin Access",
-            "Settings",
-        ]
+    # One Setup tab holds every setting (models, online provider, answers,
+    # cluster, folder access, activity); Tab 0 shows the same page.
+    chat_tab, actions_tab, instructions_tab, memory_tab, setup_tab = st.tabs(
+        ["Chat", "Actions", "Instructions & Safety", "Memory", "Setup"]
     )
     with chat_tab:
         _render_chat(page_id, compact=False)
@@ -4151,10 +4066,7 @@ def render_assistant_workspace() -> None:
         _render_instruction_editor()
     with memory_tab:
         _render_memory()
-    with compute_tab:
-        _render_compute_manager()
-    with admin_tab:
-        _render_admin_access()
-    with settings_tab:
-        _render_model_settings()
-        _render_activity_console(expanded=False)
+    with setup_tab:
+        from spacemap_gui.components.ai_setup import render_ai_setup
+
+        render_ai_setup("assistant")

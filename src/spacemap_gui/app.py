@@ -51,6 +51,14 @@ _ACTIVE_TAB_KEY = "_spacemap_active_tab"
 _USER_TAB_KEY = "_spacemap_user_tab"  # The tab user is actually in
 _DRAW_MODE_KEY = "_spacemap_draw_mode"  # Skip heavy processing when drawing
 
+from spacemap_gui import terminal
+
+
+def _log_console(message: str, level: str = "info") -> None:
+    """One timestamped terminal line for this tab (see spacemap_gui.terminal)."""
+    terminal.say('app', message, step=None, level=level)
+
+
 def set_user_tab(tab_name: str):
     """Set the tab the user is actually viewing (from widget interactions)."""
     os.environ[_USER_TAB_KEY] = tab_name
@@ -128,7 +136,9 @@ for k in list(st.session_state.keys()):
 
 if os.getenv("SPACEMAP_DEBUG_FILE") == "1":
     try:
-        debug_file_path = Path(__file__).resolve().parent / "session_state_debug.txt"
+        from spacemap.userpaths import logs_dir
+
+        debug_file_path = logs_dir() / "session_state_debug.txt"
         with open(debug_file_path, "a") as f:
             f.write(f"\n=== RUN AT {datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')} ===\n")
             f.write(f"active_project={st.session_state.get('active_project') is not None}\n")
@@ -144,7 +154,7 @@ project_root = current_dir.parent.parent
 
 _PAGE_CONFIG = {
     "page_title": "SPACEMAP AI Pipeline",
-    "page_icon": "🧬",
+    "page_icon": ":material/biotech:",
     "layout": "wide",
     "initial_sidebar_state": "expanded",
 }
@@ -157,8 +167,8 @@ def _is_stale_filesystem_error(exc: BaseException) -> bool:
 
 def _show_stale_filesystem_message(exc: OSError, phase: str) -> None:
     """Show a concise recovery hint instead of a full startup traceback."""
-    print(f"Stale filesystem handle during {phase}: {exc}", flush=True)
-    st.title("🧬 SPACEMAP Pipeline Interface")
+    _log_console(f"Stale filesystem handle during {phase}: {exc}")
+    st.title("SPACEMAP Pipeline Interface")
     st.error("The project filesystem is temporarily unavailable.")
     st.markdown(
         "SPACEMAP hit a stale file handle while starting or loading a tab. "
@@ -232,27 +242,13 @@ _ensure_local_cache_dir(numba_cache_dir, "NUMBA_CACHE_DIR")
 _ensure_local_cache_dir(cellpose_cache_dir, "CELLPOSE_LOCAL_MODELS_PATH")
 
 def log_app(msg: str):
-    """Print timestamped log for app-level tracking."""
-    legacy = os.getenv("SPACEMAP_CONSOLE_LOGS")
-    if legacy is not None:
-        if legacy != "1":
-            return
-    elif os.getenv("SPACEMAP_APP_LOGS", "0") != "1":
-        return
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-    print(f"[{timestamp}] APP: {msg}", flush=True)
+    """App start-up messages (shown when SPACEMAP_APP_LOGS=1)."""
+    terminal.say("app", msg, channel="app")
 
 
 def log_perf(msg: str):
-    """Print timestamped performance logs."""
-    legacy = os.getenv("SPACEMAP_CONSOLE_LOGS")
-    if legacy is not None:
-        if legacy != "1":
-            return
-    elif os.getenv("SPACEMAP_PERF_LOGS", "1") != "1":
-        return
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-    print(f"[{timestamp}] PERF: {msg}", flush=True)
+    """Page timing messages (hidden with SPACEMAP_PERF_LOGS=0)."""
+    terminal.say("app", msg, step="Timing", channel="perf")
 
 
 def _timed_call(label: str, fn):
@@ -451,11 +447,11 @@ if config_path.exists():
                 if k not in st.session_state:
                     st.session_state[k] = v
     except Exception as e:
-        print(f"Error loading config: {e}")
+        _log_console(f"Error loading config: {e}", level="error")
 
 title_column, assistant_column = st.columns([4, 1], vertical_alignment="center")
 with title_column:
-    st.title("🧬 SPACEMAP AI Pipeline Interface")
+    st.title("SPACEMAP AI Pipeline Interface")
 with assistant_column:
     if not ASSISTANT_ENABLED:
         # Nothing is shown here when the assistant is off, so the header stays
@@ -465,7 +461,7 @@ with assistant_column:
         st.page_link(
             pages["Pipeline"][0],
             label="Back to Workflow",
-            icon="↩️",
+            icon=":material/undo:",
             width="stretch",
         )
     else:
@@ -514,8 +510,19 @@ with st.sidebar:
     if st.session_state.get("_force_sidebar_proj_sync"):
         st.session_state["_global_sidebar_proj"] = active_project_name
         st.session_state["_force_sidebar_proj_sync"] = False
-        
-    selected_proj_name = st.selectbox("Active Project", project_names, index=idx, key="_global_sidebar_proj")
+
+    from spacemap_gui.persistence import project_config_path
+
+    missing = {name for name, root in (projects or {}).items() if project_config_path(root) is None}
+
+    def _project_label(name: str) -> str:
+        return f"{name} (folder not found)" if name in missing else name
+
+    selected_proj_name = st.selectbox("Active Project", project_names, index=idx, key="_global_sidebar_proj",
+                                      format_func=_project_label)
+    project_error = st.session_state.pop("_sidebar_project_error", None)
+    if project_error:
+        st.error(project_error)
     
     # If user changed the project, load it instantly
     if selected_proj_name != active_project_name:
@@ -533,7 +540,25 @@ with st.sidebar:
             unload_project_callback()
             st.switch_page(str(current_dir / "tabs/tab0_project.py"))
         elif projects and selected_proj_name in projects:
-            load_project_callback(projects[selected_proj_name])
+            from spacemap_gui.persistence import find_moved_project, save_project_to_index
+
+            target = projects[selected_proj_name]
+            if selected_proj_name in missing:
+                # The folder was moved: look for it beside the other projects and
+                # remember the new place, instead of loading nothing.
+                found = find_moved_project(selected_proj_name, projects)
+                if found is not None:
+                    save_project_to_index(selected_proj_name, str(found))
+                    target = str(found)
+            if not load_project_callback(target):
+                # Loading nothing must not leave the list pointing at a project that
+                # is not loaded: every rerun would try again, forever.
+                st.session_state["_sidebar_project_error"] = (
+                    f"Could not open '{selected_proj_name}': no project settings file in `{target}`. "
+                    "If the project was moved, open it from its new folder in Tab 0 "
+                    "(Load Existing Project); the list then remembers the new place."
+                )
+                st.session_state["_force_sidebar_proj_sync"] = True
             st.rerun()
 
     # What is actually loaded right now. The directory and unified CSV shown here
@@ -549,7 +574,7 @@ with st.sidebar:
             st.warning(
                 "The unified CSV directory sits outside this project. "
                 "Check Tab 0 -> Pipeline Directories.",
-                icon="⚠️",
+                icon=":material/warning:",
             )
         if st.button("Save Project", width="stretch", key="_sidebar_save_project"):
             from spacemap_gui.tabs.tab0_project import save_project_callback
@@ -845,10 +870,16 @@ st.session_state["_currently_rendering_tab"] = active_tab
 from spacemap_gui.workflow_guidance import render_workflow_guidance
 render_workflow_guidance(active_tab)
 
-# Run the page
-pg.run()
+# One run-log switch per tab, in the same place on every page. Every action the
+# page runs is recorded (time, CPU, RAM, GPU, settings changed) while it is on.
+from spacemap_gui import run_log
+run_log.render_switch(active_tab)
 
-# Shared timestamped log for the current pipeline page and any of its subtabs.
+# Run the page
+with run_log.page_run(active_tab):
+    pg.run()
+
+# The tab's recent runs and events.
 from spacemap_gui.process_log import render_process_log_panel
 render_process_log_panel(active_tab)
 

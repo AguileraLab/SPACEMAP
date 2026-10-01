@@ -1,10 +1,11 @@
 """
 Vortex (X-shift) Clustering Subtab.
 
-Professional Vortex clustering with notebook-synchronized parameters from
+Vortex clustering, with the same parameters as the notebook
 Step6E_phenotype_vortex.ipynb.
 """
 
+from spacemap_gui import terminal
 import hashlib
 import importlib.util
 import json
@@ -47,7 +48,6 @@ from .common import (
     get_low_expression_metric_help_text,
     get_low_expression_metric_label,
     logger,
-    get_marker_selection_help_text,
     get_marker_workspace_panel,
     render_method_marker_selection,
     get_normalization_flag_help_text,
@@ -61,7 +61,7 @@ from .common import (
     render_publication_heatmap,
     render_save_assignments,
     render_settings_export_import,
-    render_phenotyping_run_log_controls,
+    render_method_intro,
     begin_phenotyping_run_audit,
     finish_phenotyping_run_audit,
     normalize_phenotype_map_keys,
@@ -263,10 +263,11 @@ def _build_cluster_marker_score_map(
 
 
 def _log_vortex_step(step_number: str, title: str, details: str | None = None) -> None:
-    message = f"[Vortex] Step {step_number}: {title}"
+    message = f"Step {step_number}: {title}"
     if details:
         message = f"{message} | {details}"
     logger.info(message)
+    terminal.say("tab7", message, step="Vortex")
 
 
 def _build_umap_comparison_figure(
@@ -347,7 +348,7 @@ def _render_vortex_visual_validation(
     output_col: str,
     low_expr_cluster_id,
 ) -> None:
-    with st.expander("Visual Validation of Vortex Clusters", expanded=False):
+    with st.expander("Visual Validation of Representative Cells", expanded=True):
         st.caption(
             "Preview representative cells directly from Vortex cluster numbers before naming them, "
             "or switch to phenotype view after assignment."
@@ -609,39 +610,36 @@ def _reset_vortex_state(clear_run_state_only: bool = False) -> None:
 
 
 def _render_vortex_help_panel() -> None:
-    with st.expander("Vortex Quick Guide: Method, K Selection, and Outputs", expanded=False):
-        st.markdown(
-            """
-            **What Vortex/X-shift does**
+    st.markdown(
+        """
+        **What Vortex/X-shift does**
 
-            Vortex is a density-gradient clustering method. For each cell, it looks at a local
-            `k`-nearest-neighbor neighborhood, estimates density, and follows the steepest density
-            ascent to a local maximum. Cells converging to the same maximum become one cluster.
+        Vortex is a density-gradient clustering method. For each cell, it looks at a local
+        `k`-nearest-neighbor neighborhood, estimates density, and follows the steepest density
+        ascent to a local maximum. Cells converging to the same maximum become one cluster.
 
-            **How to use the K diagnostics**
+        **How to use the K diagnostics**
 
-            - `Cluster Count vs K`: larger `k` usually merges clusters and reduces fragmentation.
-            - `Silhouette vs K`: higher is better; use it comparatively, not as an absolute threshold.
-            - `Davies-Bouldin vs K`: lower is better; it favors more compact, better-separated clusters.
+        - `Cluster Count vs K`: larger `k` usually merges clusters and reduces fragmentation.
+        - `Silhouette vs K`: higher is better; use it comparatively, not as an absolute threshold.
+        - `Davies-Bouldin vs K`: lower is better; it favors more compact, better-separated clusters.
 
-            **Recommended workflow**
+        **Recommended workflow**
 
-            1. Start with auto-K enabled.
-            2. Inspect the K diagnostics and final cluster count.
-            3. Check the heatmap and UMAP/QC tabs for biological plausibility.
-            4. If satisfied, optionally lock `VORTEX_K` and disable auto-K for stable reruns.
-            """
-        )
+        1. Start with auto-K enabled.
+        2. Inspect the K diagnostics and final cluster count.
+        3. Check the heatmap and UMAP/QC tabs for biological plausibility.
+        4. If satisfied, optionally lock `VORTEX_K` and disable auto-K for stable reruns.
+        """
+    )
 
 
 def render_vortex(project_root: Path, global_input_path: str | None) -> None:
-    st.subheader("Vortex Clustering Phenotyping")
-    render_phenotyping_run_log_controls(Path(project_root), "vortex", "Vortex Clustering")
-    st.markdown(
-        "Professional Vortex/X-shift clustering with notebook-synchronized parameters, "
-        "interactive phenotype assignment, and diagnostic figures."
+    render_method_intro(
+        project_root, "vortex", "Vortex Phenotyping",
+        "Find clusters at the densest points of the data (X-shift), then name each cluster as a phenotype.",
+        _render_vortex_help_panel, notebook="Step6E_phenotype_vortex.ipynb", log_label="Vortex Clustering",
     )
-    _render_vortex_help_panel()
 
     cache_dir = project_root / "outputs/phenotyping/cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -713,7 +711,7 @@ def render_vortex(project_root: Path, global_input_path: str | None) -> None:
             norm_cols_local.append(norm_col)
         return norm_data, norm_cols_local
 
-    st.markdown("##### Input File Selection")
+    st.markdown("### 1. Input File")
     cached_input_dir = cached_params.get("input_dir", str(project_root / "outputs/batch_corrected"))
     cached_input_file = cached_params.get("input_file", "")
 
@@ -781,7 +779,7 @@ def render_vortex(project_root: Path, global_input_path: str | None) -> None:
         full_input_path,
     )
 
-    st.markdown("##### Marker Selection")
+    st.markdown("### 2. Marker Selection")
     st.caption(f"Select a Vortex subset from the shared panel. {marker_workspace_note}")
 
     if full_input_path and os.path.exists(full_input_path):
@@ -811,7 +809,8 @@ def render_vortex(project_root: Path, global_input_path: str | None) -> None:
         saved_markers=cached_params.get("markers", []),
     )
 
-    with st.expander("Configuration & Parameters", expanded=True):
+    st.markdown("### 3. Configuration")
+    with st.expander("Parameters", expanded=True):
         with st.form("vortex_config_form", clear_on_submit=False):
             col1, col2 = st.columns([1, 1])
 
@@ -827,7 +826,6 @@ def render_vortex(project_root: Path, global_input_path: str | None) -> None:
                 cell_id_col = st.selectbox(
                     "Cell ID Column",
                     cell_id_options,
-                    index=cell_id_options.index(st.session_state.get("vortex_cell_id_col", default_cell_id)) if st.session_state.get("vortex_cell_id_col", default_cell_id) in cell_id_options else 0,
                     format_func=lambda value: value or "(None)",
                     help=get_cell_id_column_help_text(),
                     key="vortex_cell_id_col",
@@ -843,7 +841,6 @@ def render_vortex(project_root: Path, global_input_path: str | None) -> None:
                 batch_id_col = st.selectbox(
                     "Batch ID Column",
                     batch_id_options,
-                    index=idx_batch_id,
                     format_func=lambda value: value or "(None)",
                     help=get_batch_id_column_help_text(),
                     key="vortex_batch_id_col",
@@ -1219,7 +1216,7 @@ def render_vortex(project_root: Path, global_input_path: str | None) -> None:
 
     if full_input_path and os.path.exists(full_input_path):
         st.divider()
-        st.markdown("##### Existing Vortex Results")
+        st.markdown("### 4. Load Previous Results (optional)")
 
         can_load_existing = False
         try:
@@ -1295,6 +1292,7 @@ def render_vortex(project_root: Path, global_input_path: str | None) -> None:
             st.caption("Timestamped messages mirrored from the shell terminal during the last Vortex run.")
             st.code("\n".join(existing_run_log), language=None)
 
+    st.markdown("### 5. Run Vortex Clustering")
     if st.button("Run Vortex Clustering", type="primary", disabled=(n_markers == 0), key="vortex_run_btn"):
         if not full_input_path or not os.path.exists(full_input_path):
             st.error("Please select a valid input file.")
@@ -1701,8 +1699,7 @@ def render_vortex(project_root: Path, global_input_path: str | None) -> None:
 
     if has_vortex_results:
         st.divider()
-        st.subheader("Interactive Visualization & Phenotype Assignment")
-        st.caption("Professional phenotype assignment interface synchronized with the Vortex notebook workflow")
+        st.subheader("Results & Phenotype Assignment")
 
         temp_file = Path(str(vortex_temp_file))
         df_results = read_dataframe_parquet_safe(

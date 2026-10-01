@@ -85,10 +85,10 @@ by anyone:
   downloaded from Hugging Face or imported from a folder offline.
 - **The local model server runs on CPU.** It previously refused to start
   without CUDA.
-- **`cluster.py`** replaced `biohpc.py` — Slurm support with no site names,
+- **`cluster.py`** provides portable Slurm support with no site names,
   hidden unless `sbatch` exists.
 - `deepcell` moved out of the base install (it pulls TensorFlow).
-- Packaging, Docker, CI, MIT licence, citation metadata, contributor docs.
+- Packaging, Docker, CI, license and citation metadata, contributor docs.
 
 **A dependency fix worth knowing:** `pip install .` was impossible.
 `palom` requires `zarr>=2.10,<2.15` and `numpy<2.0`, while the project asked for
@@ -161,9 +161,19 @@ bottleneck because the cost was assumed. Manual Reference now prints a timed
 trace of every stage — use it. `SPACEMAP_TRACE=0` silences it.
 
 ```
-[MR 17:15:49] -> load columns   n=27
-[MR 17:15:49] <- load columns: done in 3.0s
+2026-09-22 17:15:49 | Tab 7 Phenotyping | Manual Reference | Started: load columns   n=27
+2026-09-22 17:15:52 | Tab 7 Phenotyping | Manual Reference | Finished: load columns (3.0 s)
 ```
+
+Every tab prints in this format through `spacemap_gui/terminal.py`; use
+`terminal.say(tab, message, step=...)` and `terminal.timed(...)` rather than
+`print`.
+
+**Run log.** `spacemap_gui/run_log.py` records every action around `pg.run()`
+in `app.py` into `<project>/logs/run_log.csv` (time, CPU, peak RAM and GPU,
+settings changed). A tab needs no wiring; a job in its own process calls
+`run_log.record_run` itself, as the Leiden worker does. There is one switch per
+tab, `tabN_create_log`; do not add another log checkbox.
 
 **An isolated benchmark is not the user's experience.** "This function is 200×
 faster" is not "the screen is fast". Say which you measured.
@@ -179,6 +189,14 @@ full frame must bypass it and live in `session_state`.
 **`st.button` is illegal inside `st.form`.** The test suite never renders these
 screens, so it reaches the user as a traceback. `scripts/check_streamlit_forms.py`
 catches it.
+
+**A setting is saved only if its control has a tab-prefixed key.**
+`persistence.sync_project_state` saves whatever is in `session_state` under a
+key that `get_tab_affected_from_key` maps to a tab and `is_transient_key` does
+not reject. A control without `key=`, or with a prefix no tab owns (Tab 3's old
+`tma_*`), is silently lost on reload. Seed keyed controls with
+`ui_utils.seed_widget_state` and omit `value=`/`default=`.
+`tests/test_widget_keys_persist.py` fails on any literal key that would be lost.
 
 **Inspect what you stage.** A careless `git add -A` committed 80 files of a
 user's analysis projects, because `.gitignore` said `projects/` while SPACEMAP
@@ -210,16 +228,39 @@ segmentation spillover or a corrected-vs-raw column question. Unresolved.
 images at ~0.6 s each. Showing them one at a time would let labelling start
 after a second. The loop collects into `results_to_store` before rendering.
 
+**Resolve's Z1 score mode is a relative rule.** Positive means "Z1 above 1.5
+within the batch" (`ph_thres_utils.apply_z1_positivity`). Abundant markers and
+markers with a few very bright cells are under-called. It is a fallback for
+projects without threshold tables; it has not been validated against images.
+
+**Saved-but-unwritten columns.** Phenotype saves go to
+`spacemap.pending_columns` (whole columns beside the CSV, keyed by table
+fingerprint, with the cell IDs kept for re-applying) and reach the CSV only
+when the user presses "Write pending changes into the CSV". Anything that
+reads the CSV directly -- notebooks, `pd.read_csv` in older code -- does not
+see them until then; the file panel says so. Reads through `dataio` do.
+
+**Why the Leiden worker still reads the CSV with pandas.** pyarrow (which
+`dataio` and the Parquet copy use) differs from pandas in the last binary digit
+for about 1 value in 10 million, and types an all-blank column as text where
+pandas reads float. Switching the worker would save about 2.5 of its 22 minutes
+but could shift cluster assignments against earlier runs. It is a decision for
+the lab, not a silent change.
+
 **Tab 9 `heatmap.py` still reads broadly**, deliberately — it scans many columns
 for low-cardinality filter columns. Narrowing it needs care.
 
-**Not pushed.** 18 commits ahead of `origin/main`.
+**Publication status.** The GitHub repository is private. The authors plan to
+make it accessible when the manuscript is submitted. Confirm the reviewed code
+revision and its license files are on the published branch before release.
 
-**Licence undecided.** The repo ships MIT, but UTSW policy INP-101 requires an
-academic-use-only notice by default; anything else needs written permission from
-the Office for Technology Development. **Do not make the repository public
-until that is settled.** Draft enquiry:
-`Publications/SPACEMAP_OTD_EMAIL_DRAFT.md`.
+**Licence.** SPACEMAP uses the UT Southwestern academic-research-only terms in
+[LICENSE](../LICENSE). Commercial use and redistribution, including any use or
+redistribution by a for-profit entity, are prohibited. The
+[UT Southwestern release policy](https://www.utsw.edu/about-us/administrative-offices/technology-development/agreements/open-source-release-of-software.html)
+requires express written permission from the Office for Technology Development
+for a different license. Third-party dependencies and model weights retain their
+own terms.
 
 ---
 
@@ -248,16 +289,22 @@ python -m ruff check src scripts
 python scripts/check_no_local_paths.py
 python scripts/check_streamlit_forms.py
 
-# 4. Refresh the change ledger.
-python scripts/update_ledger.py
+# 4. Review the changed files.
+git diff --stat
 
 # 5. Inspect what you are about to commit. Do not skip this.
-git add -A
+git add path/to/changed_file.py path/to/changed_document.md  # use your actual files
 git status
 git diff --cached --name-only
 
 # 6. Commit, with a Why line.
 git commit
+
+# Record that commit, then save the ledger separately.
+python scripts/update_ledger.py
+git add docs/LEDGER.md
+git commit -m "docs: refresh change ledger" -m "Why: record the reviewed changes."
+python scripts/update_ledger.py --check
 
 # 7. Push.
 git push -u origin fix/short-description
@@ -319,7 +366,7 @@ SSO, click **Configure SSO → Authorize** next to the token.
 
 ### What CI checks
 
-Lint; tests on Python 3.10–3.12; an install with **no extras** proving the
+Lint; tests on Python 3.10 with and without AI extras; an install with **no extras** proving the
 pipeline works without the AI packages; the ledger being current; no
 machine-specific paths; no buttons inside Streamlit forms; notebook outputs
 stripped.
@@ -343,6 +390,6 @@ from spacemap import dataio;  dataio.load(path, columns=["phenotype_leiden"])
 from spacemap import labels;  labels.pending_count(path)
 ```
 
-Test baseline: **749 passed, 16 skipped** in the published repo;
+Test baseline: **786 passed, 13 skipped** in the published repo (2026-09-22);
 **760 passed, 2 skipped** in `SPACEMAP_AI` (which has assistant tests the
 published repo skips without the AI extras).

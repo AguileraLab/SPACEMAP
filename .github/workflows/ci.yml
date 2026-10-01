@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -17,7 +18,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.10"
       - run: python -m pip install ruff
       - run: python -m ruff check src scripts
 
@@ -30,7 +31,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.10"
 
       - name: Ledger is up to date
         run: python scripts/update_ledger.py --check
@@ -63,29 +64,36 @@ jobs:
           PY
 
   test:
-    name: Tests (Python ${{ matrix.python-version }})
+    name: Tests (Python 3.10, ${{ matrix.extra }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12"]
+        extra: ["base", "ai"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.10"
           cache: pip
 
       - name: Install system libraries
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            libgl1 libglib2.0-0 libgeos-dev libproj-dev proj-bin gdal-bin libgdal-dev
+            libgl1 libglib2.0-0 libopenslide0 libgeos-dev libproj-dev proj-bin gdal-bin libgdal-dev
 
       - name: Install SPACEMAP
+        env:
+          SPACEMAP_TEST_EXTRA: ${{ matrix.extra }}
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e . pytest
+          python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -e . --group dev
+          if [ "$SPACEMAP_TEST_EXTRA" = "ai" ]; then
+            python -m pip install -e ".[ai]"
+          fi
+          python -m pip check
 
       - name: Run tests
         # The assistant is off, which is the configuration a new user gets.
@@ -94,22 +102,28 @@ jobs:
         run: python -m pytest -q
 
   import-without-extras:
-    name: Starts with no AI extras
+    name: Release wheel and startup without AI extras
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.10"
           cache: pip
       - name: Install system libraries
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            libgl1 libglib2.0-0 libgeos-dev libproj-dev proj-bin gdal-bin libgdal-dev
+            libgl1 libglib2.0-0 libopenslide0 libgeos-dev libproj-dev proj-bin gdal-bin libgdal-dev
       - run: |
           python -m pip install --upgrade pip
-          python -m pip install -e .
+          python -m pip install build
+          python -m build
+          python scripts/check_release_artifacts.py
+          python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install dist/*.whl
+          python -m pip check
+          spacemap --version
       - name: The pipeline imports and the assistant reports itself off
         run: |
           python - <<'PY'
@@ -125,3 +139,40 @@ jobs:
           assert launch.app_path().is_file()
           print("GUI entry point present.")
           PY
+      - name: Open the installed GUI away from the checkout
+        working-directory: ${{ runner.temp }}
+        run: python "$GITHUB_WORKSPACE/scripts/check_installed_app.py"
+
+  frontend:
+    name: Bundled heatmap assets are current
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Rebuild the shipped widget
+        working-directory: src/spacemap_gui/tabs/tab7_phenotyping/heatmap_click_selector/frontend
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm run build
+          git diff --exit-code -- build
+          test -z "$(git ls-files --others --exclude-standard -- build)"
+
+  docker:
+    name: Docker CPU build and startup
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Validate Compose configuration
+        run: docker compose config --quiet
+      - name: Build the CPU image
+        run: docker build --tag spacemap:validation .
+      - name: Validate installed app, health and volumes
+        run: python scripts/check_container.py --image spacemap:validation

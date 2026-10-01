@@ -16,16 +16,15 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from spacemap import dataio as _dataio
 import streamlit as st
 import matplotlib.pyplot as plt
 
 from .common import (
     logger,
-    Timer,
     get_batch_id_column_help_text,
     get_cell_id_column_help_text,
     get_marker_list,
-    get_marker_selection_help_text,
     get_marker_workspace_panel,
     render_method_marker_selection,
     normalize_optional_column_name,
@@ -45,7 +44,7 @@ from .common import (
     render_data_filter_ui,
     apply_data_filter,
     render_settings_export_import,
-    render_phenotyping_run_log_controls,
+    render_method_intro,
     begin_phenotyping_run_audit,
     finish_phenotyping_run_audit,
     resolve_notebook_marker_defaults,
@@ -54,6 +53,7 @@ from .common import (
     AUTO_THRESHOLD_METHODS,
     compute_auto_thresholds,
 )
+from spacemap_gui import terminal
 
 try:
     from spacemap_gui.cell_visualizer import CellVisualizer
@@ -115,6 +115,11 @@ except Exception:
     _HAS_SCIMAP = False
 
 
+def _log_console(message: str, level: str = "info") -> None:
+    """One timestamped terminal line for this tab (see spacemap_gui.terminal)."""
+    terminal.say('tab7', message, step='SCIMAP', level=level)
+
+
 def _dataio_load(path, columns=None):
     """Read the unified table through the shared loader.
 
@@ -155,7 +160,7 @@ def _extract_markers_base_from_step6d() -> list[str]:
                     pass
         return []
     except Exception as e:
-        print(f"Warning: Could not extract MARKERS_BASE from Step6D: {e}")
+        _log_console(f"Warning: Could not extract MARKERS_BASE from Step6D: {e}", level="warning")
         return []
 
 
@@ -216,7 +221,7 @@ def _extract_scimap_config() -> dict:
 
         return config
     except Exception as e:
-        print(f"Warning: Could not extract config from Step6D: {e}")
+        _log_console(f"Warning: Could not extract config from Step6D: {e}", level="warning")
         return {}
 
 
@@ -557,49 +562,50 @@ def _thresholds_from_table(
 
 
 def _render_scimap_help_panel() -> None:
-    with st.expander("SCIMAP Quick Guide: Workflow, Strategy Terms, and Outputs", expanded=False):
-        st.markdown(
-            "SCIMAP in this tab follows the same pattern as the notebook: `log1p -> rescale -> phenotype_cells`. "
-            "After rescaling, values above the gate, usually `0.5`, are treated as positive and values below it are treated as negative."
-        )
-        st.markdown(
-            "1. Choose the input file and confirm the marker list.\n"
-            "2. Load, import, or compute thresholds so raw intensity becomes a meaningful positive/negative signal.\n"
-            "3. Build the phenotype strategy table, where each row describes one phenotype with marker rules.\n"
-            "4. Run SCIMAP to assign a phenotype label to each cell.\n"
-            "5. Review the results, rename or merge phenotypes if needed, inspect cells, and export the output."
-        )
-        st.markdown(
-            "| Strategy value | Meaning in the phenotype table | Typical use |\n"
-            "| --- | --- | --- |\n"
-            "| `pos` | Marker should be positive for this phenotype. With multiple `pos` markers, partial matches can still surface as likely or intermediate assignments for later review. | Softer defining markers or review-driven refinement. |\n"
-            "| `neg` | Marker should be negative for this phenotype. | Excluding nearby phenotypes that share many positive markers. |\n"
-            "| `allpos` | All markers marked `allpos` in that row must be positive. | Strict core identity markers. |\n"
-            "| `allneg` | All markers marked `allneg` in that row must be negative. | Strict exclusion rules. |\n"
-            "| `anypos` | At least one marker marked `anypos` in that row must be positive. | Lineage pools where one of several markers is enough. |\n"
-            "| `anyneg` | At least one marker marked `anyneg` in that row must be negative. | Flexible exclusion when one negative marker is sufficient. |"
-        )
-        st.markdown(
-            "Useful strategy-table rules:\n"
-            "- Leave a marker cell blank when that marker should not participate in that phenotype row.\n"
-            "- Prefer positive markers when possible; negatives work best as exclusion criteria.\n"
-            "- Use `allpos` and `allneg` for strict identities, and `anypos` / `anyneg` for broader lineage logic.\n"
-            "- If your workflow file uses a group column, rows under `all` apply globally while subgroup rows can refine broader classes."
-        )
-        st.markdown(
-            "Outputs from this panel:\n"
-            "- The phenotype label column, usually `phenotype_scimap`, is the per-cell result used downstream.\n"
-            "- `scimap_cluster` keeps the numeric phenotype id for traceability and save-back operations.\n"
-            "- The Heatmap & Statistics section uses the current phenotype names, including any renamed or merged labels from `Phenotype New Name`.\n"
-            "- Cell visualization lets you inspect representative cells for each phenotype to verify thresholds and strategy rows.\n"
-            "- Export and save-back use the phenotype label column for downstream analysis; keeping the numeric cluster column is useful as an audit trail."
-        )
+    st.markdown(
+        "SCIMAP in this tab follows the same pattern as the notebook: `log1p -> rescale -> phenotype_cells`. "
+        "After rescaling, values above the gate, usually `0.5`, are treated as positive and values below it are treated as negative."
+    )
+    st.markdown(
+        "1. Choose the input file and confirm the marker list.\n"
+        "2. Load, import, or compute thresholds so raw intensity becomes a meaningful positive/negative signal.\n"
+        "3. Build the phenotype strategy table, where each row describes one phenotype with marker rules.\n"
+        "4. Run SCIMAP to assign a phenotype label to each cell.\n"
+        "5. Review the results, rename or merge phenotypes if needed, inspect cells, and export the output."
+    )
+    st.markdown(
+        "| Strategy value | Meaning in the phenotype table | Typical use |\n"
+        "| --- | --- | --- |\n"
+        "| `pos` | Marker should be positive for this phenotype. With multiple `pos` markers, partial matches can still surface as likely or intermediate assignments for later review. | Softer defining markers or review-driven refinement. |\n"
+        "| `neg` | Marker should be negative for this phenotype. | Excluding nearby phenotypes that share many positive markers. |\n"
+        "| `allpos` | All markers marked `allpos` in that row must be positive. | Strict core identity markers. |\n"
+        "| `allneg` | All markers marked `allneg` in that row must be negative. | Strict exclusion rules. |\n"
+        "| `anypos` | At least one marker marked `anypos` in that row must be positive. | Lineage pools where one of several markers is enough. |\n"
+        "| `anyneg` | At least one marker marked `anyneg` in that row must be negative. | Flexible exclusion when one negative marker is sufficient. |"
+    )
+    st.markdown(
+        "Useful strategy-table rules:\n"
+        "- Leave a marker cell blank when that marker should not participate in that phenotype row.\n"
+        "- Prefer positive markers when possible; negatives work best as exclusion criteria.\n"
+        "- Use `allpos` and `allneg` for strict identities, and `anypos` / `anyneg` for broader lineage logic.\n"
+        "- If your workflow file uses a group column, rows under `all` apply globally while subgroup rows can refine broader classes."
+    )
+    st.markdown(
+        "Outputs from this panel:\n"
+        "- The phenotype label column, usually `phenotype_scimap`, is the per-cell result used downstream.\n"
+        "- `scimap_cluster` keeps the numeric phenotype id for traceability and save-back operations.\n"
+        "- The Heatmap & Statistics section uses the current phenotype names, including any renamed or merged labels from `Phenotype New Name`.\n"
+        "- Cell visualization lets you inspect representative cells for each phenotype to verify thresholds and strategy rows.\n"
+        "- Export and save-back use the phenotype label column for downstream analysis; keeping the numeric cluster column is useful as an audit trail."
+    )
 
 
 def render_scimap(project_root: Path, global_input_path: str | None) -> None:
-    st.subheader("SCIMAP Phenotyping")
-    render_phenotyping_run_log_controls(Path(project_root), "scimap", "SCIMAP Phenotyping")
-    st.markdown("Notebook-aligned SCIMAP workflow (Log1p → Rescale → Gate).")
+    render_method_intro(
+        project_root, "scimap", "SCIMAP Phenotyping",
+        "Rescale each marker around its gate, then label cells from a phenotype strategy table.",
+        _render_scimap_help_panel, notebook="Step6D_phenotype_SCIMAP.ipynb", log_label="SCIMAP Phenotyping",
+    )
     _render_scimap_help_panel()
 
     cache_dir = project_root / "outputs/phenotyping/cache"
@@ -629,7 +635,7 @@ def render_scimap(project_root: Path, global_input_path: str | None) -> None:
 
     notebook_config = _extract_scimap_config()
 
-    st.markdown("##### Input File Selection")
+    st.markdown("### 1. Input File")
     use_global = st.checkbox("Use Global Input File", value=cached_params.get("use_global", True), key="scimap_use_global")
     full_input_path = global_input_path
 
@@ -702,7 +708,7 @@ def render_scimap(project_root: Path, global_input_path: str | None) -> None:
         st.warning("No markers selected. Please select markers above before running.")
 
     st.divider()
-    st.markdown("### 3. Configuration (Notebook Synchronized)")
+    st.markdown("### 3. Configuration")
 
     if "scimap_config" not in st.session_state:
         # Migrate legacy 'apply_thresholds' boolean → threshold_mode string
@@ -1048,7 +1054,7 @@ def render_scimap(project_root: Path, global_input_path: str | None) -> None:
     else:
         tcol1, tcol2, tcol3 = st.columns([1, 1, 2])
         compute_auto = tcol1.button(
-            f"🔬 Compute {_active_mode} Thresholds",
+            f"Compute {_active_mode} Thresholds",
             key="scimap_compute_auto_thresholds",
             type="primary",
         )
@@ -1061,7 +1067,7 @@ def render_scimap(project_root: Path, global_input_path: str | None) -> None:
         batch_values = []
         if full_input_path and os.path.exists(full_input_path) and batch_col:
             try:
-                batch_values = pd.read_csv(full_input_path, usecols=[batch_col])[batch_col].dropna().unique().tolist()
+                batch_values = _dataio.load(full_input_path, columns=[batch_col])[batch_col].dropna().unique().tolist()
             except Exception:
                 batch_values = []
         st.session_state["scimap_threshold_table_draft"] = _load_thresholds_table(
@@ -1108,7 +1114,7 @@ def render_scimap(project_root: Path, global_input_path: str | None) -> None:
     # --- Import Universal Gating Thresholds (from Threshold Gating tab) ---
     # This section is available in ALL threshold modes.
     if not _is_none:
-        with st.expander("📥 Import Universal Gating Thresholds (from Threshold Tab)", expanded=False):
+        with st.expander("Import Universal Gating Thresholds (from Threshold Tab)", expanded=False):
             st.caption(
                 "Import universal (no-batch) thresholds exported by the **Threshold Gating** tool. "
                 "The same threshold value will be applied to **every batch** in your data."
@@ -1133,8 +1139,8 @@ def render_scimap(project_root: Path, global_input_path: str | None) -> None:
                     _batch_vals = []
                     if full_input_path and os.path.exists(full_input_path) and batch_col:
                         try:
-                            _batch_vals = pd.read_csv(
-                                full_input_path, usecols=[batch_col]
+                            _batch_vals = _dataio.load(
+                                full_input_path, columns=[batch_col]
                             )[batch_col].dropna().unique().tolist()
                         except Exception:
                             pass
@@ -1310,12 +1316,12 @@ def render_scimap(project_root: Path, global_input_path: str | None) -> None:
     st.markdown("### 6. Run SCIMAP Pipeline")
 
     if not selected_markers:
-        st.warning("⚠️ Please select markers first")
+        st.warning("Please select markers first")
         return
 
     if st.button("Run SCIMAP Pipeline", type="primary", width="stretch", key="scimap_run_btn"):
         if not full_input_path or not Path(full_input_path).exists():
-            st.error("❌ Please select a valid input file")
+            st.error("Please select a valid input file")
             return
 
         if not _HAS_SCIMAP or manual_rescale_scimap is None:
@@ -1354,11 +1360,11 @@ def render_scimap(project_root: Path, global_input_path: str | None) -> None:
         with st.status("Running SCIMAP Pipeline...", expanded=True) as status:
             try:
                 status.write(f"[{_timestamp()}] Loading input data...")
-                print(f"[{_timestamp()}] Loading input data...")
+                _log_console(f"Loading input data...")
                 df = _dataio_load(full_input_path)
                 audit_input_rows = len(df)
                 status.write(f"[{_timestamp()}] Loaded {len(df):,} cells")
-                print(f"[{_timestamp()}] Loaded {len(df):,} cells")
+                _log_console(f"Loaded {len(df):,} cells")
 
                 _scimap_filter = {
                     'enable_filter': cfg.get('enable_filter', False),
@@ -1367,7 +1373,7 @@ def render_scimap(project_root: Path, global_input_path: str | None) -> None:
                 }
                 df = apply_data_filter(df, _scimap_filter, logger_fn=lambda msg: (
                     status.write(f"[{_timestamp()}] {msg}"),
-                    print(f"[{_timestamp()}] SCIMAP: {msg}")
+                    _log_console(msg)
                 ))
 
                 # Drop rows containing NaN/Inf in selected markers
@@ -1376,7 +1382,7 @@ def render_scimap(project_root: Path, global_input_path: str | None) -> None:
                     valid_mask = ~df[selected_markers].apply(pd.to_numeric, errors='coerce').isna().any(axis=1)
                     df = df[valid_mask].copy()
                     status.write(f"[{_timestamp()}] Filtered out {original_len_nan - len(df):,} cells containing NaN/Inf in selected markers. Remaining: {len(df):,} cells.")
-                    print(f"[{_timestamp()}] SCIMAP: Filtered out {original_len_nan - len(df):,} cells containing NaN/Inf in selected markers. Remaining: {len(df):,} cells.")
+                    _log_console(f"Filtered out {original_len_nan - len(df):,} cells containing NaN/Inf in selected markers. Remaining: {len(df):,} cells.")
                     if len(df) == 0:
                         status.error("No cells remain after filtering out NaN/Inf values in selected markers.")
                         return
@@ -1386,9 +1392,7 @@ def render_scimap(project_root: Path, global_input_path: str | None) -> None:
                     status.write(
                         f"[{_timestamp()}] Batch column '{requested_batch_col}' not found. Processing the dataset globally."
                     )
-                    print(
-                        f"[{_timestamp()}] SCIMAP: Batch column '{requested_batch_col}' not found. Processing globally."
-                    )
+                    _log_console(f"Batch column '{requested_batch_col}' not found. Processing globally.")
 
                 df_results_list = []
                 if batch_col:
@@ -1397,17 +1401,17 @@ def render_scimap(project_root: Path, global_input_path: str | None) -> None:
                         for batch_id in df[batch_col].dropna().astype(str).unique().tolist()
                     ]
                     status.write(f"[{_timestamp()}] Processing {len(batch_frames)} batches")
-                    print(f"[{_timestamp()}] Processing {len(batch_frames)} batches")
+                    _log_console(f"Processing {len(batch_frames)} batches")
                 else:
                     batch_frames = [("global", df.copy())]
                     status.write(f"[{_timestamp()}] Processing the full dataset without batch grouping")
-                    print(f"[{_timestamp()}] SCIMAP: Processing the full dataset without batch grouping")
+                    _log_console(f"Processing the full dataset without batch grouping")
 
                 for batch_id, batch_df in batch_frames:
                     if batch_df.empty:
                         continue
 
-                    print(f"[{_timestamp()}] Batch {batch_id}: {len(batch_df):,} cells")
+                    _log_console(f"Batch {batch_id}: {len(batch_df):,} cells")
 
                     markers_present = [m for m in selected_markers if m in batch_df.columns]
                     if not markers_present:
@@ -1415,13 +1419,11 @@ def render_scimap(project_root: Path, global_input_path: str | None) -> None:
                         df_results_list.append(batch_df)
                         continue
 
-                    print(
-                        f"[{_timestamp()}] Batch {batch_id}: {len(markers_present)} markers present (e.g., {', '.join(markers_present[:5])})"
-                    )
+                    _log_console(f"Batch {batch_id}: {len(markers_present)} markers present (e.g., {', '.join(markers_present[:5])})")
 
                     thresholds = {}
                     if apply_thresholds:
-                        print(f"[{_timestamp()}] Batch {batch_id}: Threshold mode = {run_mode}")
+                        _log_console(f"Batch {batch_id}: Threshold mode = {run_mode}")
 
                         # 1) Try thresholds from the editable table (covers both
                         #    predefined CSV and pre-computed auto thresholds)
@@ -1430,15 +1432,11 @@ def render_scimap(project_root: Path, global_input_path: str | None) -> None:
                             if batch_col is None and thresholds_table is not None:
                                 table_for_lookup = thresholds_table.drop(columns=["batch_id", "Threshold_File"], errors="ignore")
                             thresholds = _thresholds_from_table(table_for_lookup, batch_id, markers_present)
-                            print(
-                                f"[{_timestamp()}] Batch {batch_id}: Threshold table hits = {len(thresholds)}"
-                            )
+                            _log_console(f"Batch {batch_id}: Threshold table hits = {len(thresholds)}")
                             if not thresholds and thresholds_table is not None and not thresholds_table.empty:
                                 try:
                                     sample_batch_ids = thresholds_table["batch_id"].astype(str).head(3).tolist()
-                                    print(
-                                        f"[{_timestamp()}] Batch {batch_id}: No table match. Sample table batch_id: {', '.join(sample_batch_ids)}"
-                                    )
+                                    _log_console(f"Batch {batch_id}: No table match. Sample table batch_id: {', '.join(sample_batch_ids)}")
                                 except Exception:
                                     pass
 
@@ -1452,9 +1450,7 @@ def render_scimap(project_root: Path, global_input_path: str | None) -> None:
                                     threshold_file = threshold_files[0]
                             if threshold_file and threshold_file.exists():
                                 try:
-                                    print(
-                                        f"[{_timestamp()}] Batch {batch_id}: Loading threshold file {threshold_file.name}"
-                                    )
+                                    _log_console(f"Batch {batch_id}: Loading threshold file {threshold_file.name}")
                                     tdf = pd.read_csv(threshold_file)
                                     thresholds = _extract_thresholds_from_csv(
                                         tdf,
@@ -1464,9 +1460,7 @@ def render_scimap(project_root: Path, global_input_path: str | None) -> None:
                                         polygon_prefix or None,
                                         cfg.get("threshold_statistic", "median"),
                                     )
-                                    print(
-                                        f"[{_timestamp()}] Batch {batch_id}: Threshold file hits = {len(thresholds)}"
-                                    )
+                                    _log_console(f"Batch {batch_id}: Threshold file hits = {len(thresholds)}")
                                 except Exception:
                                     thresholds = {}
 
@@ -1475,21 +1469,15 @@ def render_scimap(project_root: Path, global_input_path: str | None) -> None:
                         if not thresholds and run_mode_key != "predefined":
                             auto_func = AUTO_THRESHOLD_METHODS.get(run_mode_key)
                             if auto_func is not None:
-                                print(
-                                    f"[{_timestamp()}] Batch {batch_id}: Computing {run_mode} on-the-fly"
-                                )
+                                _log_console(f"Batch {batch_id}: Computing {run_mode} on-the-fly")
                                 for m in markers_present:
                                     if m in batch_df.columns:
                                         val = auto_func(batch_df[m].values)
                                         if val > 0:
                                             thresholds[m] = val
-                                print(
-                                    f"[{_timestamp()}] Batch {batch_id}: Auto-computed {len(thresholds)} thresholds"
-                                )
+                                _log_console(f"Batch {batch_id}: Auto-computed {len(thresholds)} thresholds")
 
-                        print(
-                            f"[{_timestamp()}] Batch {batch_id}: Threshold keys (sample) = {', '.join(list(thresholds.keys())[:5]) if thresholds else 'none'}"
-                        )
+                        _log_console(f"Batch {batch_id}: Threshold keys (sample) = {', '.join(list(thresholds.keys())[:5]) if thresholds else 'none'}")
 
                         if not thresholds:
                             batch_df[output_col] = unclassified_label
@@ -1508,9 +1496,7 @@ def render_scimap(project_root: Path, global_input_path: str | None) -> None:
                                 thresholds_for_markers[m] = float(val)
                             except Exception:
                                 continue
-                        print(
-                            f"[{_timestamp()}] Batch {batch_id}: Thresholds mapped to markers = {len(thresholds_for_markers)}"
-                        )
+                        _log_console(f"Batch {batch_id}: Thresholds mapped to markers = {len(thresholds_for_markers)}")
                         if not thresholds_for_markers:
                             batch_df[output_col] = unclassified_label
                             df_results_list.append(batch_df)
@@ -1534,9 +1520,7 @@ def render_scimap(project_root: Path, global_input_path: str | None) -> None:
                             f"[{_timestamp()}] Batch {batch_id}: No-threshold mode — values anchored at 0."
                             " Ensure data is background-subtracted for this mode to be meaningful."
                         )
-                        print(
-                            f"[{_timestamp()}] Batch {batch_id}: None mode — using 0 as gate anchor"
-                        )
+                        _log_console(f"Batch {batch_id}: None mode — using 0 as gate anchor")
                         adata_scaled.X = manual_rescale_scimap(adata, apply_thresholds=False)
                     elif apply_thresholds and thresholds_for_markers:
                         log_thresholds = {m: np.log1p(v) for m, v in thresholds_for_markers.items()}
@@ -1554,16 +1538,12 @@ def render_scimap(project_root: Path, global_input_path: str | None) -> None:
                                         col = col.toarray().ravel()
                                     gate_cover[m] = float(np.mean(col >= gates.loc[m]))
                             if gate_cover and all(v < 0.01 for v in gate_cover.values()):
-                                print(
-                                    f"[{_timestamp()}] Warning: <1% of values exceed gates for batch {batch_id}. "
-                                    "Check threshold scale or log1p setting."
-                                )
+                                _log_console(f"Warning: <1% of values exceed gates for batch {batch_id}. "
+                                    "Check threshold scale or log1p setting.", level="warning")
                             elif gate_cover:
                                 top_low = sorted(gate_cover.items(), key=lambda kv: kv[1])[:5]
-                                print(
-                                    f"[{_timestamp()}] Batch {batch_id}: Gate coverage (lowest 5) = "
-                                    + ", ".join([f"{m}:{v:.2%}" for m, v in top_low])
-                                )
+                                _log_console(f"Batch {batch_id}: Gate coverage (lowest 5) = "
+                                    + ", ".join([f"{m}:{v:.2%}" for m, v in top_low]))
                         except Exception:
                             pass
                         adata_scaled.X = manual_rescale_scimap(adata, gates, apply_thresholds=True)
@@ -1607,10 +1587,8 @@ def render_scimap(project_root: Path, global_input_path: str | None) -> None:
                         if _unique and _unique.issubset(_GATE_VALS):
                             _drop_cols.append(_sc)
                     if _drop_cols:
-                        print(
-                            f"[{_timestamp()}] Batch {batch_id}: Dropping unresolvable "
-                            f"marker strategy columns: {_drop_cols}"
-                        )
+                        _log_console(f"Batch {batch_id}: Dropping unresolvable "
+                            f"marker strategy columns: {_drop_cols}")
                         batch_strategy = batch_strategy.drop(columns=_drop_cols)
 
                     sm.tl.phenotype_cells(
@@ -1627,10 +1605,8 @@ def render_scimap(project_root: Path, global_input_path: str | None) -> None:
 
                     try:
                         ph_counts = batch_df[output_col].value_counts(dropna=False).head(5)
-                        print(
-                            f"[{_timestamp()}] Batch {batch_id}: Top phenotypes = "
-                            + ", ".join([f"{k} ({v:,})" for k, v in ph_counts.items()])
-                        )
+                        _log_console(f"Batch {batch_id}: Top phenotypes = "
+                            + ", ".join([f"{k} ({v:,})" for k, v in ph_counts.items()]))
                     except Exception:
                         pass
 
@@ -1640,7 +1616,7 @@ def render_scimap(project_root: Path, global_input_path: str | None) -> None:
 
                 df_results = pd.concat(df_results_list, ignore_index=True)
                 status.write(f"[{_timestamp()}] SCIMAP phenotyping complete")
-                print(f"[{_timestamp()}] SCIMAP phenotyping complete")
+                _log_console(f"SCIMAP phenotyping complete")
 
                 unique_phenotypes = sorted([p for p in df_results[output_col].unique() if p != "Unassigned"])
                 pheno_to_cluster = {p: i for i, p in enumerate(unique_phenotypes)}
@@ -1701,7 +1677,7 @@ def render_scimap(project_root: Path, global_input_path: str | None) -> None:
 
     if "scimap_temp_file" in st.session_state and Path(st.session_state["scimap_temp_file"]).exists():
         st.divider()
-        st.subheader("Results & Phenotype Refinement")
+        st.subheader("Results & Phenotype Assignment")
         st.caption("Interactive visualization and export of SCIMAP phenotyping results")
 
         temp_file = st.session_state["scimap_temp_file"]
@@ -1892,7 +1868,7 @@ def render_scimap(project_root: Path, global_input_path: str | None) -> None:
     # --- VISUAL VALIDATION COMPONENT (Ported from Leiden) ---
     if st.session_state.get('viz_enabled', True):
         st.divider()
-        with st.expander("Visual Validation of Phenotypes", expanded=True):
+        with st.expander("Visual Validation of Representative Cells", expanded=True):
             st.markdown("#### Visualize Representative Cells")
             st.caption("Inspect random cells from specific phenotypes to validate assignments.")
             
@@ -2105,7 +2081,7 @@ def render_scimap(project_root: Path, global_input_path: str | None) -> None:
                                                 }
                                                 pd.DataFrame([meta_rec]).to_csv(csv_path, mode='a', header=not csv_path.exists(), index=False)
                                             except Exception as e:
-                                                print(f"Auto-save error: {e}")
+                                                _log_console(f"Auto-save error: {e}", level="error")
                                             
                                             plt.close(fig)
                                         except Exception as e:

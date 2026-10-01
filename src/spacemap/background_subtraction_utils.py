@@ -1,4 +1,4 @@
-from typing import Tuple, Set
+from typing import Tuple
 from typing import Union, List, Optional, Any, Dict
 """
 Utility functions for background subtraction in OME-TIFF images.
@@ -13,7 +13,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from contextlib import contextmanager
 import zarr
-from spacemap.utils import log_time, create_ome_metadata, hex_to_rgb, get_channel_info_qptiff, parse_xml
+from spacemap.utils import log_time, create_ome_metadata, hex_to_rgb, get_channel_info_qptiff
 
 
 SUPPORTED_IMAGE_EXTENSIONS = ('.ome.tiff', '.ome.tif', '.qptiff', '.tiff', '.tif')
@@ -79,6 +79,15 @@ def _parse_ome_color(color_value) -> Tuple[int, int, int]:
     if packed < 0:
         packed += 2**32
     return ((packed >> 24) & 0xFF, (packed >> 16) & 0xFF, (packed >> 8) & 0xFF)
+
+
+def _exposure_ms(value, unit) -> str | None:
+    """An OME exposure time in whole milliseconds, as SPACEMAP shows exposures."""
+    factor = {"s": 1000.0, "ms": 1.0, "µs": 0.001, "us": 0.001, "ns": 1e-6, "min": 60000.0}.get(str(unit or "s"), None)
+    try:
+        return str(int(float(value) * factor)) if factor is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 def _clean_metadata_value(value, default: str = '-') -> str:
@@ -788,6 +797,16 @@ def get_channel_records(image_path: str) -> Tuple[List[Dict[str, object]], Dict[
                     if channel_elems or size_c > 0:
                         records = []
                         total_channels = max(size_c, len(channel_elems))
+                        # Exposure: SPACEMAP's older Channel/@Exposure (ms), else OME's Plane/@ExposureTime.
+                        plane_exposure = {}
+                        for plane in list(pixels_elem.findall('ome:Plane', namespace)) + list(pixels_elem.findall('Plane')):
+                            try:
+                                channel_index = int(plane.attrib.get('TheC', 0))
+                            except ValueError:
+                                continue
+                            if channel_index not in plane_exposure and plane.attrib.get('ExposureTime'):
+                                plane_exposure[channel_index] = _exposure_ms(
+                                    plane.attrib['ExposureTime'], plane.attrib.get('ExposureTimeUnit', 's'))
                         for i in range(total_channels):
                             ch = channel_elems[i] if i < len(channel_elems) else None
                             name = ch.attrib.get('Name') if ch is not None else None
@@ -795,7 +814,7 @@ def get_channel_records(image_path: str) -> Tuple[List[Dict[str, object]], Dict[
                             explicit_color = _parse_ome_color(color_attr) if color_attr not in (None, '') else None
                             explicit_metadata = {
                                 'dye': ch.attrib.get('Fluor') if ch is not None else None,
-                                'exposure': ch.attrib.get('Exposure') if ch is not None else None,
+                                'exposure': (ch.attrib.get('Exposure') if ch is not None else None) or plane_exposure.get(i),
                                 'excitation_wavelength': ch.attrib.get('ExcitationWavelength') if ch is not None else None,
                                 'emission_wavelength': ch.attrib.get('EmissionWavelength') if ch is not None else None,
                             }
@@ -986,6 +1005,7 @@ def subtract_background_and_save(
                         tile=tile_size,
                         description=ome_xml if output_channel_idx == 0 else None,
                         planarconfig='CONTIG',
+                        metadata=None,  # the OME description alone: no second, tifffile 'shaped' one
                     )
                     
                     # Create and write pyramid levels
@@ -1001,11 +1021,22 @@ def subtract_background_and_save(
                             compression='deflate',
                             tile=tile_size,
                             planarconfig='CONTIG',
+                            metadata=None,  # the OME description alone: no second, tifffile 'shaped' one
                         )
                     
                     output_channel_idx += 1  # Increment output channel counter
                     
         log_time(f"Successfully saved background-subtracted image to: {output_path}")
+        # The new image keeps its parent's metadata (exposure, wavelengths, acquisition notes).
+        try:
+            from spacemap.image_metadata import inherit_ome
+
+            inherit_ome(input_path, output_path, [i for i, name in enumerate(channel_names) if name not in blank_mapping], notes={
+                "Background removed from": Path(input_path).name,
+                "Blank subtracted": "; ".join(f"{marker} - {blank}" for marker, blank in marker_to_blank.items()) or "none",
+            })
+        except Exception as exc:  # the pixels are written; missing notes must not fail the step
+            log_time(f"Could not copy the parent image's metadata: {exc}")
 
     except Exception as e:
         import traceback

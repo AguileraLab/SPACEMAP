@@ -15,6 +15,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+from spacemap import dataio as _dataio
 import streamlit as st
 import matplotlib.pyplot as plt
 from datetime import datetime
@@ -42,11 +43,12 @@ from .common import (
     render_export_split_data,
     _extract_markers_from_notebook,
     render_settings_export_import,
-    render_phenotyping_run_log_controls,
+    render_method_intro,
     begin_phenotyping_run_audit,
     finish_phenotyping_run_audit,
     resolve_notebook_marker_defaults,
 )
+from spacemap_gui import terminal
 
 try:
     from spacemap_gui.cell_visualizer import CellVisualizer
@@ -161,7 +163,9 @@ def _scan_selected_phenotypes(
         return []
 
     labels_by_normalized_name: dict[str, str] = {}
-    for chunk in pd.read_csv(csv_path, usecols=scan_columns, chunksize=100_000):
+    # Two label columns from the Parquet fast copy take about a second, where
+    # chunking through the CSV took minutes on a cohort-sized table.
+    for chunk in (_dataio.load(csv_path, columns=scan_columns),):
         for column in scan_columns:
             values = chunk[column].dropna().astype("string").str.strip()
             for value in values[values.ne("")].unique():
@@ -174,8 +178,9 @@ def _timestamp() -> str:
     return time.strftime("%H:%M:%S")
 
 
-def _log_console(message: str) -> None:
-    print(message, flush=True)
+def _log_console(message: str, level: str = "info") -> None:
+    """One timestamped terminal line for this tab (see spacemap_gui.terminal)."""
+    terminal.say('tab7', message, step='MR ML', level=level)
 
 
 def _extract_ml_mr_config() -> dict[str, Any]:
@@ -376,10 +381,25 @@ def _extract_ml_mr_config() -> dict[str, Any]:
         return config
 
 
+MRML_GUIDE = """\
+**What it does.** Learns phenotypes from cells you labelled by hand. A machine-learning model studies how the marker levels of your reference cells relate to their labels, then predicts a phenotype for every other cell.
+
+**Steps**
+1. Label reference cells first, in **TOOLS > Manual Reference**.
+2. Choose the input table, the column holding your labels, and the markers the model may use.
+3. Set the model options and run. Part of the labelled cells (30% by default) is kept aside to test how often the model is right.
+4. Review the predictions and their confidence, save them into the table, and check example cells.
+
+**Tip.** The model can only predict phenotypes it has examples of, so label every cell type you expect to find.
+"""
+
+
 def render_mr_ml(project_root: Path, global_input_path: str | None) -> None:
-    st.subheader("MR ML Phenotyping")
-    render_phenotyping_run_log_controls(Path(project_root), "mrml", "MR ML Phenotyping")
-    st.markdown("Machine learning phenotyping using manual reference (Step9A).")
+    render_method_intro(
+        project_root, "mrml", "MR ML Phenotyping",
+        "Train a model on cells you labelled by hand, then let it label every other cell.",
+        MRML_GUIDE, notebook="Step9A_ML_manual_reference.ipynb", log_label="MR ML Phenotyping",
+    )
 
     cache_dir = project_root / "outputs/phenotyping/cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -408,7 +428,7 @@ def render_mr_ml(project_root: Path, global_input_path: str | None) -> None:
 
     nb_config = _extract_ml_mr_config()
 
-    st.markdown("##### Input File Selection")
+    st.markdown("### 1. Input File")
     use_global = st.checkbox("Use Global Input File", value=cached_params.get("use_global", True), key="mrml_use_global")
     full_input_path = global_input_path
 
@@ -484,7 +504,7 @@ def render_mr_ml(project_root: Path, global_input_path: str | None) -> None:
     )
 
     st.divider()
-    st.markdown("### 3. Configuration (Notebook Synchronized)")
+    st.markdown("### 3. Configuration")
 
     default_config = {
             "use_global": cached_params.get("use_global", True),
@@ -1027,21 +1047,20 @@ def render_mr_ml(project_root: Path, global_input_path: str | None) -> None:
     st.markdown("### 4. Run MR ML Phenotyping")
 
     if st.button("Run MR ML Pipeline", type="primary", width="stretch", key="mrml_run"):
-        print(f"\n{'='*80}", flush=True)
-        print(f"[{_timestamp()}] MR-ML: Run button clicked", flush=True)
-        print(f"[{_timestamp()}] MR-ML: Input file: {full_input_path}", flush=True)
-        print(f"[{_timestamp()}] MR-ML: Markers count: {len(confirmed_markers) if confirmed_markers else 0}", flush=True)
+        _log_console(f"Run button clicked")
+        _log_console(f"Input file: {full_input_path}")
+        _log_console(f"Markers count: {len(confirmed_markers) if confirmed_markers else 0}")
 
         if not full_input_path or not os.path.exists(full_input_path):
-            print(f"[{_timestamp()}] MR-ML: ERROR - No valid unified CSV file selected", flush=True)
+            _log_console(f"ERROR - No valid unified CSV file selected", level="error")
             st.error("Please select a valid unified CSV file.")
             return
         if not confirmed_markers:
-            print(f"[{_timestamp()}] MR-ML: ERROR - No markers selected", flush=True)
+            _log_console(f"ERROR - No markers selected", level="error")
             st.error("No markers selected. Please save marker selection first.")
             return
         if run_ml_mr_analysis is None:
-            print(f"[{_timestamp()}] MR-ML: ERROR - ml_mr_utils module not loaded", flush=True)
+            _log_console(f"ERROR - ml_mr_utils module not loaded", level="error")
             st.error("ML-MR utilities are not available. Please check ml_mr_utils.")
             return
 
@@ -1049,15 +1068,12 @@ def render_mr_ml(project_root: Path, global_input_path: str | None) -> None:
         if not cfg.get("phenotyping_methods"):
             st.error("Select at least one automated phenotyping method to integrate.")
             return
-        print(f"[{_timestamp()}] MR-ML: ML method: {cfg.get('ml_method', 'random_forest')}", flush=True)
-        print(f"[{_timestamp()}] MR-ML: Training reference: {cfg.get('ground_truth_col', 'N/A')}", flush=True)
-        print(f"[{_timestamp()}] MR-ML: Validation reference: {cfg.get('validation_ground_truth_col') or 'internal split'}", flush=True)
-        print(f"[{_timestamp()}] MR-ML: Phenotyping methods: {cfg.get('phenotyping_methods', [])}", flush=True)
-        print(
-            f"[{_timestamp()}] MR-ML: Excluded phenotypes: "
-            f"{cfg.get('exclude_phenotypes', [])}",
-            flush=True,
-        )
+        _log_console(f"ML method: {cfg.get('ml_method', 'random_forest')}")
+        _log_console(f"Training reference: {cfg.get('ground_truth_col', 'N/A')}")
+        _log_console(f"Validation reference: {cfg.get('validation_ground_truth_col') or 'internal split'}")
+        _log_console(f"Phenotyping methods: {cfg.get('phenotyping_methods', [])}")
+        _log_console(f"Excluded phenotypes: "
+            f"{cfg.get('exclude_phenotypes', [])}")
         out_dir = project_root / "outputs/phenotyping/ML_MR"
         output_phenotype_col = cfg.get("output_phenotype_col", "phenotype_ml_mr")
         confidence_col = cfg.get("confidence_col", "ml_mr_confidence")
@@ -1092,14 +1108,14 @@ def render_mr_ml(project_root: Path, global_input_path: str | None) -> None:
         preloaded_df = None
         filtered_mode = False
 
-        print(f"[{_timestamp()}] MR-ML: Loading dataset...", flush=True)
+        _log_console(f"Loading dataset...")
         try:
             full_df = _dataio_load(full_input_path)
             audit_input_rows = len(full_df)
             full_df, cell_id_col, _ = ensure_cell_id_anchor(
                 full_df, cell_id_col
             )
-            print(f"[{_timestamp()}] MR-ML: Loaded {len(full_df):,} cells, {len(full_df.columns)} columns", flush=True)
+            _log_console(f"Loaded {len(full_df):,} cells, {len(full_df.columns)} columns")
         except Exception as exc:
             finish_phenotyping_run_audit(
                 run_audit,
@@ -1108,7 +1124,7 @@ def render_mr_ml(project_root: Path, global_input_path: str | None) -> None:
                 cluster_column="ml_mr_cluster",
                 error=str(exc),
             )
-            print(f"[{_timestamp()}] MR-ML: ERROR loading CSV: {exc}", flush=True)
+            _log_console(f"ERROR loading CSV: {exc}", level="error")
             st.error(f"Failed to load CSV: {exc}")
             return
 
@@ -1230,16 +1246,16 @@ def render_mr_ml(project_root: Path, global_input_path: str | None) -> None:
             )
 
         if filter_enabled:
-            print(f"[{_timestamp()}] MR-ML: Applying filter {filter_col} == {filter_val}...", flush=True)
+            _log_console(f"Applying filter {filter_col} == {filter_val}...")
             if filter_col in full_df.columns:
                 filtered_df = full_df[full_df[filter_col].astype(str) == filter_val].copy()
                 filtered_df.reset_index(drop=True, inplace=True)
                 preloaded_df = filtered_df
                 filtered_mode = True
-                print(f"[{_timestamp()}] MR-ML: Filter applied: {len(filtered_df):,} cells match", flush=True)
+                _log_console(f"Filter applied: {len(filtered_df):,} cells match")
                 st.info(f"Filtering enabled: {filter_col} == {filter_val} | {len(filtered_df):,} cells")
             else:
-                print(f"[{_timestamp()}] MR-ML: Filter column '{filter_col}' not found, running on full dataset", flush=True)
+                _log_console(f"Filter column '{filter_col}' not found, running on full dataset")
                 st.warning(f"Filter column '{filter_col}' not found. Running on full dataset.")
                 preloaded_df = full_df
         else:
@@ -1278,8 +1294,8 @@ def render_mr_ml(project_root: Path, global_input_path: str | None) -> None:
         with st.status("Running MR ML Pipeline...", expanded=True) as status:
             try:
                 status.write(f"[{_timestamp()}] Starting ML-MR analysis...")
-                _log_console(f"[{_timestamp()}] MR-ML: Starting analysis")
-                _log_console(f"[{_timestamp()}] MR-ML: Output dir: {out_dir}")
+                _log_console(f"Starting analysis")
+                _log_console(f"Output dir: {out_dir}")
                 result_holder: dict[str, pd.DataFrame] = {}
 
                 def _capture_results(result_frame: pd.DataFrame) -> None:
@@ -1346,7 +1362,7 @@ def render_mr_ml(project_root: Path, global_input_path: str | None) -> None:
                     return
 
                 status.write(f"[{_timestamp()}] ML-MR analysis complete")
-                _log_console(f"[{_timestamp()}] MR-ML: Analysis complete")
+                _log_console(f"Analysis complete")
                 status.write(f"[{_timestamp()}] Loading results and building phenotype mappings...")
 
                 df_results = result_holder.get("dataframe")
@@ -1446,7 +1462,7 @@ def render_mr_ml(project_root: Path, global_input_path: str | None) -> None:
 
     if "mrml_temp_file" in st.session_state and Path(st.session_state["mrml_temp_file"]).exists():
         st.divider()
-        st.subheader("Results & Phenotype Refinement")
+        st.subheader("Results & Phenotype Assignment")
         st.caption("Interactive visualization and export of MR ML results")
 
         temp_file = st.session_state["mrml_temp_file"]
@@ -1583,7 +1599,7 @@ def render_mr_ml(project_root: Path, global_input_path: str | None) -> None:
     # --- VISUAL VALIDATION COMPONENT ---
     if st.session_state.get('viz_enabled', True):
         st.divider()
-        with st.expander("Visual Validation of Phenotypes", expanded=True):
+        with st.expander("Visual Validation of Representative Cells", expanded=True):
             st.markdown("#### Visualize Representative Cells")
             st.caption("Inspect random cells from specific phenotypes to validate assignments.")
             
@@ -1842,7 +1858,7 @@ def render_mr_ml(project_root: Path, global_input_path: str | None) -> None:
                                                 }
                                                 pd.DataFrame([meta_rec]).to_csv(csv_path, mode='a', header=not csv_path.exists(), index=False)
                                             except Exception as e:
-                                                print(f"Auto-save error: {e}")
+                                                _log_console(f"Auto-save error: {e}", level="error")
                                             
                                             plt.close(fig)
                                         except Exception as e:

@@ -30,15 +30,10 @@ def test_assistant_workspace_renders_without_exception(assistant_on: None) -> No
     app.run()
     assert not app.exception
     labels = [tab.label for tab in app.tabs]
-    for expected in (
-        "Chat",
-        "Actions",
-        "Instructions & Safety",
-        "Memory",
-        "Model & Compute",
-        "Admin Access",
-    ):
-        assert expected in labels
+    # One Setup tab replaced Model & Compute, Admin Access and Settings.
+    assert labels[:5] == ["Chat", "Actions", "Instructions & Safety", "Memory", "Setup"]
+    for removed in ("Model & Compute", "Admin Access", "Settings", "Local model", "Provider and API key"):
+        assert removed not in labels
     for removed_action_subtab in (
         "Registration",
         "ROI Extraction",
@@ -47,11 +42,12 @@ def test_assistant_workspace_renders_without_exception(assistant_on: None) -> No
         "Tool Coverage",
     ):
         assert removed_action_subtab not in labels
-    assert "Local model" in labels
-    assert "Provider and API key" in labels
-    assert "Cluster" in labels
-    assert "Model & Compute" in labels
-    assert labels[-1] == "Settings"
+    for inside_setup in ("Answers", "Cluster", "Folder access for AI tools", "Activity and model log"):
+        assert inside_setup in labels
+    expanders = [expander.label for expander in app.expander]
+    for section in ("Find more models on Hugging Face", "Answer with an online model instead (optional)",
+                    "Storage and access", "Advanced"):
+        assert section in expanders
     button_labels = [button.label for button in app.button]
     assert "New Chat" in button_labels
     assert "Retry Last Request" in button_labels
@@ -92,7 +88,7 @@ def test_online_context_removes_project_state_and_paths() -> None:
 
 
 def test_online_prompt_gate_leaves_paths_for_owner_access_checks() -> None:
-    assert _online_prompt_safety_issue("Review /work/study/public/file.tiff") is None
+    assert _online_prompt_safety_issue("Review /data/study/public/file.tiff") is None
     issue = _online_prompt_safety_issue("Review this protected health information")
     assert issue is not None
     assert _online_prompt_safety_issue("Explain Leiden clustering using synthetic data") is None

@@ -23,6 +23,12 @@ import scipy.spatial as spatial
 from spacemap_gui.ui_utils import directory_input_with_browse
 from spacemap.background_subtraction_utils import get_channel_info
 from spacemap.utils import save_roi_pyramidal_ome_tiff
+from spacemap_gui import terminal
+
+
+def _log_console(message: str, level: str = "info") -> None:
+    """One timestamped terminal line for this tab (see spacemap_gui.terminal)."""
+    terminal.say('tab9', message, step='Actual Tissue', level=level)
 
 
 def _get_widget_index(key: str, options: list[Any], default_index: int = 0) -> int:
@@ -75,7 +81,7 @@ def _load_cell_segmentations_cached(file_path: str, mtime: float) -> list[dict[s
             })
         return cells
     except Exception as e:
-        print(f"Error loading cell segmentation GeoJSON: {e}", flush=True)
+        _log_console(f"Error loading cell segmentation GeoJSON: {e}", level="error")
         return []
 
 
@@ -120,7 +126,7 @@ def _match_cells_to_csv(
             matched_cells.append(new_cell)
         return matched_cells
     except Exception as e:
-        print(f"Error in cell matching: {e}", flush=True)
+        _log_console(f"Error in cell matching: {e}", level="error")
         return cells
 
 
@@ -238,7 +244,7 @@ def _generate_voronoi_cells(
                 
         return cells
     except Exception as e:
-        print(f"Error generating Voronoi cells: {e}", flush=True)
+        _log_console(f"Error generating Voronoi cells: {e}", level="error")
         return cells
 
 
@@ -730,7 +736,7 @@ def _render_actual_image(
         try:
             selected_mask_geom = unary_union(geoms_to_union)
         except Exception as e:
-            print(f"[ERROR] Failed to union mask geometries: {e}", flush=True)
+            _log_console(f"[ERROR] Failed to union mask geometries: {e}", level="error")
 
     if mask_geom is None:
         mask_geom = selected_mask_geom
@@ -1559,7 +1565,7 @@ def _local_mask_geom_fullres(
         try:
             selected_mask_geom = unary_union(geoms_to_union)
         except Exception as e:
-            print(f"[ERROR] Failed to union mask geometries in fullres: {e}", flush=True)
+            _log_console(f"[ERROR] Failed to union mask geometries in fullres: {e}", level="error")
 
     if mask_geom is None:
         mask_geom = selected_mask_geom
@@ -2008,10 +2014,10 @@ def render_actual_tissue(project_root: Path, df: pd.DataFrame, viz_settings: dic
                     n_matched = sum(1 for c in cells_list if c.get("matched", False)) if cells_list else 0
                     msg = f"Loaded {len(raw_cells):,} cell boundaries ({t_load:.2f}s), matched {n_matched:,} cells ({t_match:.2f}s)."
                     st.sidebar.info(msg)
-                    print(f"[TIMING] {msg}", flush=True)
+                    _log_console(f"{msg}")
                 except Exception as exc:
                     st.sidebar.error(f"Failed to load/match cell segmentations: {exc}")
-                    print(f"[ERROR] Cell loading/matching failed: {exc}", flush=True)
+                    _log_console(f"[ERROR] Cell loading/matching failed: {exc}", level="error")
         elif cell_seg_source == "Voronoi (Virtual Segmentation)":
             try:
                 with st.spinner("Generating Voronoi cells..."):
@@ -2027,10 +2033,10 @@ def render_actual_tissue(project_root: Path, df: pd.DataFrame, viz_settings: dic
                 n_vor = len(cells_list) if cells_list else 0
                 msg = f"Generated {n_vor:,} Voronoi cells in {t_voronoi:.2f}s."
                 st.sidebar.info(msg)
-                print(f"[TIMING] {msg}", flush=True)
+                _log_console(f"{msg}")
             except Exception as exc:
                 st.sidebar.error(f"Failed to generate Voronoi cells: {exc}")
-                print(f"[ERROR] Voronoi generation failed: {exc}", flush=True)
+                _log_console(f"[ERROR] Voronoi generation failed: {exc}", level="error")
 
     # Resolve Layer 1, Layer 2, Layer 3 visibilities and opacities dynamically
     show_markers = True
@@ -2427,7 +2433,7 @@ def render_actual_tissue(project_root: Path, df: pd.DataFrame, viz_settings: dic
                 export_json = "{}"
                 
             st.download_button(
-                label="📥 Export Actual Tissue Settings (JSON)",
+                label="Export Actual Tissue Settings (JSON)",
                 data=export_json,
                 file_name="actual_tissue_settings.json",
                 mime="application/json",
@@ -3293,7 +3299,7 @@ def render_actual_tissue(project_root: Path, df: pd.DataFrame, viz_settings: dic
                 high_percentile=marker_high_percentile,
             )
             t_comp = time.perf_counter() - t0
-        print(f"[TIMING] Generated composite preview image in {t_comp:.2f}s", flush=True)
+        _log_console(f"Generated composite preview image in {t_comp:.2f}s")
 
         crop_box_full = _crop_box_from_cells(filtered_df, selected_x_col, selected_y_col, crop_padding, (full_h, full_w)) if crop_to_cells else None
         selected_overlay_records = [record for record in overlay_groups if record["key"] in visible_overlays]
@@ -3387,7 +3393,7 @@ def render_actual_tissue(project_root: Path, df: pd.DataFrame, viz_settings: dic
                 background_color=st.session_state.get("tab9_actual_background_color", "#ffffff"),
             )
             t_render = time.perf_counter() - t0
-        print(f"[TIMING] Rendered overlays and cell shapes in {t_render:.2f}s", flush=True)
+        _log_console(f"Rendered overlays and cell shapes in {t_render:.2f}s")
             
         effective_scale_bar_um = _nice_scale_bar_um(rendered.width, pixel_size_um) if auto_scale_bar else float(scale_bar_um)
         

@@ -24,10 +24,8 @@ import scanpy as sc
 # Scientific computing
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
-from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score, davies_bouldin_score
 # import umap  # Lazy loaded to avoid protobuf issues
-from scipy.stats import percentileofscore
 
 # SOM implementation
 try:
@@ -210,7 +208,6 @@ class BatchCorrector:
                 has_single_sample_batch = (batch_counts == 1).any()
                 
                 # Suppress pycombat output if not verbose
-                import sys
                 import os
                 from contextlib import redirect_stdout, redirect_stderr
                 
@@ -767,73 +764,6 @@ def assign_phenotypes_to_clusters(cluster_means_df, marker_suffix='_norm', pheno
 
 
 
-def find_roi_threshold_file(input_csv_path, threshold_dir):
-    """
-    Find the appropriate ROI threshold CSV file based on the input CSV filename.
-    Aligned with comprehensive_phenotyping_gemini_v8_ML.py reference implementation.
-    """
-    import re
-    
-    print(f"Searching for ROI threshold file corresponding to '{os.path.basename(input_csv_path)}' in '{threshold_dir}'...")
-
-    if not os.path.isdir(threshold_dir):
-        raise FileNotFoundError(f"Threshold directory not found at: {threshold_dir}")
-
-    # Extract base name from input CSV filename
-    input_filename_base = os.path.basename(input_csv_path)
-    filename_no_ext, _ = os.path.splitext(input_filename_base)
-    delimiters = ['.ome_cell_features', '.ome', '_cell_features', '_annotated', '_processed', '_summary', '_16bit', '_corrected_with_raw', '_corrected']
-    base_name = None
-    
-    for delim in delimiters:
-        if delim in filename_no_ext:
-            potential_base, _, _ = filename_no_ext.partition(delim)
-            if potential_base and potential_base != filename_no_ext:
-                base_name = potential_base
-                print(f"  Extracted base name using delimiter '{delim}': '{base_name}'")
-                break
-    
-    if base_name is None:
-        base_name = filename_no_ext
-        print(f"  No specific delimiter found. Using full name before extension as base: '{base_name}'")
-    
-    base_name = base_name.rstrip('._ ')
-    if not base_name:
-        print("Warning: Base name extraction resulted in an empty string.")
-        base_name = None
-
-    threshold_file_path = None
-    if base_name:
-        # Search for the file using common patterns
-        potential_thresh_files = [
-            os.path.join(threshold_dir, f"{base_name}.ome.tiff_-_Merged_Image.csv"),
-            os.path.join(threshold_dir, f"{base_name}_-_Merged_Image.csv"),
-            os.path.join(threshold_dir, f"{base_name}.csv"),
-        ]
-        for potential_path in potential_thresh_files:
-            if os.path.exists(potential_path):
-                threshold_file_path = potential_path
-                print(f"  Found matching ROI threshold file: {threshold_file_path}")
-                break
-
-    # Fallback: look for any file matching patterns
-    if threshold_file_path is None:
-        print("  No exact match found. Searching for any file matching common patterns...")
-        potential_files = [f for f in os.listdir(threshold_dir) if f.endswith('.csv') and 'Merged_Image' in f]
-        if not potential_files:
-            potential_files = [f for f in os.listdir(threshold_dir) if f.endswith('.csv')]
-
-        if not potential_files:
-            raise FileNotFoundError(f"No CSV files found in threshold directory: {threshold_dir}")
-
-        threshold_file_path = os.path.join(threshold_dir, potential_files[0])
-        print(f"  Using first found threshold file: {threshold_file_path}")
-        if len(potential_files) > 1:
-            print(f"  WARNING: Found multiple potential threshold files. Using the first one: {potential_files[0]}")
-
-    return threshold_file_path
-
-
 def manual_rescale_scimap(adata, gates=None, apply_thresholds=True):
     """
     Manual rescaling function for SCIMAP aligned with reference SCIMAP_v1_working.py implementation.
@@ -918,61 +848,6 @@ def manual_rescale_scimap(adata, gates=None, apply_thresholds=True):
             print(f"    -> {marker_name}: gate={gate_value:.4f}, {pos_frac:.1f}% cells above gate")
 
         return np.clip(data, 0.0, 1.0)
-
-
-def create_phenotype_strategy_csv(output_path, phenotype_definitions=None):
-    """
-    Create a phenotype strategy CSV file for SCIMAP aligned with reference implementation.
-    
-    Parameters:
-    - output_path: Path where to save the CSV file
-    - phenotype_definitions: Dict with phenotype definitions (optional)
-    """
-    if phenotype_definitions is None:
-        # Default SCIMAP phenotype strategy from reference
-        phenotype_strategy = pd.DataFrame({
-            'phenotype': [
-                'T_cells', 'CD4_T_cells', 'CD8_T_cells', 'Treg', 'B_cells', 
-                'Macrophages', 'Dendritic_cells', 'Epithelial_cells', 
-                'Endothelial_cells', 'Stromal_cells'
-            ],
-            'pos': [
-                'CD45,CD3e', 'CD45,CD3e,CD4', 'CD45,CD3e,CD8', 'CD45,CD3e,CD4,FoxP3',
-                'CD45,CD20', 'CD45,CD68', 'CD45,CD11c,HLA-DR', 'Pan-Cytokeratin',
-                'CD31', 'Vimentin'
-            ],
-            'neg': [
-                '', '', '', '', '', '', '', 'CD45', 'CD45', 'CD45,Pan-Cytokeratin'
-            ]
-        })
-    else:
-        # Convert custom phenotype definitions to SCIMAP format
-        phenotypes = []
-        pos_markers = []
-        neg_markers = []
-        
-        for pheno_name, definition in phenotype_definitions.items():
-            phenotypes.append(pheno_name)
-            if 'positive' in definition:
-                pos_markers.append(','.join(definition['positive']))
-            else:
-                pos_markers.append('')
-            if 'negative' in definition:
-                neg_markers.append(','.join(definition['negative']))
-            else:
-                neg_markers.append('')
-        
-        phenotype_strategy = pd.DataFrame({
-            'phenotype': phenotypes,
-            'pos': pos_markers,
-            'neg': neg_markers
-        })
-    
-    # Save the strategy file
-    phenotype_strategy.to_csv(output_path, index=False)
-    print(f"Phenotype strategy file created: {output_path}")
-    
-    return phenotype_strategy
 
 
 def create_phenotype_strategy_df(phenotype_definitions):
@@ -1070,7 +945,6 @@ def subtract_thresholds_per_batch(df, markers, threshold_dir, stat='median', bat
     New columns: <marker><out_suffix>. Value = max(raw - threshold, 0).
     Missing thresholds default to 0.
     """
-    from collections import defaultdict
     thresholds_cache = {}
     new_cols = []
     for batch in df[batch_col].unique():
@@ -1342,7 +1216,6 @@ def leiden_hpo(
     pd.DataFrame with one row per parameter combination.
     """
     import scanpy as sc
-    from copy import deepcopy
     results = []
     # Ensure unique & sorted for deterministic behavior
     pca_values = sorted(set(int(x) for x in pca_values))
@@ -1595,7 +1468,6 @@ def build_phenotype_boolean_matrix(df, phenotype_definitions, marker_suffix='_th
         Boolean matrix with phenotype columns
     """
     import pandas as pd
-    import numpy as np
     
     bool_matrix = pd.DataFrame(index=df.index)
     
@@ -1641,7 +1513,6 @@ def normalize_thresholded_markers(df, markers, batch_col, marker_suffix='_thr', 
     pd.DataFrame
         DataFrame with normalized marker columns
     """
-    import pandas as pd
     
     # Get thresholded marker columns
     thr_marker_cols = [f"{marker}{marker_suffix}" for marker in markers]
@@ -1807,9 +1678,6 @@ def generate_threshold_heatmap(df, assignment_col, markers, marker_suffix='_thr'
         Heatmap axes object
     """
     import matplotlib.pyplot as plt
-    import seaborn as sns
-    import pandas as pd
-    import numpy as np
     
     # Get marker columns
     marker_cols = [f"{marker}{marker_suffix}" for marker in markers]
@@ -1863,7 +1731,6 @@ def find_roi_threshold_file(batch_id, threshold_dir):
     Find corresponding threshold file for a given batch/ROI ID.
     Based on the reference SCIMAP implementation naming pattern.
     """
-    import os
     from pathlib import Path
     
     threshold_dir = Path(threshold_dir)
@@ -1945,7 +1812,6 @@ def load_and_process_thresholds_scimap(threshold_dir, batch_ids, markers):
         Dictionary mapping batch_id to median thresholds
     """
     import pandas as pd
-    import numpy as np
     from pathlib import Path
     
     threshold_dir = Path(threshold_dir)
@@ -2010,7 +1876,6 @@ def apply_scimap_phenotyping(df, phenotype_strategy_df, gate_value=0.5):
     pd.DataFrame
         DataFrame with phenotype assignments added
     """
-    import pandas as pd
     import numpy as np
     
     df_result = df.copy()
@@ -2103,9 +1968,6 @@ def create_scimap_heatmap(df, assignment_col='phenotype_scimap', markers=None,
         Heatmap axes object
     """
     import matplotlib.pyplot as plt
-    import seaborn as sns
-    import pandas as pd
-    import numpy as np
     
     # Get marker columns
     if markers is None:
@@ -2354,7 +2216,7 @@ def create_meta_cluster_heatmap(char_df, plots_dir, title="Meta-Cluster Expressi
     heat = heat.T
     # z-score rows
     heat_z = heat.apply(lambda x: (x - x.mean())/ (x.std() if x.std() else 1), axis=1).fillna(0)
-    import seaborn as sns, matplotlib.pyplot as plt
+    import matplotlib.pyplot as plt
     g = sns.clustermap(heat_z, method='ward', metric='euclidean', cmap='bwr', vmin=-2, vmax=2,
                        linewidths=0.3, row_cluster=True, col_cluster=True,
                        dendrogram_ratio=(0.05,0.2), cbar_pos=(0.02,0.02,0.01,0.12),
@@ -2385,9 +2247,6 @@ def launch_som_phenotype_assignment_app(char_df, reordered_cluster_ids, meta_clu
     import matplotlib.pyplot as plt
     from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
     from matplotlib.figure import Figure
-    import seaborn as sns
-    import numpy as np
-    import pandas as pd
     from scipy.cluster.hierarchy import dendrogram, linkage
 
     class PhenotypeAssignmentApp:

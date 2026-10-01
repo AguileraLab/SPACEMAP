@@ -11,7 +11,6 @@ import math
 import os
 import re
 import time
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -26,15 +25,15 @@ from .common import (
     _extract_markers_from_notebook,
     get_all_phenotype_options,
     get_marker_workspace_panel,
-    get_normalization_flag_help_text,
     logger,
     begin_phenotyping_run_audit,
     finish_phenotyping_run_audit,
     render_add_custom_phenotype_ui,
     render_method_marker_selection,
     render_settings_export_import,
-    render_phenotyping_run_log_controls,
+    render_method_intro,
 )
+from spacemap_gui import terminal
 
 # acc_utils ships inside the `spacemap` package; `src` is what the launcher puts
 # on PYTHONPATH, so the bare `acc_utils` name never resolves.
@@ -685,8 +684,9 @@ def _timestamp() -> str:
     return time.strftime("%H:%M:%S")
 
 
-def _log_console(message: str) -> None:
-    print(message, flush=True)
+def _log_console(message: str, level: str = "info") -> None:
+    """One timestamped terminal line for this tab (see spacemap_gui.terminal)."""
+    terminal.say('tab7', message, step='Tools', level=level)
 
 
 def _normalize_label(label: str) -> str:
@@ -908,23 +908,23 @@ class _Step:
     @staticmethod
     def note(message: str) -> None:
         if _Step._enabled:
-            stamp = datetime.now().strftime("%H:%M:%S")
-            print(f"[MR {stamp}] {message}", flush=True)
+            terminal.say("tab7", message, step="Manual Reference")
 
     def __enter__(self) -> "_Step":
         self.started = time.perf_counter()
         if self._enabled:
             extra = "  ".join(f"{k}={v}" for k, v in self.details.items())
-            stamp = datetime.now().strftime("%H:%M:%S")
-            print(f"[MR {stamp}] -> {self.label}{('   ' + extra) if extra else ''}", flush=True)
+            terminal.say("tab7", f"Started: {self.label}{('   ' + extra) if extra else ''}", step="Manual Reference")
         return self
 
     def __exit__(self, exc_type, exc, tb) -> bool:
         if self._enabled:
             elapsed = time.perf_counter() - self.started
-            stamp = datetime.now().strftime("%H:%M:%S")
-            state = "FAILED" if exc_type else "done"
-            print(f"[MR {stamp}] <- {self.label}: {state} in {elapsed:.1f}s", flush=True)
+            if exc_type:
+                terminal.say("tab7", f"Failed: {self.label} after {elapsed:.1f} s", step="Manual Reference",
+                             level="error")
+            else:
+                terminal.say("tab7", f"Finished: {self.label} ({elapsed:.1f} s)", step="Manual Reference")
         return False
 
 
@@ -1168,7 +1168,7 @@ def _render_filter_criteria(
                 key=f"{key_prefix}_filter_col_{idx}",
             )
         with remove_col:
-            if st.button("✕", key=f"{key_prefix}_filter_remove_{idx}", help="Remove this criterion"):
+            if st.button(":material/close:", key=f"{key_prefix}_filter_remove_{idx}", help="Remove this criterion"):
                 rows = list(st.session_state.get(rows_key, []))
                 if idx < len(rows):
                     rows.pop(idx)
@@ -1466,7 +1466,7 @@ def _render_label_commit_controls(table_path: str | None, *, key_prefix: str) ->
     )
     left, right = st.columns([2, 1])
     if left.button(
-        "📄 Write Labels Into CSV (several minutes)",
+        "Write Labels Into CSV (several minutes)",
         key=f"{key_prefix}_commit_labels",
         type="primary",
         width="stretch",
@@ -1503,7 +1503,7 @@ def _render_manual_reference_save_receipt(
     show_dismiss: bool,
 ) -> None:
     """Render a verified save using the standard green Streamlit status box."""
-    st.success(f"✅ {receipt['message']}")
+    st.success(f"{receipt['message']}")
     st.caption(
         f"Saved at {receipt.get('timestamp')} | "
         f"Unified CSV: {receipt.get('target_path')}"
@@ -2800,11 +2800,9 @@ def _merge_geojson_into_unified(
 
         stats_row["status"] = "merged" if stats_row["matched_cells"] else "no coordinate matches"
         stats_records.append(stats_row)
-        _log_console(
-            f"[{_timestamp()}] TOOLS-MR: {file_name} -> {assigned_batch} | "
+        _log_console(f"TOOLS-MR: {file_name} -> {assigned_batch} | "
             f"cells={stats_row['filtered_cells']} | matched={stats_row['matched_cells']} | "
-            f"applied={stats_row['applied_cells']} | tolerance={tolerance_pixels:.3f} px"
-        )
+            f"applied={stats_row['applied_cells']} | tolerance={tolerance_pixels:.3f} px")
 
     unified_df.to_csv(unified_csv_path, index=False)
     return unified_df, pd.DataFrame(stats_records)
@@ -2881,13 +2879,13 @@ def _fast_merge_ground_truth(
         base_name = os.path.basename(gt_file)
         prefix = parse_gt_prefix(base_name, custom_prefix_pattern) if parse_gt_prefix else ""
         if not prefix:
-            _log_console(f"  WARNING: Could not parse prefix from {base_name}; skipping.")
+            _log_console(f"  WARNING: Could not parse prefix from {base_name}; skipping.", level="warning")
             continue
 
         gt_df = pd.read_csv(gt_file)
         required_cols = {"x_centroid", "y_centroid", "classification"}
         if not required_cols.issubset(gt_df.columns):
-            _log_console(f"  WARNING: Missing required columns in {base_name}; skipping.")
+            _log_console(f"  WARNING: Missing required columns in {base_name}; skipping.", level="warning")
             continue
 
         if exclude_classifications:
@@ -2899,7 +2897,7 @@ def _fast_merge_ground_truth(
         batch_mask = batch_series.str.startswith(prefix, na=False)
         batch_df = unified_df.loc[batch_mask]
         if batch_df.empty:
-            _log_console(f"  WARNING: No unified rows with {batch_id_column} starting '{prefix}'")
+            _log_console(f"  WARNING: No unified rows with {batch_id_column} starting '{prefix}'", level="warning")
             continue
 
         x_range = batch_df[x_centroid_column].max() - batch_df[x_centroid_column].min()
@@ -2936,9 +2934,7 @@ def _fast_merge_ground_truth(
             unified_df.at[unified_index, phenotype_col_name] = cls_name
             applied += 1
 
-        _log_console(
-            f"  Processing {base_name} | prefix={prefix} | GT cells={len(gt_df)} | tolerance={tolerance_pixels:.3f} px"
-        )
+        _log_console(f"  Processing {base_name} | prefix={prefix} | GT cells={len(gt_df)} | tolerance={tolerance_pixels:.3f} px")
         _log_console(f"    Matched {applied}/{len(gt_df)} GT cells for prefix {prefix}")
 
     if relabel_mapping and phenotype_col_name in unified_df.columns:
@@ -2958,10 +2954,21 @@ def _fast_merge_ground_truth(
     return unified_df
 
 
+TOOLS_GUIDE = """\
+Helpers that the phenotyping methods rely on:
+- **Manual Reference**: look at cells and label them by hand. These labels train **MR ML**.
+- **Phenotype GEOJSON**: write phenotype labels into cell outlines for viewing in QuPath, and read edited outlines back.
+- **Edit CSV**: rename, copy, delete and derive columns in the unified table, or import columns from another CSV.
+- **Threshold**: set per-marker positive/negative thresholds used by Resolve and SCIMAP.
+"""
+
+
 def render_tools(project_root: Path, global_input_path: str | None) -> None:
-    st.subheader("TOOLS")
-    render_phenotyping_run_log_controls(Path(project_root), "tools", "Phenotyping Tools")
-    st.markdown("Accessory utilities for manual reference and additional columns.")
+    render_method_intro(
+        project_root, "tools", "Phenotyping Tools",
+        "Label cells by hand, exchange labels with QuPath, edit the unified table, and set thresholds.",
+        TOOLS_GUIDE, notebook="Step7_accessories.ipynb", log_label="Phenotyping Tools",
+    )
 
     cache_dir = project_root / "outputs/phenotyping/cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -3817,7 +3824,7 @@ def render_tools(project_root: Path, global_input_path: str | None) -> None:
 
                             c_batch_save, c_fetch_more = st.columns([2, 1])
                             batch_save = c_batch_save.form_submit_button(
-                                "💾 Save Labels (instant)",
+                                "Save Labels (instant)",
                                 type="primary",
                             )
                             get_more_cells = c_fetch_more.form_submit_button(
@@ -4176,7 +4183,7 @@ def render_tools(project_root: Path, global_input_path: str | None) -> None:
                         )
                     else:
                         st.success("GeoJSON scan complete.")
-                    _log_console(f"[{_timestamp()}] TOOLS-MR: Scanned {len(assignment_df)} GeoJSON file(s)")
+                    _log_console(f"TOOLS-MR: Scanned {len(assignment_df)} GeoJSON file(s)")
 
             assignment_df = _ensure_mr_assignment_columns(st.session_state.get("tools_mr_assignments"))
             if not assignment_df.empty:
@@ -4329,7 +4336,7 @@ def render_tools(project_root: Path, global_input_path: str | None) -> None:
             )
 
             if st.button("Merge GeoJSON into Unified CSV", type="primary", key="tools_mr_merge"):
-                _log_console(f"[{_timestamp()}] TOOLS-MR: Merge button clicked")
+                _log_console(f"TOOLS-MR: Merge button clicked")
                 status_box = st.empty()
                 status_box.info("Starting GeoJSON merge...")
                 if not unified_csv_path or not os.path.exists(unified_csv_path):
@@ -4379,15 +4386,15 @@ def render_tools(project_root: Path, global_input_path: str | None) -> None:
                         st.error("No batch assignments are set. Click 'Scan GeoJSON' and choose a batch for each GeoJSON file before merging.")
                         return
 
-                    _log_console(f"[{_timestamp()}] TOOLS-MR: Loading unified CSV")
+                    _log_console(f"TOOLS-MR: Loading unified CSV")
                     pre_df = None
                     if os.path.exists(unified_csv_path) and phenotype_col:
                         try:
-                            pre_df = pd.read_csv(unified_csv_path, usecols=[phenotype_col])
+                            pre_df = _dataio_load(unified_csv_path, columns=[phenotype_col])
                         except Exception:
                             pre_df = None
 
-                    _log_console(f"[{_timestamp()}] TOOLS-MR: Merging GeoJSON into unified CSV")
+                    _log_console(f"TOOLS-MR: Merging GeoJSON into unified CSV")
                     mapping_df = st.session_state.get("tools_mr_mapping")
                     mapping: dict[str, str] = {}
                     if mapping_df is not None and not mapping_df.empty:
@@ -4487,14 +4494,10 @@ def render_tools(project_root: Path, global_input_path: str | None) -> None:
                         status_box.info(
                             "Merge completed. No new labels were added. Check batch assignment, coordinate tolerance, or overwrite settings."
                         )
-                        _log_console(
-                            f"[{_timestamp()}] TOOLS-MR: Merge completed (0 new cells, total labeled={total_labeled})"
-                        )
+                        _log_console(f"TOOLS-MR: Merge completed (0 new cells, total labeled={total_labeled})")
                     else:
                         status_box.success(f"Merged MR into unified file: {unified_csv_path} (+{added} cells)")
-                        _log_console(
-                            f"[{_timestamp()}] TOOLS-MR: Merge completed (+{added} cells, total labeled={total_labeled})"
-                        )
+                        _log_console(f"TOOLS-MR: Merge completed (+{added} cells, total labeled={total_labeled})")
                     finish_phenotyping_run_audit(
                         run_audit,
                         status="success",
@@ -4517,7 +4520,7 @@ def render_tools(project_root: Path, global_input_path: str | None) -> None:
                     if not geojson_dir:
                         st.error("Please select a GeoJSON directory.")
                     else:
-                        _log_console(f"[{_timestamp()}] TOOLS-MR: Extracting GeoJSON -> Manual Reference CSV")
+                        _log_console(f"TOOLS-MR: Extracting GeoJSON -> Manual Reference CSV")
                         batch_process_geojson_files(geojson_dir, geojson_dir, file_pattern=file_pattern)
                         st.success("Extraction complete.")
             with step2:
@@ -4530,7 +4533,7 @@ def render_tools(project_root: Path, global_input_path: str | None) -> None:
                         if not mapping:
                             st.warning("No valid mapping rows.")
                         else:
-                            _log_console(f"[{_timestamp()}] TOOLS-MR: Relabeling classifications")
+                            _log_console(f"TOOLS-MR: Relabeling classifications")
                             relabel_ground_truth_files(geojson_dir, mapping, file_pattern=file_pattern)
                             st.success("Relabeling complete.")
             with step3:
@@ -4542,7 +4545,7 @@ def render_tools(project_root: Path, global_input_path: str | None) -> None:
                     if not unified_csv_path or not os.path.exists(unified_csv_path):
                         st.error("Unified CSV not found.")
                     else:
-                        _log_console(f"[{_timestamp()}] TOOLS-MR: Enriching manual reference with unified data")
+                        _log_console(f"TOOLS-MR: Enriching manual reference with unified data")
                         enrich_ground_truth_with_unified_data(
                             gt_output_dir=geojson_dir,
                             unified_csv_path=unified_csv_path,
@@ -5349,11 +5352,9 @@ def render_tools(project_root: Path, global_input_path: str | None) -> None:
                                 state="complete" if results else "error",
                             )
                             total_written = sum(r["written"] for r in results)
-                            _log_console(
-                                f"[{_timestamp()}] TOOLS-PG: Tagged {len(results)} GeoJSON file(s) "
+                            _log_console(f"TOOLS-PG: Tagged {len(results)} GeoJSON file(s) "
                                 f"with '{title_suffix}' "
-                                f"({total_written} polygons written)"
-                            )
+                                f"({total_written} polygons written)")
                             finish_phenotyping_run_audit(
                                 run_audit,
                                 status="success" if results else "no_output",
@@ -5631,13 +5632,13 @@ def render_tools(project_root: Path, global_input_path: str | None) -> None:
         if df_working is None:
             if target_metadata:
                 st.info(
-                    f"📁 **Target CSV Metadata (Offline):**\n"
+                    f"**Target CSV Metadata (Offline):**\n"
                     f"- Path: `{target_metadata['path']}`\n"
                     f"- Size: **{target_metadata['file_size_gb']:.2f} GB**\n"
                     f"- Rows: **{target_metadata['row_count']:,}**\n"
                     f"- Columns: **{len(target_metadata['columns'])}** columns"
                 )
-                st.info("💡 You can configure and run the **Import Columns from External CSV** panel (Panel F) below without loading the unified CSV into memory.")
+                st.info("You can configure and run the **Import Columns from External CSV** panel (Panel F) below without loading the unified CSV into memory.")
             else:
                 st.info("Load the unified CSV to begin editing.")
 
@@ -5715,7 +5716,7 @@ def render_tools(project_root: Path, global_input_path: str | None) -> None:
                                 st.success(f"Renamed **{col_sel}** → **{new_name}**")
                     else:
                         st.info(
-                            "💡 **How Batch Rename works:** Every column whose name contains the *Find* "
+                            "**How Batch Rename works:** Every column whose name contains the *Find* "
                             "text will have that part replaced with the *Replace* text.\n\n"
                             "*Example:* Find `phenotype_` → Replace `pheno_` renames `phenotype_leiden` to `pheno_leiden`."
                         )
@@ -5765,7 +5766,7 @@ def render_tools(project_root: Path, global_input_path: str | None) -> None:
                 # ── Delete Columns ──────────────────────────────────
                 elif col_op == "Delete Columns":
                     st.info(
-                        "💡 Select one or more columns below, then click **Delete**. "
+                        "Select one or more columns below, then click **Delete**. "
                         "This is reversible via the **Undo** button at the top."
                     )
                     del_cols = st.multiselect(
@@ -5793,7 +5794,7 @@ def render_tools(project_root: Path, global_input_path: str | None) -> None:
                 # ── Duplicate Column ────────────────────────────────
                 else:
                     st.info(
-                        "💡 Creates an exact copy of a column under a new name. "
+                        "Creates an exact copy of a column under a new name. "
                         "Useful when you want to edit values without losing the original.\n\n"
                         "*Example:* Duplicate `phenotype_leiden` → `phenotype_leiden_backup`"
                     )
@@ -6446,6 +6447,27 @@ def render_tools(project_root: Path, global_input_path: str | None) -> None:
                 st.caption("All configurations below are offline and will not reload the page until you click Scan or Run.")
 
                 # Form 2: Main Configuration Form (handles everything offline, no page reruns!)
+                # Keyed so every mapping choice is saved in the project file and
+                # restored on reload; stale columns are dropped before rendering.
+                from spacemap_gui.ui_utils import seed_widget_state
+                seed_widget_state("tools_edit_csv_import_src_anchors", default_src_anchors, options=source_df_cols, multi=True)
+                seed_widget_state("tools_edit_csv_import_tgt_anchors", default_tgt_anchors, options=target_cols, multi=True)
+                _saved_src_anchors = st.session_state["tools_edit_csv_import_src_anchors"]
+                seed_widget_state(
+                    "tools_edit_csv_import_tolerant_cols",
+                    [col for col in ["x_centroid", "y_centroid"] if col in _saved_src_anchors],
+                    options=_saved_src_anchors if _saved_src_anchors else source_df_cols,
+                    multi=True,
+                )
+                seed_widget_state("tools_edit_csv_import_tolerance", "1.0%")
+                seed_widget_state(
+                    "tools_edit_csv_import_transfer_cols",
+                    [],
+                    options=[c for c in source_df_cols if c not in _saved_src_anchors],
+                    multi=True,
+                )
+                seed_widget_state("tools_edit_csv_import_rename_map", "")
+
                 with st.form(key="tools_edit_csv_import_merge_config_form"):
                     st.markdown("#### A. Anchor Column Selection")
                     st.caption("Select keys/coordinates columns from both CSV files in matching order.")
@@ -6455,14 +6477,14 @@ def render_tools(project_root: Path, global_input_path: str | None) -> None:
                         src_anchors = st.multiselect(
                             "Source Anchor Columns",
                             options=source_df_cols,
-                            default=default_src_anchors,
+                            key="tools_edit_csv_import_src_anchors",
                             help="Select the matching keys/coordinates in the source CSV."
                         )
                     with col_anch2:
                         tgt_anchors = st.multiselect(
                             "Target Anchor Columns (must match the order of Source Anchors)",
                             options=target_cols,
-                            default=default_tgt_anchors,
+                            key="tools_edit_csv_import_tgt_anchors",
                             help="Select the matching keys/coordinates in the target CSV."
                         )
 
@@ -6471,27 +6493,28 @@ def render_tools(project_root: Path, global_input_path: str | None) -> None:
                     
                     tolerant_cols = st.multiselect(
                         "Select tolerant source anchor columns",
-                        options=src_anchors if src_anchors else source_df_cols,
-                        default=[col for col in ["x_centroid", "y_centroid"] if col in src_anchors],
+                        options=_saved_src_anchors if _saved_src_anchors else source_df_cols,
+                        key="tools_edit_csv_import_tolerant_cols",
                         help="Source anchors that require shift tolerance."
                     )
 
                     tolerance_input = st.text_input(
                         "Allowed Shift Buffer (e.g., '1.0%' for percentage of range, or '5.0' for absolute distance. Comma-separated in order of above columns)",
-                        value="1.0%",
+                        key="tools_edit_csv_import_tolerance",
                         help="Examples: '1.0%' or '5.0'. If only one value is given, it applies to all tolerant columns."
                     )
 
                     st.markdown("#### C. Columns to Transfer")
                     transfer_cols = st.multiselect(
                         "Columns to Transfer from Source CSV",
-                        options=[c for c in source_df_cols if c not in src_anchors],
+                        options=[c for c in source_df_cols if c not in _saved_src_anchors],
+                        key="tools_edit_csv_import_transfer_cols",
                         help="Select precisely which columns you want to copy/transfer from the source CSV."
                     )
 
                     rename_mapping_raw = st.text_area(
                         "Rename Transferred Columns (Optional, format: source_col:new_name, one per line)",
-                        value="",
+                        key="tools_edit_csv_import_rename_map",
                         placeholder="Example:\nphenotype_ref1:phenotype_ref1_new\nphenotype_ref2:phenotype_ref2_new",
                         help="Leave blank to keep original names."
                     )
@@ -6577,7 +6600,7 @@ def render_tools(project_root: Path, global_input_path: str | None) -> None:
                                     if df_working is not None:
                                         tgt_series = df_working[t_col]
                                     else:
-                                        tgt_series = pd.read_csv(unified_csv_path, usecols=[t_col])[t_col]
+                                        tgt_series = _dataio_load(unified_csv_path, columns=[t_col])[t_col]
                                     tgt_series = pd.to_numeric(tgt_series, errors="coerce").dropna()
                                     if not tgt_series.empty:
                                         span = float(tgt_series.max() - tgt_series.min())
@@ -6601,7 +6624,7 @@ def render_tools(project_root: Path, global_input_path: str | None) -> None:
                                     if df_working is not None:
                                         target_anchor_df = df_working[tgt_anchors]
                                     else:
-                                        target_anchor_df = pd.read_csv(unified_csv_path, usecols=tgt_anchors)
+                                        target_anchor_df = _dataio_load(unified_csv_path, columns=tgt_anchors)
                                     source_anchor_df = pd.read_csv(source_path_val, usecols=src_anchors)
 
                                     matched_idx = _find_matching_indices(target_anchor_df, source_anchor_df, anchors_config)
@@ -6624,7 +6647,7 @@ def render_tools(project_root: Path, global_input_path: str | None) -> None:
                                             if df_working is not None:
                                                 target_vals = df_working[dest]
                                             else:
-                                                target_vals = pd.read_csv(unified_csv_path, usecols=[dest])[dest]
+                                                target_vals = _dataio_load(unified_csv_path, columns=[dest])[dest]
                                             target_matched_vals = target_vals.loc[matched_idx.notna()]
                                             not_null_mask = target_matched_vals.notna()
                                             if pd.api.types.is_string_dtype(target_matched_vals):
@@ -6655,7 +6678,7 @@ def render_tools(project_root: Path, global_input_path: str | None) -> None:
                                         if df_working is not None:
                                             target_anchor_df = df_working[tgt_anchors]
                                         else:
-                                            target_anchor_df = pd.read_csv(unified_csv_path, usecols=tgt_anchors)
+                                            target_anchor_df = _dataio_load(unified_csv_path, columns=tgt_anchors)
                                         source_anchor_df = pd.read_csv(source_path_val, usecols=src_anchors)
                                         matched_idx = _find_matching_indices(target_anchor_df, source_anchor_df, anchors_config)
                                         matched_nonnull = matched_idx.dropna()

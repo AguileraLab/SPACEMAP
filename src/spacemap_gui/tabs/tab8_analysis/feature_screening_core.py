@@ -16,7 +16,6 @@ import numpy as np
 import pandas as pd
 import warnings
 from lifelines import CoxPHFitter, KaplanMeierFitter
-from lifelines.utils import concordance_index as _lifelines_concordance_index
 from lifelines.statistics import logrank_test, proportional_hazard_test
 from scipy import stats
 from scipy.spatial import cKDTree

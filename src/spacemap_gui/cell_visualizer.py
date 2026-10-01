@@ -8,7 +8,7 @@ import tifffile
 import matplotlib.pyplot as plt
 from shapely.affinity import translate
 from shapely.geometry import Point, box, shape
-import scipy.ndimage as ndi
+from spacemap_gui import terminal
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -17,6 +17,11 @@ try:
     import zarr
 except ImportError:
     zarr = None
+
+def _log_console(message: str, level: str = "info") -> None:
+    """One timestamped terminal line for this tab (see spacemap_gui.terminal)."""
+    terminal.say('tab7', message, step='Cell Visualizer', level=level)
+
 
 class CellVisualizer:
     def __init__(self, roi_dir: str | Path, seg_dir: str | Path):
@@ -477,13 +482,10 @@ class CellVisualizer:
                          # Convert to unsigned 32-bit
                          val = val & 0xFFFFFFFF
                          
-                         # Parse ARGB (Alpha is highest byte)
-                         # We want RGB 0-1 triples
-                         # (A, R, G, B)
-                         a = (val >> 24) & 0xFF
-                         r = (val >> 16) & 0xFF
-                         g = (val >> 8) & 0xFF
-                         b = val & 0xFF
+                         # OME packs RGBA (red in the highest byte, alpha lowest)
+                         r = (val >> 24) & 0xFF
+                         g = (val >> 16) & 0xFF
+                         b = (val >> 8) & 0xFF
                          
                          colors.append((r/255.0, g/255.0, b/255.0))
                      except:
@@ -541,7 +543,7 @@ class CellVisualizer:
                 'channels': list of channel names (if available in metadata) or None
         """
         if batch_id not in self.file_map:
-            print(f"[CellVisualizer] Batch {batch_id} not found in matched files.")
+            _log_console(f"Batch {batch_id} not found in matched files.")
             raise FileNotFoundError(f"No matched files for batch {batch_id}")
 
         paths = self.file_map[batch_id]

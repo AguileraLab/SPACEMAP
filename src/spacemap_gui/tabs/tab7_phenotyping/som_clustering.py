@@ -11,11 +11,9 @@ import sys
 import json
 import time
 import hashlib
-import traceback
 from datetime import datetime
 from pathlib import Path
 import matplotlib.pyplot as plt
-import seaborn as sns
 import plotly.graph_objects as go
 
 # Import shared utilities
@@ -24,7 +22,6 @@ from .common import (
     logger,
     Timer,
     LOW_EXPRESSION_METRIC_OPTIONS,
-    build_cluster_marker_score_map,
     build_cluster_marker_score_map_from_heatmap,
     render_assisted_assignment,
     build_marker_source_note,
@@ -43,7 +40,6 @@ from .common import (
     get_low_expression_metric_help_text,
     get_low_expression_metric_label,
     initialize_optional_column_widget_state,
-    get_marker_selection_help_text,
     get_marker_workspace_panel,
     render_method_marker_selection,
     get_normalization_flag_help_text,
@@ -52,27 +48,22 @@ from .common import (
     normalize_phenotype_map_keys,
     normalize_optional_column_name,
     get_output_column_help_text,
-    plot_heatmap_figure,
     get_random_seed_help_text,
-    save_plot,
-    project_root_calc,
     build_leiden_heatmap_figure,
     render_phenotype_statistics,
     render_publication_heatmap,
     render_save_assignments,
     render_export_split_data,
-    render_data_filter_ui,
     apply_data_filter,
     apply_heatmap_assignment_event,
     consume_heatmap_assignment_event,
     get_heatmap_assignment_scope,
     read_dataframe_parquet_safe,
     render_settings_export_import,
-    render_phenotyping_run_log_controls,
+    render_method_intro,
     begin_phenotyping_run_audit,
     finish_phenotyping_run_audit,
     resolve_notebook_marker_defaults,
-    STANDARD_PHENOTYPES,
     get_all_phenotype_options,
     render_add_custom_phenotype_ui,
     write_dataframe_parquet_atomic,
@@ -81,6 +72,7 @@ from .heatmap_click_selector import (
     heatmap_click_selector_available,
     render_heatmap_click_selector,
 )
+from spacemap_gui import terminal
 
 try:
     from spacemap_gui.cell_visualizer import CellVisualizer
@@ -109,6 +101,11 @@ except ImportError:
 SOM_LOW_EXPR_CLUSTER_ID = -1
 SOM_LOW_EXPR_DEFAULT_PHENOTYPE = "Others"
 SOM_LOW_EXPR_LABEL = "Low expression bucket"
+
+
+def _log_console(message: str, level: str = "info") -> None:
+    """One timestamped terminal line for this tab (see spacemap_gui.terminal)."""
+    terminal.say('tab7', message, step='SOM', level=level)
 
 
 def _is_som_low_expression_cluster(cluster_id, low_expr_cluster_id) -> bool:
@@ -159,14 +156,29 @@ def _coerce_som_low_expression_threshold(
 
     return 0.0
 
+SOM_GUIDE = """\
+**What it does.** A self-organising map (SOM) places every cell on a grid of small groups ("nodes") so that similar cells land on the same or neighbouring nodes. The nodes are then merged into a fixed number of **meta-clusters**, which you name as phenotypes.
+
+**Steps**
+1. Choose the input table and the markers.
+2. Set the grid size and the number of meta-clusters. The defaults follow the notebook: an automatic grid of 40 to 70 nodes per side and 50 meta-clusters.
+3. Run, then name each meta-cluster from the heatmap. Meta-clusters given the same name are merged.
+4. Save the names into the table, then check example cells under **Visual Validation**.
+
+**Tip.** Ask for more meta-clusters than the cell types you expect; naming several as the same type is easy.
+"""
+
+
 def render_som(project_root, global_input_path):
     """
     SOM Clustering subtab - mirrors Leiden approach with SOM-specific parameters.
     Synchronized with Step6B_phenotype_SOM.ipynb notebook.
     """
-    st.subheader("SOM Clustering Phenotyping")
-    render_phenotyping_run_log_controls(Path(project_root), "som", "SOM Clustering")
-    st.markdown("Self-Organizing Maps (SOM) for reproducible, notebook-aligned phenotyping and phenotype assignment.")
+    render_method_intro(
+        project_root, "som", "SOM Phenotyping",
+        "Arrange cells on a self-organising map, merge the map into meta-clusters, then name each one.",
+        SOM_GUIDE, notebook="Step6B_phenotype_SOM.ipynb", log_label="SOM Clustering",
+    )
     st.caption(
         "Step6B defaults: batch-wise Z1 normalization, mean marker z-score filtering at -0.75, "
         "automatic 40–70 SOM grid, balanced training, and 50 final meta-clusters."
@@ -263,7 +275,7 @@ def render_som(project_root, global_input_path):
         return norm_data, norm_cols_local
     
     # --- Input File Selection ---
-    st.markdown("##### Input File Selection")
+    st.markdown("### 1. Input File")
     use_global = st.checkbox("Use Global Input File", value=cached_params.get("use_global", True), key="som_use_global")
     full_input_path = global_input_path
     
@@ -287,7 +299,7 @@ def render_som(project_root, global_input_path):
         st.caption(f"Active File: {os.path.basename(full_input_path)}")
 
     # --- Marker Selection (Identical to Leiden) ---
-    st.markdown("##### Marker Selection")
+    st.markdown("### 2. Marker Selection")
     st.caption("Select markers for SOM clustering. Auto-selected from notebook configuration.")
     
     # Read available markers from input file
@@ -334,7 +346,7 @@ def render_som(project_root, global_input_path):
     )
     
     if not markers_selected:
-        st.warning("⚠️ No markers selected. Please select markers above before running.")
+        st.warning("No markers selected. Please select markers above before running.")
 
     # --- Configuration Panel ---
     if 'som_config' not in st.session_state:
@@ -375,7 +387,8 @@ def render_som(project_root, global_input_path):
             'markers': cached_params.get('markers', []),
         }
 
-    with st.expander("Configuration & Parameters", expanded=True):
+    st.markdown("### 3. Configuration")
+    with st.expander("Parameters", expanded=True):
         with st.form("som_config_form", clear_on_submit=False):
             col1, col2 = st.columns([1, 1])
 
@@ -400,7 +413,6 @@ def render_som(project_root, global_input_path):
                 cell_id_col = st.selectbox(
                     "Cell ID Column",
                     cell_id_options,
-                    index=cell_id_options.index(st.session_state.get("som_cell_id_col", default_cell_id)) if st.session_state.get("som_cell_id_col", default_cell_id) in cell_id_options else 0,
                     format_func=lambda value: value or "(None)",
                     help=get_cell_id_column_help_text(),
                     key="som_cell_id_col"
@@ -417,7 +429,6 @@ def render_som(project_root, global_input_path):
                 batch_id_col = st.selectbox(
                     "Batch ID Column (Normalization)",
                     batch_id_options,
-                    index=idx_batch, 
                     format_func=lambda value: value or "(None)",
                     help=get_batch_id_column_help_text(),
                     key="som_batch_id_col"
@@ -744,12 +755,12 @@ def render_som(project_root, global_input_path):
     st.caption(f"Confirmed markers: {len(markers_selected)}")
     
     if not markers_selected:
-        st.warning("⚠️ No markers selected. Please select markers above before running.")
+        st.warning("No markers selected. Please select markers above before running.")
 
     # --- LOAD EXISTING RESULTS / START FRESH ---
     if full_input_path and os.path.exists(full_input_path):
         st.divider()
-        st.markdown("##### Existing SOM Results")
+        st.markdown("### 4. Load Previous Results (optional)")
 
         can_load_existing = False
         try:
@@ -873,7 +884,8 @@ def render_som(project_root, global_input_path):
             st.caption("Timestamped messages mirrored from the shell terminal during the last SOM run.")
             st.code("\n".join(existing_run_log), language=None)
     
-    if st.button(" Run SOM Clustering Pipeline", type="primary", width="stretch", key="som_run_btn"):
+    st.markdown("### 5. Run SOM Clustering")
+    if st.button("Run SOM Clustering Pipeline", type="primary", width="stretch", key="som_run_btn"):
         def _warn_if_too_few_cells(remaining_cells, stage_label, filter_settings):
             if auto_grid:
                 min_required_cells = int(min_grid) * int(min_grid)
@@ -913,10 +925,10 @@ def render_som(project_root, global_input_path):
             return True
 
         if not full_input_path or not Path(full_input_path).exists():
-            st.error(" Please select a valid input file.")
+            st.error("Please select a valid input file.")
             return
         if not markers_selected:
-            st.error(" No markers selected. Please save marker selection first.")
+            st.error("No markers selected. Please save marker selection first.")
             return
 
         run_audit = begin_phenotyping_run_audit(
@@ -999,7 +1011,7 @@ def render_som(project_root, global_input_path):
                     # Check marker availability
                     missing_markers = [m for m in markers_selected if m not in df.columns]
                     if missing_markers:
-                        st.error(f"❌ Missing markers in dataset: {missing_markers}")
+                        st.error(f"Missing markers in dataset: {missing_markers}")
                         logger.error(f"Missing markers: {missing_markers}")
                         return
                     
@@ -1225,11 +1237,11 @@ def render_som(project_root, global_input_path):
                                 
                             except Exception as e:
                                 logger.error(f"Advanced SOM training failed: {e}")
-                                st.error(f" SOM training error: {e}")
+                                st.error(f"SOM training error: {e}")
                                 return
                         else:
                             logger.warning("ph_som_utils not available. Using fallback MiniSom.")
-                            st.warning(" Advanced SOM utils not available. Using basic MiniSom (slower).")
+                            st.warning("Advanced SOM utils not available. Using basic MiniSom (slower).")
                             
                             # Fallback to basic MiniSom
                             try:
@@ -1275,7 +1287,7 @@ def render_som(project_root, global_input_path):
                                 
                             except Exception as e:
                                 logger.error(f"Fallback MiniSom failed: {e}")
-                                st.error(f" SOM training failed: {e}")
+                                st.error(f"SOM training failed: {e}")
                                 return
                     
                     # Rename cluster column to match output configuration
@@ -1444,9 +1456,9 @@ def render_som(project_root, global_input_path):
                 run_audit = None
                 logger.error(f"SOM pipeline error: {e}")
                 import traceback
-                st.error(f" Error during execution: {e}")
+                st.error(f"Error during execution: {e}")
                 st.code(traceback.format_exc())
-                status.update(label=" Pipeline Failed", state="error")
+                status.update(label="Pipeline Failed", state="error")
             finally:
                 if run_audit is not None:
                     finish_phenotyping_run_audit(
@@ -1463,8 +1475,7 @@ def render_som(project_root, global_input_path):
     # (This section is identical in structure to Leiden, adapted for SOM meta-clusters)
     if 'som_temp_file' in st.session_state and Path(st.session_state['som_temp_file']).exists():
         st.divider()
-        st.subheader("Interactive Visualization & Phenotype Assignment")
-        st.caption("Professional phenotype assignment interface synchronized with notebook workflow (Step6B)")
+        st.subheader("Results & Phenotype Assignment")
         
         # Load results
         temp_file = st.session_state['som_temp_file']
@@ -1496,7 +1507,6 @@ def render_som(project_root, global_input_path):
         # TAB 1: HEATMAP & ASSIGNMENT
         with tab_heatmap:
             st.markdown("### Interactive Meta-Cluster Expression Heatmap")
-            st.caption("Professional heatmap interface for phenotype assignment")
             
             # Initialize session state (filter NaN values from meta_cluster)
             valid_meta_clusters = sorted(
@@ -2096,7 +2106,7 @@ def render_som(project_root, global_input_path):
     # --- VISUAL VALIDATION COMPONENT (Ported from Leiden) ---
     if st.session_state.get('viz_enabled', True):
         st.divider()
-        with st.expander("Visual Validation of Meta-Clusters", expanded=True):
+        with st.expander("Visual Validation of Representative Cells", expanded=True):
             st.markdown("#### Visualize Representative Cells")
             st.caption("Inspect random cells from specific clusters to validate phenotype assignments.")
             
@@ -2328,7 +2338,7 @@ def render_som(project_root, global_input_path):
                                                     }
                                                     pd.DataFrame([meta_rec]).to_csv(csv_path, mode='a', header=not csv_path.exists(), index=False)
                                                 except Exception as e:
-                                                    print(f"Auto-save error: {e}")
+                                                    _log_console(f"Auto-save error: {e}", level="error")
                                                 
                                                 plt.close(fig)
                                             except Exception as e:

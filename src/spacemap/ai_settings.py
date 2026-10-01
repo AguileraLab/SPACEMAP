@@ -39,6 +39,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "server_host": "127.0.0.1",
     "server_port": 8091,
     "models_dir": "",
+    # GPU memory mode for the local model: auto, bfloat16, float32, int8 or int4 (model_runtime.PRECISIONS).
+    "precision": "auto",
+    # Stop the local model server when the SPACEMAP that started it stops (model_service/guard.py).
+    "stop_with_spacemap": True,
     "allow_downloads": True,
     "api": {
         "provider": "",
@@ -203,7 +207,67 @@ def clear_token() -> None:
 
 #: Modules that must import for a local model to run.  Kept as names rather
 #: than imports so that checking availability costs nothing.
-LOCAL_BACKEND_MODULES = ("torch", "transformers", "accelerate", "fastapi", "uvicorn")
+#: What running a model on this machine needs, as declared in pyproject.toml
+#: (the ``ai`` extra, plus torch from SPACEMAP's core dependencies):
+#: (pip name, version, import name, required). bitsandbytes is optional: it
+#: only lets large models fit a smaller NVIDIA GPU (8- or 4-bit).
+AI_PACKAGES: tuple[tuple[str, str, str, bool], ...] = (
+    ("torch", ">=2.0.0", "torch", True),
+    ("transformers", ">=5.0", "transformers", True),
+    ("accelerate", ">=0.30", "accelerate", True),
+    ("safetensors", ">=0.4", "safetensors", True),
+    ("huggingface-hub", ">=0.24", "huggingface_hub", True),
+    ("fastapi", ">=0.110", "fastapi", True),
+    ("uvicorn", ">=0.27", "uvicorn", True),
+    ("pydantic", ">=2.0", "pydantic", True),
+    ("bitsandbytes", ">=0.43", "bitsandbytes", False),
+)
+#: A small quantized (GGUF) model on a machine without a GPU (the ``gguf`` extra).
+GGUF_PACKAGES: tuple[tuple[str, str, str, bool], ...] = (("llama-cpp-python", ">=0.3.0", "llama_cpp", True),)
+
+LOCAL_BACKEND_MODULES = tuple(module for _, _, module, required in AI_PACKAGES if required)
+
+
+def dependency_report(packages=AI_PACKAGES) -> list[dict]:
+    """Each package: its pip name, the version wanted, whether it is needed, and the version installed (or None)."""
+    import importlib.metadata
+    from importlib.util import find_spec
+
+    report = []
+    for name, spec, module, required in packages:
+        version = None
+        try:
+            if find_spec(module) is not None:
+                try:
+                    version = importlib.metadata.version(name)
+                except importlib.metadata.PackageNotFoundError:
+                    version = "installed"
+        except (ImportError, ValueError):
+            version = None
+        report.append({"name": name, "wanted": spec, "required": required, "installed": version})
+    return report
+
+
+def install_command(packages: list[tuple[str, str]]) -> str:
+    """The pip command that installs *packages* into the environment running SPACEMAP.
+
+    It names this interpreter by its full path, so the packages go into the
+    right environment whatever it is called, and it installs only what is
+    listed - never SPACEMAP itself.
+    """
+    import sys
+
+    wanted = " ".join(f'"{name}{spec}"' for name, spec in packages)
+    return f'"{sys.executable}" -m pip install {wanted}'
+
+
+def environment_name() -> str:
+    """A readable name for the environment running SPACEMAP (the conda environment's name if any)."""
+    import os
+    import sys
+    from pathlib import Path
+
+    return os.environ.get("CONDA_DEFAULT_ENV") or Path(sys.prefix).name
 
 
 def missing_local_dependencies() -> list[str]:
@@ -226,7 +290,12 @@ def local_backend_ready() -> bool:
 
 
 __all__ = [
+    "AI_PACKAGES",
     "BACKENDS",
+    "GGUF_PACKAGES",
+    "dependency_report",
+    "environment_name",
+    "install_command",
     "DEFAULT_SETTINGS",
     "is_enabled",
     "is_forced_off",

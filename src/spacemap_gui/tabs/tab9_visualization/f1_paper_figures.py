@@ -4612,14 +4612,34 @@ def _valid_select_state(
         st.session_state[key] = default if default in options else options[0]
 
 
-@st.cache_data(show_spinner=False)
-def _read_unified_columns(csv_path: str, columns: tuple[str, ...]) -> pd.DataFrame:
-    return pd.read_csv(csv_path, usecols=list(columns), low_memory=False)
+# The file signature is part of each cache key, so an edited or re-exported
+# unified table is re-read instead of serving the previous file's rows. Column
+# lookups go through dataio, which uses the Parquet fast copy when it is current.
+@st.cache_data(show_spinner=False, max_entries=4)
+def _read_unified_columns_cached(csv_path: str, columns: tuple[str, ...], signature) -> pd.DataFrame:
+    from spacemap import dataio
+
+    return dataio.load(csv_path, columns=list(columns))
 
 
-@st.cache_data(show_spinner=False)
-def _read_unified_frame(csv_path: str) -> pd.DataFrame:
+@st.cache_data(show_spinner=False, max_entries=1)
+def _read_unified_frame_cached(csv_path: str, signature) -> pd.DataFrame:
+    # The whole numeric table feeds model training, so it keeps the pandas
+    # reader: pyarrow can type an all-blank column as text where pandas reads
+    # float, and parses a few values differently in the last binary digit.
     return pd.read_csv(csv_path, low_memory=False)
+
+
+def _read_unified_columns(csv_path: str, columns: tuple[str, ...]) -> pd.DataFrame:
+    from spacemap_gui.ui_utils import file_signature
+
+    return _read_unified_columns_cached(csv_path, columns, file_signature(csv_path))
+
+
+def _read_unified_frame(csv_path: str) -> pd.DataFrame:
+    from spacemap_gui.ui_utils import file_signature
+
+    return _read_unified_frame_cached(csv_path, file_signature(csv_path))
 
 
 def _unique_text_values(

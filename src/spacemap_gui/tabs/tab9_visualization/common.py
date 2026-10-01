@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from spacemap_gui import terminal
 import json
 import os
 import re
@@ -70,11 +71,11 @@ def timestamp() -> str:
 
 
 def log_console(message: str) -> None:
-    print(message, flush=True)
+    terminal.say("tab9", message)
 
 
 def log_terminal_event(message: str) -> None:
-    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [Tab9 Visualization] {message}", flush=True)
+    terminal.say("tab9", message)
 
 
 def _is_transient_tab9_key(key: str) -> bool:

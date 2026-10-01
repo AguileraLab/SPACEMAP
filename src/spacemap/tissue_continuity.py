@@ -22,10 +22,10 @@ polygon decides where a gap is.
 
 from __future__ import annotations
 
-from typing import Any, Iterable, Sequence
+from typing import Any, Sequence
 
 import shapely
-from shapely.geometry import LineString, MultiPolygon, Polygon
+from shapely.geometry import LineString, Polygon
 from shapely.validation import make_valid
 
 __all__ = [
@@ -537,7 +537,6 @@ def _neck_raster_scale(polygon: Polygon, microns_per_pixel: float, raster_um: fl
 
 def _disc(radius_px: int):
     import cv2
-    import numpy as np
 
     size = 2 * int(max(radius_px, 1)) + 1
     return cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (size, size))

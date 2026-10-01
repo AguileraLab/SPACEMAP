@@ -6,12 +6,9 @@ and file operations used throughout the SPACEMAP pipeline.
 """
 
 import os
-import sys
 import json
-import time
 import tifffile
 import numpy as np
-import matplotlib.pyplot as plt
 import xml.etree.ElementTree as ET
 from datetime import datetime
 import itertools
@@ -24,8 +21,12 @@ def pairwise(iterable):
     return zip(a, b)
 
 
-# Add pairwise to itertools for palom compatibility
-itertools.pairwise = pairwise
+# palom calls itertools.pairwise, which Python added in 3.10. Only fill it in
+# where it is missing: replacing the built-in on 3.10+ breaks torch (its compiler
+# rejects the substitute), which stopped transformers 5 and the AI assistant's
+# model server from loading.
+if not hasattr(itertools, "pairwise"):
+    itertools.pairwise = pairwise
 
 
 def log_time(message, tab_id: str = None):
@@ -117,8 +118,9 @@ def rgb_to_color_int(rgb):
 
     Notes
     -----
-    The packed format used is: (R << 24) | (G << 16) | (B << 8).
-    This matches the prior behavior in SPACEMAP.
+    The packed format is OME's RGBA: (R << 24) | (G << 16) | (B << 8) | A, with A = 255
+    (opaque). Earlier SPACEMAP wrote A = 0, which OME defines as fully transparent;
+    readers that honour alpha could hide such a channel. The RGB bytes are unchanged.
 
     Parameters
     ----------
@@ -165,7 +167,7 @@ def rgb_to_color_int(rgb):
     R = max(0, min(255, R))
     G = max(0, min(255, G))
     B = max(0, min(255, B))
-    val = (R << 24) | (G << 16) | (B << 8)
+    val = (R << 24) | (G << 16) | (B << 8) | 0xFF
     if val >= 2**31:
         val = val - 2**32
     return val
@@ -193,6 +195,9 @@ def create_ome_metadata(channel_names, channel_colors, SizeX, SizeY, pixel_type,
     """
     ome_ns = "http://www.openmicroscopy.org/Schemas/OME/2016-06"
     ome = ET.Element('OME', xmlns=ome_ns)
+    # Where the OME schema is, as standard OME files say (validators need it; viewers ignore it).
+    ome.set('xmlns:xsi', 'http://www.w3.org/2001/XMLSchema-instance')
+    ome.set('xsi:schemaLocation', ome_ns + ' ' + ome_ns + '/ome.xsd')
     image = ET.SubElement(ome, 'Image', ID='Image:0', Name='Merged Image')
     pixels = ET.SubElement(
         image,
@@ -457,6 +462,7 @@ def save_roi_pyramidal_ome_tiff(layers, channel_names, channel_colors, output_pa
                     tile=tile_size,
                     description=ome_xml if c == 0 else None,
                     planarconfig='CONTIG',
+                    metadata=None,  # the OME description alone: no second, tifffile 'shaped' one
                 )
                 prev_img = padded_img
                 for i in range(n_pyramid_levels):
@@ -470,6 +476,7 @@ def save_roi_pyramidal_ome_tiff(layers, channel_names, channel_colors, output_pa
                         compression='deflate',
                         tile=tile_size,
                         planarconfig='CONTIG',
+                        metadata=None,  # the OME description alone: no second, tifffile 'shaped' one
                     )
                     prev_img = downsampled_img
         log_time(f"ROI OME-TIFF saved: {output_path}")
@@ -502,7 +509,6 @@ def anchor_and_update_unified(existing, new_data, id_col='id', columns_to_update
     pd.DataFrame
         Updated unified dataframe with properly anchored results.
     """
-    import pandas as pd
     
     # Validate inputs
     if id_col not in new_data.columns:

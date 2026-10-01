@@ -18,6 +18,7 @@ import base64
 import binascii
 import io
 import json
+import re
 import threading
 import time
 import uuid
@@ -335,6 +336,45 @@ def _generation_kwargs(request: ChatRequest, inputs: dict[str, Any]) -> dict[str
     return kwargs
 
 
+# Gemma 4 can open an (empty) thinking channel even with thinking switched off:
+# "<|channel>thought ... <channel|>answer". Decoding drops some of these markers
+# as special tokens but not all, so answers came back as "thought <channel|>CD20".
+_THINKING = re.compile(r"^\s*(?:<\|?channel\|?>\s*)?thought\b.*?<channel\|>\s*", re.DOTALL)
+_MARKERS = re.compile(r"<\|?channel\|?>")
+
+
+def clean_answer(text: str) -> str:
+    """The visible answer: any leading thinking block and stray channel markers removed."""
+    return _MARKERS.sub("", _THINKING.sub("", text or "", count=1)).strip()
+
+
+class _AnswerFilter:
+    """The same cleaning for a streamed answer: holds back a thinking block until it ends."""
+
+    def __init__(self) -> None:
+        self.buffer = ""
+        self.open = True  # still deciding whether the answer starts with a thinking block
+
+    def feed(self, piece: str) -> str:
+        if not self.open:
+            return _MARKERS.sub("", piece)
+        self.buffer += piece
+        head = self.buffer.lstrip()
+        # Also true while only the first letters of a marker have arrived.
+        maybe_thinking = any(head.startswith(start) or start.startswith(head)
+                             for start in ("thought", "<|channel>", "<channel|>"))
+        if maybe_thinking and "<channel|>" not in self.buffer and len(self.buffer) < 20000:
+            return ""
+        self.open = False
+        return clean_answer(self.buffer) if maybe_thinking else _MARKERS.sub("", self.buffer)
+
+    def flush(self) -> str:
+        if not self.open:
+            return ""
+        self.open = False
+        return clean_answer(self.buffer)
+
+
 def _parsed_text(output: Any, prefix: Any) -> str:
     handler = _input_handler()
     try:
@@ -342,9 +382,9 @@ def _parsed_text(output: Any, prefix: Any) -> str:
         if isinstance(parsed, dict):
             content = parsed.get("content", "")
             if isinstance(content, str):
-                return content.strip()
+                return clean_answer(content)
             if isinstance(content, list):
-                return "\n".join(str(item.get("text", "")) for item in content if isinstance(item, dict)).strip()
+                return clean_answer("\n".join(str(item.get("text", "")) for item in content if isinstance(item, dict)))
     except (AttributeError, TypeError, ValueError):
         # Only some processors implement parse_response; decoding below is the
         # portable path.
@@ -354,7 +394,7 @@ def _parsed_text(output: Any, prefix: Any) -> str:
         output = output[prefix_len:]
     except (AttributeError, IndexError, TypeError, ValueError):
         pass
-    return handler.decode(output, skip_special_tokens=True).strip()
+    return clean_answer(handler.decode(output, skip_special_tokens=True))
 
 
 def _complete(request: ChatRequest) -> tuple[str, int, int]:
@@ -388,7 +428,16 @@ def _stream(request: ChatRequest, completion_id: str, created: int) -> Iterator[
 
         thread = threading.Thread(target=generate, daemon=True)
         thread.start()
-        for token in streamer:
+        answer = _AnswerFilter()
+
+        def pieces() -> Iterator[str]:
+            for piece in streamer:
+                yield answer.feed(piece)
+            yield answer.flush()
+
+        for token in pieces():
+            if not token:
+                continue
             chunk = {
                 "id": completion_id,
                 "object": "chat.completion.chunk",

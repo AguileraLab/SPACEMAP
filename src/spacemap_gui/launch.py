@@ -65,7 +65,8 @@ def main(argv: list[str] | None = None) -> int:
     if argv and argv[0] in {"-h", "--help"}:
         print(__doc__.strip())
         print(
-            "\nUsage: spacemap [--port PORT] [streamlit options]\n\n"
+            "\nUsage: spacemap [--port PORT] [streamlit options]\n"
+            "       spacemap doctor        Check this environment and say what to fix.\n\n"
             "Common options:\n"
             "  --port PORT            Serve on this port (default 8501).\n"
             "  --server.headless      Do not open a browser automatically.\n"
@@ -75,6 +76,11 @@ def main(argv: list[str] | None = None) -> int:
             "  SPACEMAP_DATA_DIR      Default data location used by the notebooks.\n"
         )
         return 0
+
+    if argv and argv[0] == "doctor":
+        from spacemap.doctor import main as doctor
+
+        return doctor(argv[1:])
 
     if argv and argv[0] == "--version":
         from spacemap import __version__
@@ -90,7 +96,7 @@ def main(argv: list[str] | None = None) -> int:
     except ImportError:
         print(
             "Streamlit is not installed in this environment.\n"
-            "Install SPACEMAP with:  pip install spacemap-ai",
+            "From the cloned SPACEMAP folder, run:  python -m pip install -e .",
             file=sys.stderr,
         )
         return 1
