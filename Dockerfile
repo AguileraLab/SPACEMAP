@@ -7,6 +7,8 @@ FROM python:3.10-slim-bookworm
 
 # Which optional dependency groups to install. Empty means pipeline only.
 ARG SPACEMAP_EXTRAS=""
+# CPU wheels keep the default image small. Set empty or a CUDA index for GPU use.
+ARG SPACEMAP_TORCH_INDEX_URL="https://download.pytorch.org/whl/cpu"
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -52,14 +54,19 @@ COPY pyproject.toml README.md LICENSE marker_configs.json ./
 COPY src ./src
 
 RUN python -m pip install --upgrade pip setuptools wheel \
+    && if [ -n "$SPACEMAP_TORCH_INDEX_URL" ]; then \
+           python -m pip install torch torchvision --index-url "$SPACEMAP_TORCH_INDEX_URL"; \
+       fi \
     && if [ -n "$SPACEMAP_EXTRAS" ]; then \
            python -m pip install ".[${SPACEMAP_EXTRAS}]"; \
        else \
            python -m pip install .; \
-       fi
+       fi \
+    && python -m pip check
 
 COPY notebooks ./notebooks
 COPY docs ./docs
+COPY scripts/check_installed_app.py scripts/check_runtime.py ./scripts/
 
 RUN useradd --create-home --shell /bin/bash spacemap \
     && mkdir -p /workspace/projects "$SPACEMAP_HOME" \
@@ -73,6 +80,6 @@ EXPOSE 8501
 # Streamlit's own endpoint, so an orchestrator can tell a slow start from a
 # failed one.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 \
-    CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health', timeout=4).status==200 else 1)"
+    CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.build_opener(urllib.request.ProxyHandler({})).open('http://127.0.0.1:8501/_stcore/health', timeout=4).status==200 else 1)"
 
 CMD ["spacemap", "--server.address=0.0.0.0", "--server.port=8501", "--server.headless=true"]

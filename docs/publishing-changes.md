@@ -181,6 +181,7 @@ on personal repositories and returns "not found" on organisation ones.
 | Tests | Python 3.10 with and without AI extras |
 | Release wheel | archive contents, installed GUI startup and imports without AI packages |
 | Frontend | rebuild matches the bundled heatmap assets |
+| Docker CPU | build the image; validate installed GUI, compiled operators, HTTP health and persistent volumes |
 | Hygiene | ledger current; no machine paths; no buttons in forms; notebook outputs stripped |
 
 A red build is a blocked merge. Fix it rather than merging around it.

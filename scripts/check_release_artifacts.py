@@ -46,7 +46,8 @@ def check_sdist(path: Path) -> None:
                  for name in archive.getnames()}
     for required in ("LICENSE", "CITATION.cff", "environment.yml", "Dockerfile", "docker-compose.yml",
                      "requirements-lock.txt", "marker_configs.json", "docs/first-project.md",
-                     "docs/installation.md", "scripts/check_release_artifacts.py"):
+                     "docs/installation.md", "scripts/check_release_artifacts.py",
+                     "scripts/check_runtime.py", "scripts/check_container.py", "scripts/check_installed_app.py"):
         if required not in names:
             raise ValueError(f"{path.name}: missing {required}")
     print(f"OK: {path.name}: installation and source-release files")

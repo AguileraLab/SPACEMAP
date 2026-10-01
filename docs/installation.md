@@ -109,9 +109,105 @@ docker compose build --build-arg SPACEMAP_EXTRAS="ai"
 docker compose up
 ```
 
-For GPU access, install NVIDIA Container Toolkit and enable the `deploy` block
-in `docker-compose.yml`. Check GPU availability inside the container. Compose
-publishes port 8501; use this setup on your workstation or a trusted network.
+The default image uses CPU-only PyTorch wheels. For NVIDIA GPU use:
+
+1. Install [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
+   on the Linux Docker host and enable the `deploy` block in `docker-compose.yml`.
+2. Select CUDA-enabled PyTorch wheels and rebuild. An empty index uses pip's
+   default Linux wheels; for a particular CUDA build, set the index URL from
+   the [PyTorch installer](https://pytorch.org/get-started/locally/) instead.
+   Check that the selected build supports your GPU and host driver.
+
+   ```bash
+   export SPACEMAP_TORCH_INDEX_URL=""
+   docker compose build
+   docker compose run --rm spacemap python /opt/spacemap/scripts/check_runtime.py --device cuda
+   docker compose up
+   ```
+
+The GPU check must pass; merely starting the GUI does not establish GPU access.
+Keep the index setting when rebuilding so the image does not revert to CPU
+wheels. See [Docker's GPU instructions](https://docs.docker.com/compose/how-tos/gpu-support/).
+Compose publishes port 8501; use this setup on your workstation or a trusted network.
+
+### Validate an installation
+
+From the repository root, with the installed environment active:
+
+```bash
+python -m pip check
+python scripts/check_installed_app.py
+python scripts/check_runtime.py --device cpu
+```
+
+On an allocated NVIDIA GPU, run:
+
+```bash
+python scripts/check_runtime.py --device cuda --report ../gpu-validation.json
+python -m pytest -q tests/test_spatial_distance_acceleration.py
+```
+
+The runtime check fails when CUDA is unavailable. It exercises compiled
+PyTorch/torchvision operators and compares SPACEMAP's GPU distances with GEOS;
+therefore it cannot silently report a CPU fallback as a GPU pass. Optional
+`--cellpose-weights /path/to/cellpose3-model` also runs SPACEMAP's Cellpose wrapper
+on a small synthetic image using an existing model file. This check downloads
+no model or study data. Its JSON report records package versions and the model
+checksum without recording local paths. Synthetic inference checks execution,
+not biological segmentation accuracy or large-image memory requirements.
+
+To test the actual container, install Docker and Python 3.10 or newer on the
+host, then run from the clone:
+
+```bash
+docker compose config --quiet
+docker build --tag spacemap:validation .
+python scripts/check_container.py --image spacemap:validation
+```
+
+The container check verifies dependencies, CPU operators, opening the installed
+GUI and creating a project, non-root execution, HTTP health and writing to
+persistent volumes. It creates and removes its own temporary container and
+volumes. It does not touch existing SPACEMAP projects or application volumes.
+The same check is included in GitHub Actions as **Docker CPU build and startup**.
+Open a pull request to run CI on a review branch; ordinary branch pushes only
+trigger the current workflow when the branch is `main`. After the workflow is
+on `main`, **Actions → CI → Run workflow** can also start it manually.
+
+### Other platforms
+
+Linux x86-64 is the validated native platform. The following synthetic checks
+passed on 1 October 2026, with Python 3.10.21 and Cellpose 3.1.1.3:
+
+| Runtime | PyTorch / torchvision | Result |
+| --- | --- | --- |
+| CPU | 2.14.1+cpu / 0.29.1+cpu | Compiled operators, distances and Cellpose inference passed |
+| NVIDIA L4 | 2.14.0+cu130 / 0.29.0+cu130 | CUDA operators, Cellpose inference and all 6 distance tests passed |
+| NVIDIA H200 NVL | 2.14.0+cu130 / 0.29.0+cu130 | CUDA operators, Cellpose inference and all 6 distance tests passed |
+| NVIDIA RTX PRO 6000 Blackwell | 2.14.0+cu130 / 0.29.0+cu130 | CUDA operators, Cellpose inference and all 6 distance tests passed |
+
+These GPU runs used an existing native environment, not the Docker image.
+Docker execution and macOS/Windows installations still require validation.
+A Linux container test alone does not validate macOS, Windows, ARM hardware or
+a different GPU model.
+
+- **Windows:** use WSL2 with the Linux instructions, or Docker Desktop's WSL2
+  backend. Run the checks above inside that setup, then open the GUI in the
+  Windows browser and create a project in the intended mounted folder. NVIDIA
+  passthrough has additional [Docker Desktop prerequisites](https://docs.docker.com/desktop/features/gpu/).
+- **macOS:** native installation remains unvalidated. On Apple Silicon, try
+  the x86-64 Docker image with `export DOCKER_DEFAULT_PLATFORM=linux/amd64`
+  before building. This uses emulation and still needs a real Mac test. The
+  CUDA check does not validate Apple GPU/MPS support.
+- **Each host:** verify the chosen project folder is writable, save and reopen
+  a project, restart the application, and confirm that its files and settings
+  remain. A passing named-volume check does not guarantee permissions for
+  every host bind mount.
+
+Record the OS, architecture, package versions, GPU model (when used) and results
+before adding a platform to the supported list. AI model inference, DeepCell
+and GGUF backends require their own checks; these runtime tests do not validate
+those optional configurations.
 
 ## Remote server or cluster
 
