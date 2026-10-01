@@ -11,13 +11,14 @@ not edit it by hand -- run the script after committing changes. The
 Local machine paths, account identifiers and site-specific cluster names are
 redacted in this public rendering. The original Git history is unchanged.
 
-**48 changes** by **1 contributor**, touching **344 files**. Latest: `7405eec` on 2026-10-01.
+**49 changes** by **1 contributor**, touching **346 files**. Latest: `c49bef8` on 2026-10-01.
 
 
 ## 2026-10
 
 | Date | Change | Who | Why | Files | Lines |
 | --- | --- | --- | --- | --- | --- |
+| 2026-10-01 | `c49bef8` test: validate CPU and GPU runtimes and add Docker startup CI | Bassel Dawod | publication users need reproducible installation checks, explicit CPU and CUDA image choices, and evidence distinguishing tested GPU configurations from pending platform validation. | 8 | +322/-7 |
 | 2026-10-01 | `7405eec` fix: keep local infrastructure details out of publication files | Bassel Dawod | generated documentation and examples should not reintroduce machine paths from historical commits. | 7 | +45/-13 |
 | 2026-10-01 | `b557e38` fix: prepare SPACEMAP installation and packaging for publication | Bassel Dawod | a new user could encounter unsupported dependencies, missing GUI assets, misplaced session state and unclear installation instructions; the release also needs consistent institutional licensing and no personal account paths. | 48 | +5409/-964 |
 
@@ -75,6 +76,19 @@ redacted in this public rendering. The original Git history is unchanged.
 ---
 
 ## Files changed per commit
+
+<details><summary><code>c49bef8</code> test: validate CPU and GPU runtimes and add Docker startup CI</summary>
+
+- `.github/workflows/ci.yml`
+- `Dockerfile`
+- `docker-compose.yml`
+- `docs/installation.md`
+- `docs/publishing-changes.md`
+- `scripts/check_container.py`
+- `scripts/check_release_artifacts.py`
+- `scripts/check_runtime.py`
+
+</details>
 
 <details><summary><code>7405eec</code> fix: keep local infrastructure details out of publication files</summary>
 
