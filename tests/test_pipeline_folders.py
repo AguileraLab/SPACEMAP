@@ -62,7 +62,7 @@ def test_two_spellings_of_one_folder_are_the_same_setting(tmp_path):
     real = tmp_path / "endosome" / "work" / "project"
     real.mkdir(parents=True)
     alias = tmp_path / "work"
-    os.symlink(tmp_path / "endosome" / "work", alias)  # as /work -> /endosome/work on BioHPC
+    os.symlink(tmp_path / "endosome" / "work", alias)  # a storage alias and its resolved path
     assert persistence.same_folder_setting(str(alias / "project"), str(real))
     assert not persistence.same_folder_setting(str(alias / "project"), str(tmp_path))
     assert persistence.same_folder_setting(40, 40.0) and not persistence.same_folder_setting("a", "")

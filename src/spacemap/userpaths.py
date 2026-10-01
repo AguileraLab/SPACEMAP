@@ -14,8 +14,8 @@ Resolution order for the root:
    into a temporary folder (see below).
 3. ``~/.spacemap``
 
-Some clusters set ``XDG_DATA_HOME=/tmp/$USER`` for every user (UTSW BioHPC does,
-for podman). ``/tmp`` is local to one node and is cleaned, so settings, the
+Some clusters set ``XDG_DATA_HOME=/tmp/$USER`` for every user to support
+container tools. ``/tmp`` is local to one node and is cleaned, so settings, the
 viewer's state and downloaded models would vanish or differ from node to node.
 Such a value is ignored; the small settings already written there on this node
 are carried over to ``~/.spacemap`` once (models are never copied: choose a

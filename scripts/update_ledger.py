@@ -10,7 +10,7 @@ This script renders that history into one Markdown file:
 * the reason, taken from the ``Why:`` trailer or the commit body,
 * which files it touched, and how many lines moved.
 
-Run it after merging work, or let the ``ledger`` GitHub Action keep it current:
+Run it after committing changes, then commit the ledger in its own commit:
 
     python scripts/update_ledger.py            # rewrite docs/LEDGER.md
     python scripts/update_ledger.py --check    # fail if it is out of date

@@ -88,7 +88,7 @@ by anyone:
 - **`cluster.py`** replaced `biohpc.py` — Slurm support with no site names,
   hidden unless `sbatch` exists.
 - `deepcell` moved out of the base install (it pulls TensorFlow).
-- Packaging, Docker, CI, MIT licence, citation metadata, contributor docs.
+- Packaging, Docker, CI, license and citation metadata, contributor docs.
 
 **A dependency fix worth knowing:** `pip install .` was impossible.
 `palom` requires `zarr>=2.10,<2.15` and `numpy<2.0`, while the project asked for
@@ -250,13 +250,17 @@ the lab, not a silent change.
 **Tab 9 `heatmap.py` still reads broadly**, deliberately — it scans many columns
 for low-cardinality filter columns. Narrowing it needs care.
 
-**Not yet on GitHub.** Local `main` is 22 commits ahead of `origin/main`; the 2026-09-22 interface review sits on branch `review/gui-publication-pass` on top of it, waiting to be pushed and reviewed.
+**Publication status.** The GitHub repository is private. The authors plan to
+make it accessible when the manuscript is submitted. Confirm the reviewed code
+revision and its license files are on the published branch before release.
 
-**Licence undecided.** The repo ships MIT, but UTSW policy INP-101 requires an
-academic-use-only notice by default; anything else needs written permission from
-the Office for Technology Development. **Do not make the repository public
-until that is settled.** Draft enquiry:
-`Publications/SPACEMAP_OTD_EMAIL_DRAFT.md`.
+**Licence.** SPACEMAP uses the UT Southwestern academic-research-only terms in
+[LICENSE](../LICENSE). Commercial use and redistribution, including any use or
+redistribution by a for-profit entity, are prohibited. The
+[UT Southwestern release policy](https://www.utsw.edu/about-us/administrative-offices/technology-development/agreements/open-source-release-of-software.html)
+requires express written permission from the Office for Technology Development
+for a different license. Third-party dependencies and model weights retain their
+own terms.
 
 ---
 
@@ -285,16 +289,22 @@ python -m ruff check src scripts
 python scripts/check_no_local_paths.py
 python scripts/check_streamlit_forms.py
 
-# 4. Refresh the change ledger.
-python scripts/update_ledger.py
+# 4. Review the changed files.
+git diff --stat
 
 # 5. Inspect what you are about to commit. Do not skip this.
-git add -A
+git add path/to/changed_file.py path/to/changed_document.md  # use your actual files
 git status
 git diff --cached --name-only
 
 # 6. Commit, with a Why line.
 git commit
+
+# Record that commit, then save the ledger separately.
+python scripts/update_ledger.py
+git add docs/LEDGER.md
+git commit -m "docs: refresh change ledger" -m "Why: record the reviewed changes."
+python scripts/update_ledger.py --check
 
 # 7. Push.
 git push -u origin fix/short-description
@@ -356,7 +366,7 @@ SSO, click **Configure SSO → Authorize** next to the token.
 
 ### What CI checks
 
-Lint; tests on Python 3.10–3.12; an install with **no extras** proving the
+Lint; tests on Python 3.10 with and without AI extras; an install with **no extras** proving the
 pipeline works without the AI packages; the ledger being current; no
 machine-specific paths; no buttons inside Streamlit forms; notebook outputs
 stripped.

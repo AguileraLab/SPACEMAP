@@ -96,7 +96,7 @@ def main(argv: list[str] | None = None) -> int:
     except ImportError:
         print(
             "Streamlit is not installed in this environment.\n"
-            "Install SPACEMAP with:  pip install spacemap-ai",
+            "From the cloned SPACEMAP folder, run:  python -m pip install -e .",
             file=sys.stderr,
         )
         return 1

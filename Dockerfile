@@ -3,7 +3,7 @@
 # The base image runs the full scientific pipeline and the GUI. The AI
 # assistant is not installed by default and is not required; build with
 # --build-arg SPACEMAP_EXTRAS="ai" to include it.
-FROM python:3.11-slim-bookworm
+FROM python:3.10-slim-bookworm
 
 # Which optional dependency groups to install. Empty means pipeline only.
 ARG SPACEMAP_EXTRAS=""
@@ -33,6 +33,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libgomp1 \
         libhdf5-dev \
         libopenblas-dev \
+        libopenslide0 \
         libproj-dev \
         libxml2-dev \
         libxslt1-dev \

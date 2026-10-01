@@ -1,4 +1,5 @@
 import { RenderData, Streamlit } from "streamlit-component-lib"
+import plotlyUrl from "plotly.js-dist-min/plotly.min.js?url"
 
 declare global {
   interface Window {
@@ -267,7 +268,7 @@ function ensurePlotly(): Promise<any> {
 
   plotlyPromise = new Promise((resolve, reject) => {
     const script = document.createElement("script")
-    script.src = "https://cdn.plot.ly/plotly-2.35.2.min.js"
+    script.src = plotlyUrl
     script.async = true
     script.onload = () => resolve(window.Plotly)
     script.onerror = () => reject(new Error("Failed to load Plotly"))

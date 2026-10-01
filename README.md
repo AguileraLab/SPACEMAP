@@ -12,8 +12,8 @@ An optional, local-first AI assistant can help you drive the pipeline. It is
 **switched off by default** and everything works without it.
 
 [![CI](https://github.com/AguileraLab/SPACEMAP/actions/workflows/ci.yml/badge.svg)](https://github.com/AguileraLab/SPACEMAP/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
+[![License: Academic research only](https://img.shields.io/badge/License-Academic%20research%20only-blue.svg)](LICENSE)
+[![Python 3.10](https://img.shields.io/badge/python-3.10-blue.svg)](https://www.python.org/)
 
 ---
 
@@ -25,12 +25,20 @@ cd SPACEMAP
 
 conda env create -f environment.yml
 conda activate spacemap
-pip install -e .
+spacemap doctor
 
 spacemap
 ```
 
 Open <http://localhost:8501> and start at **Tab 0 — Project Workspace**.
+Follow **[Your first project](docs/first-project.md)** to create a project,
+connect your images, and move through the pipeline. The clone contains the
+software and notebooks; study images and model weights are separate downloads.
+While this repository is private, cloning requires collaborator access.
+
+The setup uses **Python 3.10** and includes JupyterLab. AI packages and DeepCell
+are optional. `spacemap doctor` reports `PROBLEM` for issues to fix; a `NOTE`
+about no GPU or missing optional AI packages is expected on a CPU-only setup.
 
 Prefer Docker, or installing with pip into an environment you already manage?
 See **[docs/installation.md](docs/installation.md)**.
@@ -47,7 +55,7 @@ See **[docs/installation.md](docs/installation.md)**.
 | **3** | ROI extraction | Cut regions of interest from whole-slide images |
 | **4** | Annotation | Annotate tissue compartments and zones |
 | **5** | Segmentation | Segment cells with Cellpose, or DeepCell/Mesmer |
-| **6** | Batch correction | Harmonize marker intensities across batches (ComBat) |
+| **6** | Batch correction | Harmonize marker intensities across batches (ComBat and cyCombine) |
 | **7** | Phenotyping | Leiden, SOM, thresholds, SCIMAP, VORTEX, ML consensus |
 | **8** | Spatial analysis | Neighbourhoods, distances, interactions, tissue continuity |
 | **9** | Visualization | Spatial maps, heatmaps and publication figures |
@@ -55,7 +63,7 @@ See **[docs/installation.md](docs/installation.md)**.
 Every stage writes into the project's `outputs/` tree, so stages compose and
 you can stop and resume anywhere.
 
-Prefer scripting? The scientific core has no GUI dependency:
+Prefer scripting? Call the scientific modules without starting the GUI:
 
 ```python
 from spacemap.config import get_config
@@ -73,8 +81,9 @@ rest follows.
 
 ## The AI assistant is optional
 
-A fresh install is a pipeline-only application. No AI packages are imported, no
-model runs, nothing contacts the network, and there is no AI page.
+A fresh install starts with the assistant disabled and does not load a language
+model. Installing packages and downloading Cellpose or AI model weights require
+network access. Download the needed weights before using the pipeline offline.
 
 **To turn it on:** Tab 0 → *AI Assistant (optional)* → **Enable AI assistant**.
 
@@ -101,9 +110,9 @@ practical on a laptop.
 | Gemma 4 12B Instruct | ~24 GB | ~28 GB GPU | Yes |
 | Llama 3.1 8B Instruct | ~16 GB | ~20 GB GPU | No |
 
-With a local model, **nothing leaves the machine**: the server binds to
+Local model inference runs on your machine: the model server binds to
 loopback, requires a locally generated key, and runs with proxy variables
-stripped. Every action the assistant proposes needs your approval before it
+stripped. Downloads and any explicitly enabled online tools still use the network. Every action the assistant proposes needs your approval before it
 runs, and it can never write to the installed source or your configuration.
 
 To disable it across a shared installation regardless of the setting:
@@ -134,6 +143,7 @@ Your imaging data stays wherever you keep it; SPACEMAP only records the paths.
 
 | Page | |
 | --- | --- |
+| [Your first project](docs/first-project.md) | Create a project, prepare inputs, and follow the stages |
 | [Installation](docs/installation.md) | Conda, pip, Docker, offline, where files go |
 | [AI assistant](docs/ai-assistant.md) | Enabling it, installing models, no-GPU setups, privacy |
 | [Architecture](docs/architecture.md) | How the packages fit together and why the assistant is removable |
@@ -149,8 +159,8 @@ Your imaging data stays wherever you keep it; SPACEMAP only records the paths.
 
 ## Requirements
 
-- **Python** 3.10 or newer
-- **OS** Linux or macOS (Windows via Docker or WSL2)
+- **Python** 3.10 (the supported version for the current imaging dependencies)
+- **OS** Linux is the tested platform; macOS and Windows via Docker/WSL2 need platform validation
 - **RAM** 16 GB minimum; 64 GB+ for whole-slide work
 - **GPU** optional — accelerates Cellpose segmentation and the AI assistant
 - **Disk** whole-slide imaging is large; plan for your cohort, plus ~3–25 GB
@@ -163,11 +173,14 @@ Your imaging data stays wherever you keep it; SPACEMAP only records the paths.
 ```bash
 git clone https://github.com/AguileraLab/SPACEMAP.git
 cd SPACEMAP
+conda env create -f environment.yml
+conda activate spacemap
+python -m pip install --upgrade pip
 bash scripts/install_hooks.sh      # commit template and the Why: check
-pip install -e . pytest ruff
+python -m pip install -e . --group dev
 
 python -m pytest                   # self-contained: no data, models or GPU needed
-python -m ruff check src
+python -m ruff check src scripts
 ```
 
 Every change is recorded in [docs/LEDGER.md](docs/LEDGER.md) — what changed,
@@ -186,7 +199,12 @@ citation from the sidebar.
 
 ## License
 
-[MIT](LICENSE) © Aguilera Lab, UT Southwestern Medical Center.
+SPACEMAP is available for academic research use only under the
+[UT Southwestern license](LICENSE). Commercial use and redistribution,
+including any use or redistribution by a for-profit entity, are prohibited.
+
+Copyright (c) 2025-2026 The University of Texas Southwestern Medical Center.
+All rights reserved.
 
 SPACEMAP builds on Cellpose, DeepCell, SCIMAP, scanpy, palom and others; each
 keeps its own license. Models installed through the assistant are covered by

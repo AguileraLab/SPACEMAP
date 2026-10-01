@@ -18,6 +18,7 @@ What it checks:
 
 from __future__ import annotations
 
+import importlib
 import importlib.metadata as metadata
 import subprocess
 import sys
@@ -49,12 +50,9 @@ def _space(gigabytes: float) -> str:
 
 def check_python() -> Check:
     version = ".".join(map(str, sys.version_info[:3]))
-    if sys.version_info < (3, 10):
-        return Check("Python", PROBLEM, f"Python {version}; SPACEMAP needs 3.10 or newer.",
-                     "Create the environment from environment.yml (Python 3.10).")
     if sys.version_info[:2] != (3, 10):
-        return Check("Python", NOTE, f"Python {version}. The tested environment uses 3.10 (palom needs "
-                     "scikit-image < 0.20, which has no builds for newer Python versions).")
+        return Check("Python", PROBLEM, f"Python {version}; this SPACEMAP release requires Python 3.10.",
+                     "Create the environment from environment.yml (palom requires scikit-image <0.20).")
     return Check("Python", OK, f"Python {version} at {sys.executable}")
 
 
@@ -66,7 +64,7 @@ def check_code_location() -> list[Check]:
     if _installed(DISTRIBUTION) is None:
         checks.append(Check("SPACEMAP install", NOTE,
                             "SPACEMAP is not installed in this environment; it runs from the folder above.",
-                            'From the repository folder: python -m pip install -e ".[ai]"'))
+                            'From the repository folder: python -m pip install -e .'))
     old = _installed("spacemap")
     if old is not None:
         checks.append(Check(
@@ -74,7 +72,7 @@ def check_code_location() -> list[Check]:
             f"An older SPACEMAP package ('spacemap' {old}) is still registered. Its requirements "
             "(for example deepcell) cause pip's 'requires ... which is not installed' errors, and its "
             "path file can make Python load old SPACEMAP code.",
-            'python -m pip uninstall spacemap   (then: python -m pip install -e ".[ai]" in the repository)'))
+            'python -m pip uninstall spacemap   (then: python -m pip install -e . in the repository)'))
     return checks
 
 
@@ -89,10 +87,12 @@ def check_requirements() -> Check:
     except metadata.PackageNotFoundError:
         return Check("Required packages", NOTE, "Skipped: SPACEMAP is not installed as a package.")
     missing, wrong = [], []
+    required_count = 0
     for text in declared:
         requirement = Requirement(text)
         if requirement.marker is not None and not requirement.marker.evaluate({"extra": ""}):
             continue  # an extra, or not for this platform
+        required_count += 1
         version = _installed(requirement.name)
         if version is None:
             missing.append(requirement.name)
@@ -104,8 +104,8 @@ def check_requirements() -> Check:
             f"wrong version: {', '.join(wrong)}" if wrong else "",
         ]))
         return Check("Required packages", PROBLEM, detail,
-                     'From the repository folder: python -m pip install -e ".[ai]"')
-    return Check("Required packages", OK, f"All {len(declared)} requirements of SPACEMAP are met.")
+                     'From the repository folder: python -m pip install -e .')
+    return Check("Required packages", OK, f"All {required_count} base requirements of SPACEMAP are met.")
 
 
 def check_pip() -> Check:
@@ -118,6 +118,17 @@ def check_pip() -> Check:
         return Check("Package conflicts (pip check)", OK, "No conflicts.")
     return Check("Package conflicts (pip check)", PROBLEM, " | ".join(lines[:8]) + (" ..." if len(lines) > 8 else ""),
                  "A clean environment from environment.yml has none; see docs/installation.md.")
+
+
+def check_slide_reader() -> Check:
+    """Pip metadata cannot detect a missing native OpenSlide shared library."""
+    try:
+        importlib.import_module("openslide")
+    except (ImportError, OSError) as exc:
+        return Check("OpenSlide", PROBLEM, f"Slide reader cannot load: {exc}",
+                     "Install the native OpenSlide library: conda install -c conda-forge 'openslide<4'; "
+                     "for pip/Docker, use the system-library steps in docs/installation.md.")
+    return Check("OpenSlide", OK, "Python slide reader and native library load.")
 
 
 def check_assistant() -> Check:
@@ -135,7 +146,7 @@ def check_opencv() -> Check:
     versions = {name: _installed(name) for name in ("opencv-python", "opencv-python-headless")}
     present = {name: version for name, version in versions.items() if version}
     if not present:
-        return Check("OpenCV", PROBLEM, "OpenCV is not installed.", 'python -m pip install -e ".[ai]"')
+        return Check("OpenCV", PROBLEM, "OpenCV is not installed.", 'python -m pip install -e .')
     if len(present) == 2 and len(set(present.values())) > 1:
         wanted = max(present.values())
         return Check("OpenCV", PROBLEM, "opencv-python and opencv-python-headless are at different versions "
@@ -187,7 +198,7 @@ def run_checks(*, include_pip: bool = True) -> list[Check]:
     checks = [check_python(), *check_code_location(), check_requirements()]
     if include_pip:
         checks.append(check_pip())
-    checks += [check_opencv(), check_assistant(), check_gpu(), *check_folders()]
+    checks += [check_opencv(), check_slide_reader(), check_assistant(), check_gpu(), *check_folders()]
     return checks
 
 

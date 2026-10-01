@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import itertools
+
+import pytest
 import shutil
 import subprocess
 import sys
@@ -20,6 +22,8 @@ def test_spacemap_keeps_the_built_in_pairwise():
 
 
 def test_the_model_server_loads_after_spacemap():
+    pytest.importorskip("fastapi", reason="requires the optional ai extra")
+    pytest.importorskip("transformers", reason="requires the optional ai extra")
     # Replacing itertools.pairwise made torch's compiler refuse to load, and with
     # it transformers 5 and the assistant's model server. Run in a fresh process,
     # in the order the assistant uses: SPACEMAP first, then the model libraries.
@@ -33,7 +37,7 @@ def test_the_model_server_loads_after_spacemap():
 
 
 def test_a_temporary_xdg_data_home_is_not_used(tmp_path, monkeypatch):
-    # UTSW BioHPC sets XDG_DATA_HOME=/tmp/$USER for everyone; /tmp is per node.
+    # Some clusters set XDG_DATA_HOME=/tmp/$USER; /tmp is local to each node.
     from spacemap import userpaths
 
     old = Path(tempfile.mkdtemp(prefix="spacemap-xdg-"))  # inside the system temporary folder
@@ -83,6 +87,8 @@ def test_the_chat_asks_for_the_model_under_the_name_the_server_was_started_with(
 
 
 def test_thinking_markers_never_reach_the_answer():
+    pytest.importorskip("fastapi", reason="requires the optional ai extra")
+    pytest.importorskip("transformers", reason="requires the optional ai extra")
     from spacemap_assistant.model_service.server import _AnswerFilter, clean_answer
 
     cases = {"thought\n<channel|>CD20": "CD20",  # seen from Gemma 4 12B on 2026-09-25

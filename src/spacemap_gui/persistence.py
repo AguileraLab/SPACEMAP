@@ -439,11 +439,25 @@ def record_latest_unified_csv(filename: str | None) -> None:
     config["unified_csv_filename"] = name
 
 
+def _project_state_file(name: str) -> Path:
+    """Keep the project registry with the other state, preserving default-home upgrades."""
+    target = state_dir() / name
+    target.parent.mkdir(parents=True, exist_ok=True)
+    # An explicit storage override starts an independent workspace. Do not
+    # pull another installation's project list or active session into it.
+    if not target.exists() and not (os.environ.get("SPACEMAP_HOME") or os.environ.get("SPACEMAP_STATE_DIR")):
+        legacy = Path.home() / ".spacemap_gui" / name
+        try:
+            if legacy.is_file():
+                shutil.copy2(legacy, target)
+        except OSError as exc:
+            log_persistence(f"Could not copy legacy project state {name}: {exc}")
+    return target
+
+
 def get_projects_index_path() -> Path:
     """Get the path to the global projects index file, creating parent directories."""
-    path = Path.home() / ".spacemap_gui" / "projects.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    return path
+    return _project_state_file("projects.json")
 
 def load_projects_index() -> dict:
     """Load the dictionary of saved projects mapping project names to project roots."""
@@ -518,9 +532,7 @@ def remove_project_from_index(name: str) -> None:
             log_persistence(f"Error removing project from index: {e}")
 
 def get_active_session_path() -> Path:
-    path = Path.home() / ".spacemap_gui" / "active_session.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    return path
+    return _project_state_file("active_session.json")
 
 def save_active_session(project_name: str) -> None:
     path = get_active_session_path()
@@ -1240,8 +1252,8 @@ def values_equal(v1, v2) -> bool:
 def same_folder_setting(value, stored) -> bool:
     """values_equal, and two spellings of one folder count as the same.
 
-    On UTSW BioHPC /work is a link to /endosome/work. A project opened through
-    one spelling and saved with the other showed every folder as changed, so
+    A storage folder may also be accessible through a symbolic link. A project
+    opened through one path and saved with the other showed every folder as changed, so
     each page update saved the project and updated the page again.
     """
     if values_equal(value, stored):
@@ -2488,7 +2500,7 @@ def hydrate_project_state(config: dict, project_root: str) -> None:
         
     # The root must be set before restoring, because interface-state routing and
     # ${PROJECT_ROOT} expansion both key off it. One spelling of it: a project
-    # opened as /work/... and saved as /endosome/work/... (the same folder)
+    # opened through a symbolic link and saved using its resolved path
     # otherwise showed every folder as changed.
     project_root = str(Path(project_root).resolve())
     st.session_state["active_project_root"] = project_root

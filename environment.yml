@@ -1,34 +1,21 @@
-# Conda environment for SPACEMAP, its image viewer and its AI assistant.
-#
 # From the repository folder:
+#   conda env create -f environment.yml
+#   conda activate spacemap
+#   spacemap doctor
+#   spacemap
 #
-#     conda env create -f environment.yml
-#     conda activate spacemap
-#     spacemap doctor          # checks the environment and says what to fix
-#
-# Conda supplies Python only; every package comes from pip through
-# pyproject.toml, so this file and `pip install -e ".[ai]"` give the same
-# environment. `pip check` is clean for it.
-#
-# Python 3.10: palom (registration) needs scikit-image < 0.20, and the last
-# such release (0.19.3) has no builds for newer Python versions.
-#
-# The AI assistant's packages (the `ai` extra) and JupyterLab for the notebooks
-# (the `notebook` extra) are included; the models
-# themselves are downloaded from the assistant's setup page. DeepCell is not
-# installed: add it with `pip install -e ".[deepcell]"` if you want that
-# segmentation method (it pulls TensorFlow).
-#
-# On a cluster, keep large downloads out of a small home folder, for example:
-#     export PIP_CACHE_DIR=/path/on/work/.pip_cache
+# Python 3.10 is required by the current imaging stack: palom needs
+# scikit-image <0.20, whose wheels stop at Python 3.10.
+# The pinned openslide-python binding needs the OpenSlide 3.x native ABI.
+# Conda supplies Python and the matching OpenSlide library. Pip installs
+# SPACEMAP and JupyterLab from pyproject.toml in editable mode.
+# AI packages and DeepCell are optional; see docs/installation.md.
 name: spacemap
 channels:
   - conda-forge
 dependencies:
   - python=3.10
+  - openslide<4
   - pip
   - pip:
-      - -e .[ai,notebook]
-      - pytest>=7.4.4
-      - ruff>=0.5
-      - httpx>=0.27
+      - -e .[notebook]

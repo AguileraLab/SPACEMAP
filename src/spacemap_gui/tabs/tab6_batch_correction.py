@@ -111,7 +111,9 @@ def _transform_vector(x: pd.Series, transform: str, arcsinh_cofactor: float, log
 
 def _load_phenotyping_marker_defaults(config_path: Path | None = None) -> list[str]:
     """Load the marker panel used by the default Tab 7 phenotyping methods."""
-    marker_config_path = config_path or Path(__file__).resolve().parents[3] / "marker_configs.json"
+    from spacemap.marker_config import marker_config_path as shared_marker_config_path
+
+    marker_config_path = config_path or shared_marker_config_path()
     try:
         with marker_config_path.open("r", encoding="utf-8") as config_file:
             config = json.load(config_file)

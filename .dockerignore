@@ -15,3 +15,21 @@ assistant_data
 docker-projects
 test_codes
 *.log
+
+**/node_modules
+project
+data
+outputs
+package_cache
+.spacemap_home
+*.qptiff
+*.svs
+*.ndpi
+*.gguf
+*.safetensors
+*.ckpt
+*.pt
+*.pth
+
+# Local backup checkouts are not release inputs.
+SPACEMAP_stage_*/

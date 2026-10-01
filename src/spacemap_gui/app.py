@@ -136,7 +136,9 @@ for k in list(st.session_state.keys()):
 
 if os.getenv("SPACEMAP_DEBUG_FILE") == "1":
     try:
-        debug_file_path = Path(__file__).resolve().parent / "session_state_debug.txt"
+        from spacemap.userpaths import logs_dir
+
+        debug_file_path = logs_dir() / "session_state_debug.txt"
         with open(debug_file_path, "a") as f:
             f.write(f"\n=== RUN AT {datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')} ===\n")
             f.write(f"active_project={st.session_state.get('active_project') is not None}\n")

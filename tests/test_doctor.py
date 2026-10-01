@@ -65,3 +65,34 @@ def test_the_launcher_runs_the_doctor(monkeypatch):
 
     monkeypatch.setattr(doctor, "main", lambda argv: 7)
     assert launch.main(["doctor"]) == 7
+
+
+def test_only_the_supported_python_version_passes(monkeypatch):
+    for version in [(3, 9, 20), (3, 11, 10), (3, 12, 0)]:
+        monkeypatch.setattr(doctor.sys, "version_info", version)
+        check = doctor.check_python()
+        assert check.status == doctor.PROBLEM
+        assert "environment.yml" in check.fix
+    monkeypatch.setattr(doctor.sys, "version_info", (3, 10, 21))
+    assert doctor.check_python().status == doctor.OK
+
+
+def test_missing_native_openslide_is_reported(monkeypatch):
+    def missing(_name):
+        raise OSError("libopenslide.so.0 is missing")
+
+    monkeypatch.setattr(doctor.importlib, "import_module", missing)
+    check = doctor.check_slide_reader()
+    assert check.status == doctor.PROBLEM and "native OpenSlide" in check.fix
+    monkeypatch.setattr(doctor.importlib, "import_module", lambda _name: object())
+    assert doctor.check_slide_reader().status == doctor.OK
+
+
+def test_command_version_matches_installed_package(capsys):
+    from importlib.metadata import version
+    import spacemap
+    from spacemap_gui.launch import main
+
+    assert spacemap.__version__ == version("spacemap-ai")
+    assert main(["--version"]) == 0
+    assert capsys.readouterr().out.strip().splitlines()[-1] == f"SPACEMAP {version('spacemap-ai')}"

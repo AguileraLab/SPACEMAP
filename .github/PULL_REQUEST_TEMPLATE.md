@@ -13,8 +13,8 @@
      change; describe manual GUI checks where tests cannot reach. -->
 
 - [ ] `python -m pytest` passes
-- [ ] `python -m ruff check src` is clean
-- [ ] `python scripts/update_ledger.py` run and the result committed
+- [ ] `python -m ruff check src scripts` is clean
+- [ ] `python scripts/update_ledger.py --check` passes after the separate ledger commit
 
 ## Checklist
 

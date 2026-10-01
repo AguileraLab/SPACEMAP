@@ -15,6 +15,31 @@ Interface review for publication: every setting saved with the project,
 one layout for all Phenotyping methods, one terminal format, faster reads in
 Tabs 7 and 9, and a Z1 option for Resolve. Grouped by tab.
 
+### Installation and release packaging
+
+- Standardized the supported runtime on Python 3.10 across package metadata,
+  Conda, Docker and CI; added the native OpenSlide library to setup instructions.
+- Made AI installation optional in the default Conda environment and added a
+  first-project walkthrough, CPU setup and remote-server instructions.
+- Included shared marker defaults and the compiled heatmap selector in release
+  packages. The selector now loads its plotting library locally and ships
+  third-party license notices.
+- Fixed the command version to use installed package metadata, added an
+  OpenSlide native-library check, and kept the project registry and active
+  session under the configured application state root.
+- Added package-content checks and corrected the change-ledger commit procedure.
+- Disabled the unused Xvfb pytest plugin installed by SCIMAP, so headless tests
+  do not try to start a virtual display.
+
+### Licensing
+
+- Replaced the MIT template in the private repository with the UT Southwestern
+  academic-research-only license. Commercial use and redistribution, including
+  any use or redistribution by a for-profit entity, are prohibited.
+- Updated the README, package metadata, citation metadata and release guidance
+  to describe the same terms. Third-party dependencies and models keep their
+  own licenses.
+
 ### All tabs
 
 - **Fixed: the cell visualizer showed image channels in the wrong colours.** It

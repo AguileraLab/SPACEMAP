@@ -3,6 +3,10 @@
 # the test tools) on 2026-09-25, with `pip check` clean and the full test suite
 # passing.
 #
+# This is a Linux x86-64 / NVIDIA CUDA snapshot, not a portable lockfile.
+# It predates the optional-by-default AI installation introduced for release.
+# Do not use it as the default install on macOS or a CPU-only computer.
+#
 # Use this to reproduce that environment precisely -- for a published
 # analysis, or when a fresh resolve picks versions that do not work:
 #

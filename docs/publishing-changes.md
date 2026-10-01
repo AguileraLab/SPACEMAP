@@ -1,7 +1,8 @@
 # Publishing changes to GitHub
 
-A short, repeatable procedure. Follow it exactly and nothing patient-adjacent
-can reach GitHub.
+A repeatable procedure for reviewing, checking and publishing code changes.
+Inspect staged files yourself; ignore rules and automated checks are not a
+complete audit of repository contents or history.
 
 If you are an AI assistant: this is the whole job. Do not improvise around it,
 and do not skip step 5.
@@ -38,16 +39,22 @@ python -m ruff check src scripts
 python scripts/check_no_local_paths.py
 python scripts/check_streamlit_forms.py
 
-# 4  Refresh the change ledger
-python scripts/update_ledger.py
+# 4  Review your changes before staging
+git diff --stat
 
 # 5  INSPECT what you are about to commit
-git add -A
+git add path/to/changed_file.py path/to/changed_document.md  # use your actual files
 git status
 git diff --cached --name-only
 
 # 6  Commit (the template opens; fill in the Why line)
 git commit
+
+# Record that commit, then save the ledger separately.
+python scripts/update_ledger.py
+git add docs/LEDGER.md
+git commit -m "docs: refresh change ledger" -m "Why: record the reviewed changes."
+python scripts/update_ledger.py --check
 
 # 7  Push
 git push -u origin fix/short-description
@@ -171,8 +178,9 @@ on personal repositories and returns "not found" on organisation ones.
 | Job | Checks |
 | --- | --- |
 | Lint | `ruff` over `src` and `scripts` |
-| Tests | Python 3.10, 3.11, 3.12 |
-| No-extras install | the pipeline imports and runs without the AI packages |
+| Tests | Python 3.10 with and without AI extras |
+| Release wheel | archive contents, installed GUI startup and imports without AI packages |
+| Frontend | rebuild matches the bundled heatmap assets |
 | Hygiene | ledger current; no machine paths; no buttons in forms; notebook outputs stripped |
 
 A red build is a blocked merge. Fix it rather than merging around it.
@@ -181,12 +189,17 @@ A red build is a blocked merge. Fix it rather than merging around it.
 
 ## Releasing a version
 
-Only when a release is intended, and only once the licence question in
-[handover.md §4](handover.md#4-open-questions-and-unfinished-work) is settled.
+Only when a release is intended. Keep the UT Southwestern license in the
+release and retain third-party notices. Review the release commit, CI results
+and accompanying data-access instructions before making the repository public.
 
 ```bash
 # bump the version in pyproject.toml and CITATION.cff, update CHANGELOG.md
 git commit -m "release: SPACEMAP X.Y.Z" -m "Why: <what this release delivers>."
+python scripts/update_ledger.py
+git add docs/LEDGER.md
+git commit -m "docs: refresh change ledger" -m "Why: record release metadata."
+python scripts/update_ledger.py --check
 git push
 
 git tag -a vX.Y.Z -m "SPACEMAP X.Y.Z" -m "Why: version cited in <context>."

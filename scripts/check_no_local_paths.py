@@ -39,7 +39,7 @@ FORBIDDEN = [
 
 #: Directories that are never scanned.
 SKIP_DIRECTORIES = {
-    ".git", "__pycache__", ".pytest_cache", ".ruff_cache", ".mypy_yache",
+    ".git", "__pycache__", ".pytest_cache", ".ruff_cache", ".mypy_cache",
     "node_modules", "build", "dist", ".venv", "venv", "site-packages",
 }
 
@@ -56,7 +56,11 @@ ALLOWLIST = {
     "docs/working-with-this-repository.md",
 }
 
-#: Only text formats are scanned.
+# Personal account identifiers are forbidden in every publishable file,
+# including documentation exceptions, binary assets and compiled GUI files.
+ACCOUNT_IDENTIFIER = re.compile(rb"s[0-9]{6}", re.IGNORECASE)
+
+#: Other path patterns are checked in these text formats.
 EXTENSIONS = {
     ".py", ".ipynb", ".md", ".txt", ".toml", ".yml", ".yaml", ".json",
     ".sh", ".cfg", ".ini", ".in", ".dockerfile",
@@ -106,11 +110,19 @@ def main() -> int:
         path = root / relative
         if not path.is_file():
             continue
+        try:
+            data = path.read_bytes()
+        except OSError:
+            continue
+        account = ACCOUNT_IDENTIFIER.search(data)
+        if account:
+            problems.append(f"{relative}: personal account identifier -- {account.group().decode()!r}")
+            continue
         if not _is_scannable(relative):
             continue
         try:
-            text = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
             continue
         for number, line in enumerate(text.splitlines(), start=1):
             for pattern, description in FORBIDDEN:

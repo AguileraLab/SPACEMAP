@@ -41,7 +41,7 @@ keywords:
   - cell segmentation
   - phenotyping
   - bioimage analysis
-license: MIT
+license-url: "https://github.com/AguileraLab/SPACEMAP/blob/main/LICENSE"
 version: 0.3.0
 date-released: "2026-09-19"
 

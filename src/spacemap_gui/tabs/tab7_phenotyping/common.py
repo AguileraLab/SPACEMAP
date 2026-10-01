@@ -1663,7 +1663,9 @@ def get_analysis_marker_label(marker: str) -> str:
         flags=re.IGNORECASE,
     )
 
-MARKER_CONFIG_PATH = project_root_calc / "marker_configs.json"
+from spacemap.marker_config import marker_config_path
+
+MARKER_CONFIG_PATH = marker_config_path()
 
 
 def _normalize_marker_list(markers: object) -> list[str]:

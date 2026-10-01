@@ -33,7 +33,7 @@ git clone https://github.com/AguileraLab/SPACEMAP.git
 cd SPACEMAP
 conda env create -f environment.yml
 conda activate spacemap
-pip install -e .
+spacemap doctor
 ```
 
 Full options, including Docker: [installation.md](installation.md).
@@ -152,10 +152,14 @@ git checkout -b fix/short-description  # never work directly on main
 python -m pytest                       # must pass
 python -m ruff check src scripts       # must be clean
 python scripts/check_no_local_paths.py # must be clean
-python scripts/update_ledger.py        # refresh the change ledger
 
-git add -A
+git add path/to/changed_file.py path/to/changed_document.md  # use your actual files
+git diff --cached --name-only          # inspect before committing
 git commit                             # template opens; fill in the Why line
+python scripts/update_ledger.py
+git add docs/LEDGER.md
+git commit -m "docs: refresh change ledger" -m "Why: record the reviewed changes."
+python scripts/update_ledger.py --check
 git push -u origin fix/short-description
 ```
 
