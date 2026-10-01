@@ -4,17 +4,21 @@ Every change ever made to this repository, newest first: what changed, who made
 it, and why.
 
 This file is generated from the Git history by `scripts/update_ledger.py`. Do
-not edit it by hand -- run the script instead, or let CI regenerate it. The
+not edit it by hand -- run the script after committing changes. The
 "Why" column comes from the `Why:` line in each commit message; see
 [CONTRIBUTING.md](../CONTRIBUTING.md) for how to write one.
 
-**47 changes** by **1 contributor**, touching **343 files**. Latest: `b557e38` on 2026-10-01.
+Local machine paths, account identifiers and site-specific cluster names are
+redacted in this public rendering. The original Git history is unchanged.
+
+**48 changes** by **1 contributor**, touching **344 files**. Latest: `7405eec` on 2026-10-01.
 
 
 ## 2026-10
 
 | Date | Change | Who | Why | Files | Lines |
 | --- | --- | --- | --- | --- | --- |
+| 2026-10-01 | `7405eec` fix: keep local infrastructure details out of publication files | Bassel Dawod | generated documentation and examples should not reintroduce machine paths from historical commits. | 7 | +45/-13 |
 | 2026-10-01 | `b557e38` fix: prepare SPACEMAP installation and packaging for publication | Bassel Dawod | a new user could encounter unsupported dependencies, missing GUI assets, misplaced session state and unclear installation instructions; the release also needs consistent institutional licensing and no personal account paths. | 48 | +5409/-964 |
 
 ## 2026-09
@@ -32,9 +36,9 @@ not edit it by hand -- run the script instead, or let CI regenerate it. The
 | 2026-09-27 | `20ad9a5` fix(assistant): the local model server on a cluster: one record per node, no leftovers, a free port | Bassel Dawod | the user saw "Port 8091 is already in use" and asked to stop servers left running and to have the model stop with the session. | 3 | +339/-24 |
 | 2026-09-25 | `4de20b9` feat(assistant): one AI setup page; the chosen model starts when you ask | Bassel Dawod | setting up the assistant meant going between Tab 0 (packages, model library, token), the assistant page's Model & Compute tab (provider and API key, start and stop the model, cluster), its Settings tab and Admin Access. A downloaded model still had to be "selected" in Tab 0 before Start worked, the GPU memory menu sent names the runtime rejects (only Auto worked), and nothing could be added without typing a Hugging Face repository by hand. | 9 | +867/-390 |
 | 2026-09-25 | `0f1b0c1` build: one environment for SPACEMAP, the viewer and the assistant; spacemap doctor | Bassel Dawod | the cluster environment had drifted: an old editable SPACEMAP record (V16, its path file pointing at V17) made pip print "requires deepcell / adjusttext" on every install, both OpenCV packages, scikit-image newer than palom allows, and the assistant's packages added by hand (transformers 5 then broke the model server). A fresh install could not even resolve: palom >= 2025 needs zarr >= 2.17, which scimap (Tab 7's SCIMAP method) forbids. | 8 | +492/-173 |
-| 2026-09-25 | `79c406b` fix: Tab 3 reads the last step's images; /work and /endosome/work are one folder | Bassel Dawod | in PDAC (and INNATE_all) Tab 3's input had become its own ROI output folder, and Tab 2's output with it, because the two were tied by a folder link. And a project opened as /work/... but saved as /endosome/work/... (the same folder on BioHPC) showed every folder as changed, so pages saved the project and updated again by themselves. | 4 | +255/-8 |
+| 2026-09-25 | `79c406b` fix: Tab 3 reads the last step's images; [local directory] and [local directory] are one folder | Bassel Dawod | in PDAC (and INNATE_all) Tab 3's input had become its own ROI output folder, and Tab 2's output with it, because the two were tied by a folder link. And a project opened as [local directory] but saved as [local directory] (the same folder on the cluster) showed every folder as changed, so pages saved the project and updated again by themselves. | 4 | +255/-8 |
 | 2026-09-25 | `4922cff` fix(assistant): the local model answers; live download progress | Bassel Dawod | every question to the local model failed with "Only google/gemma-4-12B-it is installed". The runtime starts the model server under the model's Hugging Face name, but the chat sent SPACEMAP's short id, which the server refuses. The chat now sends the same name the runtime uses. | 5 | +147/-15 |
-| 2026-09-25 | `7ea0ff8` fix: keep SPACEMAP's settings out of the node-local /tmp folder | Bassel Dawod | UTSW BioHPC sets XDG_DATA_HOME=/tmp/$USER for every user (for podman), and SPACEMAP put its home there. /tmp is local to one node and cleaned, so the assistant's settings and downloaded models, the viewer's state and the interface cache differed from node to node or vanished (a 24 GB model went to one node's /tmp; old folder choices came back from another node's cache). | 3 | +98/-4 |
+| 2026-09-25 | `7ea0ff8` fix: keep SPACEMAP's settings out of the node-local /tmp folder | Bassel Dawod | UTSW the cluster sets XDG_DATA_HOME=/tmp/$USER for every user (for podman), and SPACEMAP put its home there. /tmp is local to one node and cleaned, so the assistant's settings and downloaded models, the viewer's state and the interface cache differed from node to node or vanished (a 24 GB model went to one node's /tmp; old folder choices came back from another node's cache). | 3 | +98/-4 |
 | 2026-09-25 | `330c0a9` fix(assistant): keep Python's own itertools.pairwise so the model server loads | Bassel Dawod | spacemap/utils.py replaced itertools.pairwise with its own function (a workaround for palom on Python 3.9). With transformers 5, loading a model imports torch's compiler, which rejects the replacement, so the assistant's model server failed at import ("substitute_in_graph expects a class"). The replacement is now made only where Python lacks pairwise; SPACEMAP requires Python 3.10+, which has it. | 2 | +36/-2 |
 | 2026-09-25 | `2a8050b` fix(assistant): clear instructions for installing what the local model needs | Bassel Dawod | the user could not tell which environment to install into, whether a separate one was needed, or what was already installed. | 5 | +172/-23 |
 | 2026-09-25 | `6371845` test: every page must still render (guard for changes elsewhere) | Bassel Dawod | the image viewer work must leave every SPACEMAP feature intact, and this makes a broken page fail the tests. | 2 | +153/-0 |
@@ -71,6 +75,18 @@ not edit it by hand -- run the script instead, or let CI regenerate it. The
 ---
 
 ## Files changed per commit
+
+<details><summary><code>7405eec</code> fix: keep local infrastructure details out of publication files</summary>
+
+- `docs/handover.md`
+- `scripts/check_no_local_paths.py`
+- `scripts/update_ledger.py`
+- `src/spacemap_gui/components/assistant_panel.py`
+- `tests/test_assistant_ui_smoke.py`
+- `tests/test_pipeline_folders.py`
+- `tests/test_public_ledger.py`
+
+</details>
 
 <details><summary><code>b557e38</code> fix: prepare SPACEMAP installation and packaging for publication</summary>
 
@@ -237,7 +253,7 @@ not edit it by hand -- run the script instead, or let CI regenerate it. The
 
 </details>
 
-<details><summary><code>79c406b</code> fix: Tab 3 reads the last step's images; /work and /endosome/work are one folder</summary>
+<details><summary><code>79c406b</code> fix: Tab 3 reads the last step's images; [local directory] and [local directory] are one folder</summary>
 
 - `src/spacemap_gui/persistence.py`
 - `src/spacemap_gui/pipeline_folders.py`
