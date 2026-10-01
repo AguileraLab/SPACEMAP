@@ -88,7 +88,7 @@ def test_online_context_removes_project_state_and_paths() -> None:
 
 
 def test_online_prompt_gate_leaves_paths_for_owner_access_checks() -> None:
-    assert _online_prompt_safety_issue("Review /work/study/public/file.tiff") is None
+    assert _online_prompt_safety_issue("Review /data/study/public/file.tiff") is None
     issue = _online_prompt_safety_issue("Review this protected health information")
     assert issue is not None
     assert _online_prompt_safety_issue("Explain Leiden clustering using synthetic data") is None

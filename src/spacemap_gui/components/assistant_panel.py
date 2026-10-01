@@ -3600,7 +3600,7 @@ def _render_admin_access() -> None:
     with st.form("assistant_admin_access_add", clear_on_submit=True):
         folder = st.text_input(
             "Exact folder to allow",
-            placeholder="/work/.../a_specific_data_project",
+            placeholder="/path/to/a_data_project",
         )
         permission_label = st.selectbox("Permission", ["Read only", "Read + write"])
         confirmed = st.checkbox(

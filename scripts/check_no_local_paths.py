@@ -26,14 +26,11 @@ _NOT_SERVICE = "(?!(?:" + "|".join(SERVICE_ACCOUNTS) + ")/)"
 
 #: Paths that point at one person's machine or one site's storage.
 FORBIDDEN = [
-    (re.compile(r"/home/" + _NOT_SERVICE + r"[a-z][a-z0-9_.-]*/", re.IGNORECASE), "a home directory"),
-    (re.compile(r"/home2/" + _NOT_SERVICE + r"[a-z][a-z0-9_.-]*/", re.IGNORECASE), "a home directory"),
+    (re.compile(r"/home[0-9]*/" + _NOT_SERVICE + r"[a-z][a-z0-9_.-]*/", re.IGNORECASE), "a home directory"),
     (re.compile(r"/Users/(?!<)[a-z][a-z0-9_.-]*/", re.IGNORECASE), "a macOS home directory"),
     (re.compile(r"[A-Z]:\\\\?Users\\\\?", re.IGNORECASE), "a Windows home directory"),
-    (re.compile(r"/endosome\b"), "a site-specific mount point"),
-    (re.compile(r"/work/SCCC\b"), "a site-specific mount point"),
+    (re.compile(r"/(?:[A-Za-z0-9_.-]+/)?(?:work|scratch)/(?!<)[A-Za-z0-9_.-]+/"), "a site-specific work directory"),
     (re.compile(r"\bs\d{6}\b"), "a personal account identifier"),
-    (re.compile(r"\bbiohpc\b", re.IGNORECASE), "a site-specific cluster name"),
     (re.compile(r"OneDrive", re.IGNORECASE), "a personal cloud folder"),
 ]
 

@@ -85,7 +85,7 @@ by anyone:
   downloaded from Hugging Face or imported from a folder offline.
 - **The local model server runs on CPU.** It previously refused to start
   without CUDA.
-- **`cluster.py`** replaced `biohpc.py` — Slurm support with no site names,
+- **`cluster.py`** provides portable Slurm support with no site names,
   hidden unless `sbatch` exists.
 - `deepcell` moved out of the base install (it pulls TensorFlow).
 - Packaging, Docker, CI, license and citation metadata, contributor docs.

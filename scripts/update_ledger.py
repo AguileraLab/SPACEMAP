@@ -42,9 +42,12 @@ Every change ever made to this repository, newest first: what changed, who made
 it, and why.
 
 This file is generated from the Git history by `scripts/update_ledger.py`. Do
-not edit it by hand -- run the script instead, or let CI regenerate it. The
+not edit it by hand -- run the script after committing changes. The
 "Why" column comes from the `Why:` line in each commit message; see
 [CONTRIBUTING.md](../CONTRIBUTING.md) for how to write one.
+
+Local machine paths, account identifiers and site-specific cluster names are
+redacted in this public rendering. The original Git history is unchanged.
 
 """
 
@@ -160,9 +163,19 @@ def _is_ledger_only(commit: Commit) -> bool:
     return bool(commit.files) and all(path == ledger for path in commit.files)
 
 
+def _public_text(value: str) -> str:
+    """Keep machine details from old commits out of the published ledger."""
+    value = re.sub(
+        r"(?<![\w:])/(?:[A-Za-z0-9_.-]+/)*(?:work|home[0-9]*|Users|scratch)(?=/|\b)(?:/[^\s|`\"<>(),;]*)?",
+        "[local directory]", value,
+    )
+    value = re.sub(r"s[0-9]{6}", "[account]", value, flags=re.IGNORECASE)
+    return re.sub(r"\b[A-Za-z]+hpc\b", "the cluster", value, flags=re.IGNORECASE)
+
+
 def _escape(value: str) -> str:
     """Make a value safe inside a Markdown table cell."""
-    return value.replace("|", "\\|").replace("\n", " ").strip()
+    return _public_text(value).replace("|", "\\|").replace("\n", " ").strip()
 
 
 def render(commits: list[Commit]) -> str:
@@ -207,7 +220,7 @@ def render(commits: list[Commit]) -> str:
     for commit in commits:
         lines.append(f"<details><summary><code>{commit.short_hash}</code> {_escape(commit.subject)}</summary>\n\n")
         for path in sorted(commit.files):
-            lines.append(f"- `{path}`\n")
+            lines.append(f"- `{_public_text(path)}`\n")
         if not commit.files:
             lines.append("- _no file changes recorded_\n")
         lines.append("\n</details>\n\n")
