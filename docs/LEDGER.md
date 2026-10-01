@@ -8,13 +8,34 @@ not edit it by hand -- run the script instead, or let CI regenerate it. The
 "Why" column comes from the `Why:` line in each commit message; see
 [CONTRIBUTING.md](../CONTRIBUTING.md) for how to write one.
 
-**31 changes** by **1 contributor**, touching **312 files**. Latest: `2a8050b` on 2026-09-25.
+**47 changes** by **1 contributor**, touching **343 files**. Latest: `b557e38` on 2026-10-01.
 
+
+## 2026-10
+
+| Date | Change | Who | Why | Files | Lines |
+| --- | --- | --- | --- | --- | --- |
+| 2026-10-01 | `b557e38` fix: prepare SPACEMAP installation and packaging for publication | Bassel Dawod | a new user could encounter unsupported dependencies, missing GUI assets, misplaced session state and unclear installation instructions; the release also needs consistent institutional licensing and no personal account paths. | 48 | +5409/-964 |
 
 ## 2026-09
 
 | Date | Change | Who | Why | Files | Lines |
 | --- | --- | --- | --- | --- | --- |
+| 2026-09-29 | `6ab5193` feat(rois): a crop can keep its whole box instead of blanking outside the shape | Bassel Dawod | some analyses need the full rectangle around an ROI, not only the pixels inside its outline. | 2 | +27/-2 |
+| 2026-09-28 | `1fee954` feat(images): ROI crops and background-removed images keep their parent's metadata | Bassel Dawod | the crops are the images every later step uses; they must carry the same acquisition details as the registered image. | 7 | +280/-6 |
+| 2026-09-28 | `aa99c1f` refactor(tab5): segmentation region and cell tagging run from saved settings; annotation chosen by hand | Bassel Dawod | Studio's Segmentation and Cell tagging must run exactly as Tab 5 does, and mismatched names had no fix. | 6 | +210/-94 |
+| 2026-09-28 | `095d2bf` feat(tab1): any CODEX image can be paired with any H&E image by hand | Bassel Dawod | with names that do not match (S7 HE scan.tif against slide7.qptiff) a pair could not be made at all. | 4 | +127/-30 |
+| 2026-09-28 | `272039a` feat(registration): the merged image keeps all of the CODEX metadata | Bassel Dawod | the registered image is the project's source image; losing the acquisition metadata (exposure, filters, slide) there loses it for every later step. | 7 | +431/-12 |
+| 2026-09-28 | `7717de7` perf(tab8): cell-cell interactions count pairs with bincount | Bassel Dawod | Studio runs this test on whole projects (millions of cells, 500 permutations), where np.add.at took hours. | 3 | +53/-9 |
+| 2026-09-28 | `c26d11a` feat(tab6): cyCombine's own batch correction, exact, as the default | Bassel Dawod | the user asked for the exact cyCombine approach; the earlier translation used another SOM and ComBat library, a size cut-off and a global clip, and the default (monotonic) widened each batch. | 6 | +665/-34 |
+| 2026-09-27 | `fe018b2` fix(assistant): "stop the model with SPACEMAP" can be saved | Bassel Dawod | Studio's AI setup offers the choice; turning it off did nothing. | 2 | +11/-0 |
+| 2026-09-27 | `20ad9a5` fix(assistant): the local model server on a cluster: one record per node, no leftovers, a free port | Bassel Dawod | the user saw "Port 8091 is already in use" and asked to stop servers left running and to have the model stop with the session. | 3 | +339/-24 |
+| 2026-09-25 | `4de20b9` feat(assistant): one AI setup page; the chosen model starts when you ask | Bassel Dawod | setting up the assistant meant going between Tab 0 (packages, model library, token), the assistant page's Model & Compute tab (provider and API key, start and stop the model, cluster), its Settings tab and Admin Access. A downloaded model still had to be "selected" in Tab 0 before Start worked, the GPU memory menu sent names the runtime rejects (only Auto worked), and nothing could be added without typing a Hugging Face repository by hand. | 9 | +867/-390 |
+| 2026-09-25 | `0f1b0c1` build: one environment for SPACEMAP, the viewer and the assistant; spacemap doctor | Bassel Dawod | the cluster environment had drifted: an old editable SPACEMAP record (V16, its path file pointing at V17) made pip print "requires deepcell / adjusttext" on every install, both OpenCV packages, scikit-image newer than palom allows, and the assistant's packages added by hand (transformers 5 then broke the model server). A fresh install could not even resolve: palom >= 2025 needs zarr >= 2.17, which scimap (Tab 7's SCIMAP method) forbids. | 8 | +492/-173 |
+| 2026-09-25 | `79c406b` fix: Tab 3 reads the last step's images; /work and /endosome/work are one folder | Bassel Dawod | in PDAC (and INNATE_all) Tab 3's input had become its own ROI output folder, and Tab 2's output with it, because the two were tied by a folder link. And a project opened as /work/... but saved as /endosome/work/... (the same folder on BioHPC) showed every folder as changed, so pages saved the project and updated again by themselves. | 4 | +255/-8 |
+| 2026-09-25 | `4922cff` fix(assistant): the local model answers; live download progress | Bassel Dawod | every question to the local model failed with "Only google/gemma-4-12B-it is installed". The runtime starts the model server under the model's Hugging Face name, but the chat sent SPACEMAP's short id, which the server refuses. The chat now sends the same name the runtime uses. | 5 | +147/-15 |
+| 2026-09-25 | `7ea0ff8` fix: keep SPACEMAP's settings out of the node-local /tmp folder | Bassel Dawod | UTSW BioHPC sets XDG_DATA_HOME=/tmp/$USER for every user (for podman), and SPACEMAP put its home there. /tmp is local to one node and cleaned, so the assistant's settings and downloaded models, the viewer's state and the interface cache differed from node to node or vanished (a 24 GB model went to one node's /tmp; old folder choices came back from another node's cache). | 3 | +98/-4 |
+| 2026-09-25 | `330c0a9` fix(assistant): keep Python's own itertools.pairwise so the model server loads | Bassel Dawod | spacemap/utils.py replaced itertools.pairwise with its own function (a workaround for palom on Python 3.9). With transformers 5, loading a model imports torch's compiler, which rejects the replacement, so the assistant's model server failed at import ("substitute_in_graph expects a class"). The replacement is now made only where Python lacks pairwise; SPACEMAP requires Python 3.10+, which has it. | 2 | +36/-2 |
 | 2026-09-25 | `2a8050b` fix(assistant): clear instructions for installing what the local model needs | Bassel Dawod | the user could not tell which environment to install into, whether a separate one was needed, or what was already installed. | 5 | +172/-23 |
 | 2026-09-25 | `6371845` test: every page must still render (guard for changes elsewhere) | Bassel Dawod | the image viewer work must leave every SPACEMAP feature intact, and this makes a broken page fail the tests. | 2 | +153/-0 |
 | 2026-09-25 | `afd8ad2` fix(tab3): refill blank marker names and black colours from the image | Bassel Dawod | the P11 channel list showed no names and black colours. | 3 | +84/-10 |
@@ -50,6 +71,205 @@ not edit it by hand -- run the script instead, or let CI regenerate it. The
 ---
 
 ## Files changed per commit
+
+<details><summary><code>b557e38</code> fix: prepare SPACEMAP installation and packaging for publication</summary>
+
+- `.dockerignore`
+- `.github/PULL_REQUEST_TEMPLATE.md`
+- `.github/workflows/ci.yml`
+- `.gitignore`
+- `CHANGELOG.md`
+- `CITATION.cff`
+- `CONTRIBUTING.md`
+- `Dockerfile`
+- `LICENSE`
+- `README.md`
+- `docs/first-project.md`
+- `docs/handover.md`
+- `docs/installation.md`
+- `docs/publishing-changes.md`
+- `docs/working-with-this-repository.md`
+- `environment.yml`
+- `pyproject.toml`
+- `requirements-lock.txt`
+- `scripts/check_installed_app.py`
+- `scripts/check_no_local_paths.py`
+- `scripts/check_release_artifacts.py`
+- `scripts/update_ledger.py`
+- `src/spacemap/__init__.py`
+- `src/spacemap/doctor.py`
+- `src/spacemap/marker_config.py`
+- `src/spacemap/userpaths.py`
+- `src/spacemap_gui/app.py`
+- `src/spacemap_gui/launch.py`
+- `src/spacemap_gui/persistence.py`
+- `src/spacemap_gui/pipeline_folders.py`
+- `src/spacemap_gui/tabs/tab6_batch_correction.py`
+- `src/spacemap_gui/tabs/tab7_phenotyping/common.py`
+- `src/spacemap_gui/tabs/tab7_phenotyping/heatmap_click_selector/frontend/build/THIRD_PARTY_NOTICES.txt`
+- `src/spacemap_gui/tabs/tab7_phenotyping/heatmap_click_selector/frontend/build/assets/index-90cf3627.js`
+- `src/spacemap_gui/tabs/tab7_phenotyping/heatmap_click_selector/frontend/build/assets/plotly.min-6d21266c.js`
+- `src/spacemap_gui/tabs/tab7_phenotyping/heatmap_click_selector/frontend/build/index.html`
+- `src/spacemap_gui/tabs/tab7_phenotyping/heatmap_click_selector/frontend/package-lock.json`
+- `src/spacemap_gui/tabs/tab7_phenotyping/heatmap_click_selector/frontend/package.json`
+- `src/spacemap_gui/tabs/tab7_phenotyping/heatmap_click_selector/frontend/src/index.js`
+- `src/spacemap_gui/tabs/tab7_phenotyping/heatmap_click_selector/frontend/src/index.ts`
+- `src/spacemap_gui/tabs/tab7_phenotyping/heatmap_click_selector/frontend/vendor-licenses/streamlit-component-lib-LICENSE.txt`
+- `src/spacemap_gui/tabs/tab7_phenotyping/heatmap_click_selector/frontend/write-notices.mjs`
+- `tests/test_doctor.py`
+- `tests/test_environment.py`
+- `tests/test_gui_state_location.py`
+- `tests/test_marker_config.py`
+- `tests/test_pipeline_folders.py`
+- `tests/test_repository_privacy.py`
+
+</details>
+
+<details><summary><code>6ab5193</code> feat(rois): a crop can keep its whole box instead of blanking outside the shape</summary>
+
+- `src/spacemap/registration.py`
+- `tests/test_registration_metadata.py`
+
+</details>
+
+<details><summary><code>1fee954</code> feat(images): ROI crops and background-removed images keep their parent's metadata</summary>
+
+- `CHANGELOG.md`
+- `src/spacemap/background_detection.py`
+- `src/spacemap/background_subtraction_utils.py`
+- `src/spacemap/image_metadata.py`
+- `src/spacemap/registration.py`
+- `src/spacemap/utils.py`
+- `tests/test_registration_metadata.py`
+
+</details>
+
+<details><summary><code>aa99c1f</code> refactor(tab5): segmentation region and cell tagging run from saved settings; annotation chosen by hand</summary>
+
+- `CHANGELOG.md`
+- `src/spacemap_gui/tabs/cell_tagging_ui.py`
+- `src/spacemap_gui/tabs/segmentation_spatial_ui.py`
+- `src/spacemap_gui/tabs/tab5_segmentation.py`
+- `tests/test_cell_tagging_ui.py`
+- `tests/test_segmentation_region.py`
+
+</details>
+
+<details><summary><code>095d2bf</code> feat(tab1): any CODEX image can be paired with any H&E image by hand</summary>
+
+- `CHANGELOG.md`
+- `src/spacemap_gui/tabs/tab1_registration.py`
+- `tests/page_smoke.py`
+- `tests/test_tab1_pairing.py`
+
+</details>
+
+<details><summary><code>272039a</code> feat(registration): the merged image keeps all of the CODEX metadata</summary>
+
+- `CHANGELOG.md`
+- `src/spacemap/image_metadata.py`
+- `src/spacemap/registration.py`
+- `src/spacemap/utils.py`
+- `src/spacemap_gui/cell_visualizer.py`
+- `src/spacemap_gui/tabs/tab1_registration.py`
+- `tests/test_registration_metadata.py`
+
+</details>
+
+<details><summary><code>7717de7</code> perf(tab8): cell-cell interactions count pairs with bincount</summary>
+
+- `CHANGELOG.md`
+- `src/spacemap_gui/tabs/tab8_analysis/cell_cell_interaction.py`
+- `tests/test_cell_cell_interaction.py`
+
+</details>
+
+<details><summary><code>c26d11a</code> feat(tab6): cyCombine's own batch correction, exact, as the default</summary>
+
+- `CHANGELOG.md`
+- `src/spacemap/batch_correction_utils.py`
+- `src/spacemap/cycombine.py`
+- `src/spacemap_gui/tabs/tab6_batch_correction.py`
+- `tests/cycombine_r_reference.json`
+- `tests/test_cycombine.py`
+
+</details>
+
+<details><summary><code>fe018b2</code> fix(assistant): "stop the model with SPACEMAP" can be saved</summary>
+
+- `src/spacemap/ai_settings.py`
+- `tests/test_model_runtime_nodes.py`
+
+</details>
+
+<details><summary><code>20ad9a5</code> fix(assistant): the local model server on a cluster: one record per node, no leftovers, a free port</summary>
+
+- `src/spacemap_assistant/model_runtime.py`
+- `src/spacemap_assistant/model_service/guard.py`
+- `tests/test_model_runtime_nodes.py`
+
+</details>
+
+<details><summary><code>4de20b9</code> feat(assistant): one AI setup page; the chosen model starts when you ask</summary>
+
+- `docs/ai-assistant.md`
+- `src/spacemap_assistant/model_runtime.py`
+- `src/spacemap_assistant/model_search.py`
+- `src/spacemap_gui/components/ai_setup.py`
+- `src/spacemap_gui/components/assistant_panel.py`
+- `src/spacemap_gui/components/assistant_setup.py`
+- `tests/test_ai_install_help.py`
+- `tests/test_ai_setup.py`
+- `tests/test_assistant_ui_smoke.py`
+
+</details>
+
+<details><summary><code>0f1b0c1</code> build: one environment for SPACEMAP, the viewer and the assistant; spacemap doctor</summary>
+
+- `docs/installation.md`
+- `environment.yml`
+- `pyproject.toml`
+- `requirements-lock.txt`
+- `src/spacemap/ai_settings.py`
+- `src/spacemap/doctor.py`
+- `src/spacemap_gui/launch.py`
+- `tests/test_doctor.py`
+
+</details>
+
+<details><summary><code>79c406b</code> fix: Tab 3 reads the last step's images; /work and /endosome/work are one folder</summary>
+
+- `src/spacemap_gui/persistence.py`
+- `src/spacemap_gui/pipeline_folders.py`
+- `src/spacemap_gui/tabs/tab3_roi_extraction.py`
+- `tests/test_pipeline_folders.py`
+
+</details>
+
+<details><summary><code>4922cff</code> fix(assistant): the local model answers; live download progress</summary>
+
+- `src/spacemap_assistant/model_client.py`
+- `src/spacemap_assistant/model_service/server.py`
+- `src/spacemap_gui/components/assistant_setup.py`
+- `tests/test_ai_install_help.py`
+- `tests/test_environment.py`
+
+</details>
+
+<details><summary><code>7ea0ff8</code> fix: keep SPACEMAP's settings out of the node-local /tmp folder</summary>
+
+- `docs/architecture.md`
+- `src/spacemap/userpaths.py`
+- `tests/test_environment.py`
+
+</details>
+
+<details><summary><code>330c0a9</code> fix(assistant): keep Python's own itertools.pairwise so the model server loads</summary>
+
+- `src/spacemap/utils.py`
+- `tests/test_environment.py`
+
+</details>
 
 <details><summary><code>2a8050b</code> fix(assistant): clear instructions for installing what the local model needs</summary>
 
