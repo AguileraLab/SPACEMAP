@@ -11,13 +11,14 @@ not edit it by hand -- run the script after committing changes. The
 Local machine paths, account identifiers and site-specific cluster names are
 redacted in this public rendering. The original Git history is unchanged.
 
-**50 changes** by **1 contributor**, touching **711 files**. Latest: `a0444dc` on 2026-10-15.
+**51 changes** by **1 contributor**, touching **711 files**. Latest: `0f503be` on 2026-10-16.
 
 
 ## 2026-10
 
 | Date | Change | Who | Why | Files | Lines |
 | --- | --- | --- | --- | --- | --- |
+| 2026-10-16 | `0f503be` fix: recognize the current Studio server with generic launchers | Bassel Dawod | both clean GitHub test environments removed the current server from the registry because python -m pytest does not name SPACEMAP. Trust the current live PID while retaining identity checks for other processes, and cover both cases with regression tests. | 3 | +61/-3 |
 | 2026-10-15 | `a0444dc` feat: prepare SPACEMAP Studio 0.4.0 | Bassel Dawod | provide one portable, tested Studio release with clear documentation, complete packaged assets, and checks against private machine paths. | 432 | +94742/-1900 |
 | 2026-10-01 | `c49bef8` test: validate CPU and GPU runtimes and add Docker startup CI | Bassel Dawod | publication users need reproducible installation checks, explicit CPU and CUDA image choices, and evidence distinguishing tested GPU configurations from pending platform validation. | 8 | +322/-7 |
 | 2026-10-01 | `7405eec` fix: keep local infrastructure details out of publication files | Bassel Dawod | generated documentation and examples should not reintroduce machine paths from historical commits. | 7 | +45/-13 |
@@ -77,6 +78,14 @@ redacted in this public rendering. The original Git history is unchanged.
 ---
 
 ## Files changed per commit
+
+<details><summary><code>0f503be</code> fix: recognize the current Studio server with generic launchers</summary>
+
+- `docs/studio-release.md`
+- `src/spacemap_gui/studio/servers.py`
+- `tests/test_studio_servers.py`
+
+</details>
 
 <details><summary><code>a0444dc</code> feat: prepare SPACEMAP Studio 0.4.0</summary>
 
