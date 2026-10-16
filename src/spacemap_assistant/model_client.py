@@ -76,10 +76,9 @@ NVIDIA_PROVIDER = "nvidia"
 DEFAULT_NVIDIA_MODEL_ID = "google/gemma-4-31b-it"
 NVIDIA_MODEL_CATALOG: dict[str, dict[str, Any]] = {
     "meta/muse-glimmer-30b": {
-        "label": "Meta Muse Glimmer 30B (best SPACEMAP fit)",
+        "label": "Meta Muse Glimmer 30B",
         "description": (
-            "Multimodal reasoning, tool calling, coding, and failure recovery. "
-            "Recommended for future image QC after institutional approval."
+            "Text and image reasoning. Large cluster reviews can take longer than a minute."
         ),
         "max_output_tokens": 8_192,
         # Muse performs hidden reasoning before writing visible text. With a
@@ -90,14 +89,14 @@ NVIDIA_MODEL_CATALOG: dict[str, dict[str, Any]] = {
         "supports_images": True,
     },
     "google/gemma-4-31b-it": {
-        "label": "Google Gemma 4 31B (scientific reasoning)",
-        "description": "Strong general, scientific, coding, and multimodal reasoning.",
+        "label": "Google Gemma 4 31B",
+        "description": "Text and image reasoning. Check responsiveness with your current connection.",
         "max_output_tokens": 16_384,
         "supports_images": True,
     },
     "google/diffusiongemma-26b-a4b-it": {
         "label": "Google DiffusionGemma 26B A4B",
-        "description": "A faster mixture-of-experts model; useful when speed matters more than maximum quality.",
+        "description": "Text and image model with parallel token generation. Review its evidence before applying labels.",
         "max_output_tokens": 8_192,
         "supports_images": True,
     },
@@ -157,6 +156,62 @@ _COMPLEX_ACTION_WORDS = (
 
 class ModelUnavailable(RuntimeError):
     """Raised when the selected model cannot answer."""
+
+
+def _stream_text(client, response, on_progress=None):
+    """Keep completion metadata, never reasoning text; optionally report provider activity."""
+    info = client.last_completion = {"finish_reason": None, "content_chars": 0, "reasoning": False}
+    started = getattr(client, "_stream_started", time.monotonic())
+    last_progress = time.monotonic()
+    if on_progress:
+        on_progress({"status": "Model connected; waiting for its answer…"})
+    for raw_line in response:
+        now = time.monotonic()
+        if getattr(client, "max_response_seconds", None) and now - started > client.max_response_seconds:
+            raise ModelUnavailable(f"The model did not finish within {client.max_response_seconds} seconds. No labels were applied. Try fewer clusters or another model.")
+        if on_progress and now - last_progress >= 5:
+            last_progress = now
+            on_progress({"status":"The model is reasoning; no answer yet…" if info["reasoning"] and not info["content_chars"] else "Receiving the model's answer…"})
+        line = raw_line.decode("utf-8", errors="replace").strip()
+        if not line.startswith("data:"):
+            continue
+        data = line[5:].strip()
+        if data == "[DONE]":
+            break
+        try:
+            chunk = json.loads(data)
+        except json.JSONDecodeError:
+            continue
+        if chunk.get("error"):
+            error = chunk["error"]
+            if isinstance(error, dict):
+                detail = str(error.get("message") or "The model service returned an error")
+                if error.get("code"):
+                    detail += f" ({error['code']})"
+            else:
+                detail = str(error)
+            raise ModelUnavailable(detail[:1000])
+        if isinstance(chunk.get("usage"), dict):
+            info["usage"] = {key: chunk["usage"][key] for key in ("prompt_tokens", "completion_tokens", "total_tokens") if key in chunk["usage"]}
+        for choice in chunk.get("choices") or []:
+            if choice.get("finish_reason"):
+                info["finish_reason"] = choice["finish_reason"]
+            delta = choice.get("delta") or {}
+            if (delta.get("reasoning_content") or delta.get("reasoning")) and not info["reasoning"]:
+                info["reasoning"] = True
+                if on_progress:
+                    on_progress({"status": "The model is reasoning; no answer yet…"})
+            text = delta.get("content") or delta.get("refusal") or ""
+            if text:
+                info["content_chars"] += len(text)
+                yield str(text)
+    if getattr(client, "require_complete", False):
+        if info["finish_reason"] == "length":
+            raise ModelUnavailable("The model reached its response limit before completing an answer. No labels were applied. Try reviewing a smaller selection of clusters.")
+        if not info["content_chars"]:
+            raise ModelUnavailable("The model returned no answer" + (" after reasoning" if info["reasoning"] else "") + ". No labels were applied. Retry or choose another model in AI setup.")
+        if info["finish_reason"] != "stop":
+            raise ModelUnavailable("The model connection ended before a complete answer was received. No labels were applied.")
 
 
 @dataclass(frozen=True)
@@ -400,7 +455,9 @@ class LocalModelClient:
         *,
         temperature: float = 0.2,
         max_tokens: int = 512,
+        on_progress=None,
     ) -> Iterator[str]:
+        self._stream_started = time.monotonic()
         payload = {
             "model": local_model_id(),
             "messages": messages,
@@ -408,26 +465,11 @@ class LocalModelClient:
             "max_tokens": max_tokens,
             "stream": True,
         }
-        with self._request("chat/completions", payload=payload) as response:
-            for raw_line in response:
-                line = raw_line.decode("utf-8", errors="replace").strip()
-                if not line.startswith("data:"):
-                    continue
-                data = line[5:].strip()
-                if data == "[DONE]":
-                    break
-                try:
-                    chunk = json.loads(data)
-                except json.JSONDecodeError:
-                    continue
-                if chunk.get("error"):
-                    raise ModelUnavailable(str(chunk["error"]))
-                try:
-                    text = chunk["choices"][0]["delta"].get("content", "")
-                except (KeyError, IndexError, TypeError):
-                    text = ""
-                if text:
-                    yield str(text)
+        try:
+            with self._request("chat/completions", payload=payload) as response:
+                yield from _stream_text(self, response, on_progress)
+        except OSError as error:
+            raise ModelUnavailable("The local model stopped sending data. Retry or check AI setup.") from error
 
 
 def _nvidia_error_detail(exc: HTTPError) -> str:
@@ -482,7 +524,7 @@ class NvidiaModelClient:
             raise ModelUnavailable(
                 "The remote service or institutional web proxy closed the connection before the "
                 "model returned data. The selected NVIDIA prototype endpoint may be overloaded; "
-                "try Muse Glimmer or retry later."
+                "try another model or retry later."
             ) from exc
         except (URLError, TimeoutError, OSError) as exc:
             reason = getattr(exc, "reason", exc)
@@ -510,7 +552,25 @@ class NvidiaModelClient:
         max_tokens: int,
         stream: bool,
         enable_thinking: bool | None = None,
+        reasoning_strength: str | None = None,
     ) -> dict[str, Any]:
+        if not NVIDIA_MODEL_CATALOG[self.model_id]["supports_images"] and any(
+            isinstance(message.get("content"), list) and any(
+                part.get("type") == "image_url" for part in message["content"] if isinstance(part, dict)
+            ) for message in messages
+        ):
+            raise ValueError("This model accepts text only. Choose an image-capable model for marker tiles.")
+        if reasoning_strength is not None:
+            if reasoning_strength not in {"low", "medium", "high", "xhigh"}:
+                raise ValueError("Choose low, medium, high or xhigh reasoning.")
+            if self.model_id == "meta/muse-glimmer-30b":
+                # Meta documents this system-prompt control; no undocumented API fields.
+                messages = [dict(message) for message in messages]
+                instruction = "Reasoning strength: " + reasoning_strength
+                if messages and messages[0].get("role") == "system":
+                    messages[0]["content"] = instruction + "\n" + messages[0]["content"]
+                else:
+                    messages.insert(0, {"role":"system", "content":instruction})
         payload: dict[str, Any] = {
             "model": self.model_id,
             "messages": messages,
@@ -528,8 +588,10 @@ class NvidiaModelClient:
         if self.model_id == "nvidia/nemotron-3-ultra-550b-a55b":
             thinking = True if enable_thinking is None else bool(enable_thinking)
             payload["chat_template_kwargs"] = {"enable_thinking": thinking}
-            if thinking:
-                payload["reasoning_budget"] = min(4_096, payload["max_tokens"])
+            # The hosted endpoint rejects a top-level reasoning_budget with
+            # HTTP 500 (verified against the same request without that field).
+            # Use its documented template switch; budget answer + reasoning
+            # together with max_tokens, not a self-hosted serving option.
         elif self.model_id.startswith("google/"):
             payload["chat_template_kwargs"] = {
                 "enable_thinking": True if enable_thinking is None else bool(enable_thinking)
@@ -544,6 +606,7 @@ class NvidiaModelClient:
         temperature: float = 0.2,
         max_tokens: int = 512,
         enable_thinking: bool | None = None,
+        reasoning_strength: str | None = None,
     ) -> str:
         with self._request(
             payload=self._payload(
@@ -552,6 +615,7 @@ class NvidiaModelClient:
                 max_tokens=max_tokens,
                 stream=False,
                 enable_thinking=enable_thinking,
+                reasoning_strength=reasoning_strength,
             )
         ) as response:
             raw_result = response.read().decode("utf-8")
@@ -569,35 +633,24 @@ class NvidiaModelClient:
         temperature: float = 0.2,
         max_tokens: int = 512,
         enable_thinking: bool | None = None,
+        reasoning_strength: str | None = None,
+        on_progress=None,
     ) -> Iterator[str]:
-        with self._request(
-            payload=self._payload(
-                messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                stream=True,
-                enable_thinking=enable_thinking,
-            )
-        ) as response:
-            for raw_line in response:
-                line = raw_line.decode("utf-8", errors="replace").strip()
-                if not line.startswith("data:"):
-                    continue
-                data = line[5:].strip()
-                if data == "[DONE]":
-                    break
-                try:
-                    chunk = json.loads(data)
-                except json.JSONDecodeError:
-                    continue
-                if chunk.get("error"):
-                    raise ModelUnavailable(str(chunk["error"])[:1_000])
-                try:
-                    text = chunk["choices"][0]["delta"].get("content", "")
-                except (KeyError, IndexError, TypeError):
-                    text = ""
-                if text:
-                    yield str(text)
+        self._stream_started = time.monotonic()
+        try:
+            with self._request(
+                payload=self._payload(
+                    messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    stream=True,
+                    enable_thinking=enable_thinking,
+                    reasoning_strength=reasoning_strength,
+                )
+            ) as response:
+                yield from _stream_text(self, response, on_progress)
+        except OSError as error:
+            raise ModelUnavailable("NVIDIA stopped sending model data. No labels were applied. Retry or choose another model.") from error
 
 
 def test_nvidia_connection(model_id: str, *, timeout_seconds: int = 180) -> str:

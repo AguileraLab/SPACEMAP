@@ -3696,241 +3696,26 @@ def get_marker_workspace_panel(
 
 
 # ==============================================================================
-# Auto-Threshold Methods (Cellular Mean Intensities)
-# ==============================================================================
-# These operate on 1-D arrays of *cellular mean expression* values.  They are
-# the same family of algorithms that QuPath / ImageJ use on pixel intensities
-# but applied here at the cell level — scientifically valid because cell-level
-# mean intensity distributions are bimodal in the same way (background vs.
-# truly-positive cells).
-
-def _hist_for_threshold(values: np.ndarray, n_bins: int = 256):
-    """Shared helper: clean NaN/negatives, build histogram on positive values."""
-    values = values[~np.isnan(values)]
-    positive = values[values > 0]
-    if len(positive) < 20:
-        return None, None, None
-    n_bins = min(n_bins, max(10, len(positive) // 10))
-    hist, bin_edges = np.histogram(positive, bins=n_bins)
-    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2.0
-    return hist.astype(float), bin_centers, positive
+# Shared threshold methods: the input population here is cellular mean intensity.
+# Keep the old function names for saved workflows, without separate mathematics.
+from spacemap.thresholding_engine import THRESHOLD_METHODS, METHOD_ALIASES, calculate as _calculate_threshold
+from functools import partial
 
 
-def auto_threshold_otsu(values: np.ndarray) -> float:
-    """Otsu's method — maximise between-class variance."""
-    result = _hist_for_threshold(values)
-    if result[0] is None:
-        return 0.0
-    hist, bin_centers, _ = result
-    total = hist.sum()
-    if total == 0:
-        return 0.0
-    best_thresh, best_var = 0.0, -1.0
-    cum_sum, cum_mean = 0.0, 0.0
-    total_mean = float((hist * bin_centers).sum()) / total
-    for i in range(len(bin_centers)):
-        cum_sum += hist[i]
-        if cum_sum == 0:
-            continue
-        bg_w = cum_sum / total
-        fg_w = 1.0 - bg_w
-        if fg_w <= 0:
-            break
-        cum_mean += hist[i] * bin_centers[i]
-        bg_mean = cum_mean / cum_sum
-        fg_mean = (total_mean * total - cum_mean) / (total - cum_sum)
-        var = bg_w * fg_w * (bg_mean - fg_mean) ** 2
-        if var > best_var:
-            best_var = var
-            best_thresh = float(bin_centers[i])
-    return best_thresh
+def _auto_threshold(values, method, **kwargs):
+    return _calculate_threshold(values, method, params=kwargs.get("params"))["threshold"]
 
 
-def auto_threshold_triangle(values: np.ndarray) -> float:
-    """Triangle method — line from peak to tail, max perpendicular distance."""
-    result = _hist_for_threshold(values)
-    if result[0] is None:
-        return 0.0
-    hist, bin_centers, _ = result
-    if hist.sum() == 0:
-        return 0.0
-    peak_idx = int(np.argmax(hist))
-    # Determine which tail is longer
-    left_dist = peak_idx
-    right_dist = len(hist) - 1 - peak_idx
-    if right_dist >= left_dist:
-        # Line from peak to right end
-        x1, y1 = peak_idx, hist[peak_idx]
-        x2, y2 = len(hist) - 1, hist[-1]
-        search_range = range(peak_idx, len(hist))
-    else:
-        # Line from left end to peak (flip logic)
-        x1, y1 = 0, hist[0]
-        x2, y2 = peak_idx, hist[peak_idx]
-        search_range = range(0, peak_idx + 1)
-    # Perpendicular distance from each histogram bin to the line
-    line_len = np.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
-    if line_len == 0:
-        return float(bin_centers[peak_idx])
-    best_idx, best_dist = peak_idx, 0.0
-    for i in search_range:
-        dist = abs((y2 - y1) * i - (x2 - x1) * hist[i] + x2 * y1 - y2 * x1) / line_len
-        if dist > best_dist:
-            best_dist = dist
-            best_idx = i
-    return float(bin_centers[best_idx])
-
-
-def auto_threshold_li(values: np.ndarray, max_iter: int = 1000) -> float:
-    """Li's minimum cross-entropy method (iterative)."""
-    result = _hist_for_threshold(values)
-    if result[0] is None:
-        return 0.0
-    _, _, positive = result
-    # Initial guess: mean of data
-    t = float(np.mean(positive))
-    for _ in range(max_iter):
-        fg = positive[positive > t]
-        bg = positive[positive <= t]
-        if len(fg) == 0 or len(bg) == 0:
-            break
-        mean_fg = float(np.mean(fg))
-        mean_bg = float(np.mean(bg))
-        if mean_fg <= 0 or mean_bg <= 0 or mean_fg == mean_bg:
-            break
-        t_new = (mean_fg - mean_bg) / (np.log(mean_fg) - np.log(mean_bg))
-        if abs(t_new - t) < 1e-6:
-            break
-        t = t_new
-    return max(t, 0.0)
-
-
-def auto_threshold_yen(values: np.ndarray) -> float:
-    """Yen's maximum correlation method."""
-    result = _hist_for_threshold(values)
-    if result[0] is None:
-        return 0.0
-    hist, bin_centers, _ = result
-    total = hist.sum()
-    if total == 0:
-        return 0.0
-    prob = hist / total
-    prob = np.clip(prob, 1e-12, None)
-    # Cumulative sums
-    cum_prob = np.cumsum(prob)
-    # Yen criterion: max of sum of entropies
-    best_thresh, best_crit = 0.0, -np.inf
-    for i in range(len(prob) - 1):
-        p1 = cum_prob[i]
-        p2 = 1.0 - p1
-        if p1 <= 0 or p2 <= 0:
-            continue
-        crit = -np.log(p1 * p2) + 2 * np.log(
-            float(np.sum(prob[:i + 1] * np.log(prob[:i + 1]))) - np.log(p1)
-            + float(np.sum(prob[i + 1:] * np.log(prob[i + 1:]))) - np.log(p2)
-        ) if False else 0.0  # placeholder
-        # Simplified Yen: maximise -log(P1(t) * (1 - P1(t)))
-        crit = -(p1 * np.log(p1) + p2 * np.log(p2))
-        if crit > best_crit:
-            best_crit = crit
-            best_thresh = float(bin_centers[i])
-    return best_thresh
-
-
-def auto_threshold_mean(values: np.ndarray) -> float:
-    """Mean method — threshold is the mean of positive values."""
-    values = values[~np.isnan(values)]
-    positive = values[values > 0]
-    if len(positive) < 20:
-        return 0.0
-    return float(np.mean(positive))
-
-
-def auto_threshold_isodata(values: np.ndarray, max_iter: int = 1000) -> float:
-    """IsoData / Ridler-Calvard iterative mean-based method."""
-    values = values[~np.isnan(values)]
-    positive = values[values > 0]
-    if len(positive) < 20:
-        return 0.0
-    t = float(np.mean(positive))
-    for _ in range(max_iter):
-        bg = positive[positive <= t]
-        fg = positive[positive > t]
-        if len(bg) == 0 or len(fg) == 0:
-            break
-        t_new = (float(np.mean(bg)) + float(np.mean(fg))) / 2.0
-        if abs(t_new - t) < 1e-6:
-            break
-        t = t_new
-    return t
-
-
-def auto_threshold_minimum(values: np.ndarray, max_iter: int = 10000) -> float:
-    """Minimum method — iteratively smooth histogram until bimodal, pick valley."""
-    result = _hist_for_threshold(values)
-    if result[0] is None:
-        return 0.0
-    hist, bin_centers, _ = result
-    smoothed = hist.copy().astype(float)
-    # Iteratively smooth until bimodal (<=2 peaks)
-    for _ in range(max_iter):
-        smoothed = np.convolve(smoothed, [0.25, 0.5, 0.25], mode='same')
-        # Count peaks
-        peaks = 0
-        for i in range(1, len(smoothed) - 1):
-            if smoothed[i] > smoothed[i - 1] and smoothed[i] > smoothed[i + 1]:
-                peaks += 1
-        if peaks <= 2:
-            break
-    # Find deepest valley between the two highest peaks
-    peak_indices = []
-    for i in range(1, len(smoothed) - 1):
-        if smoothed[i] > smoothed[i - 1] and smoothed[i] > smoothed[i + 1]:
-            peak_indices.append(i)
-    if len(peak_indices) < 2:
-        return float(bin_centers[len(bin_centers) // 2])
-    # Sort by height, take top 2
-    peak_indices.sort(key=lambda i: -smoothed[i])
-    p1, p2 = sorted(peak_indices[:2])
-    # Find minimum between the two peaks
-    valley_idx = p1 + int(np.argmin(smoothed[p1:p2 + 1]))
-    return float(bin_centers[valley_idx])
-
-
-# Registry of all auto-threshold methods
-AUTO_THRESHOLD_METHODS: dict = {
-    "Otsu": auto_threshold_otsu,
-    "Triangle": auto_threshold_triangle,
-    "Li": auto_threshold_li,
-    "Yen": auto_threshold_yen,
-    "Mean": auto_threshold_mean,
-    "IsoData": auto_threshold_isodata,
-    "Minimum": auto_threshold_minimum,
-}
-
-# Threshold mode choices for UI selectbox
-THRESHOLD_MODE_CHOICES: list[str] = [
-    "Predefined (CSV)",
-    "Otsu",
-    "Triangle",
-    "Li (Min Cross-Entropy)",
-    "Yen",
-    "Mean",
-    "IsoData (Ridler-Calvard)",
-    "Minimum (Bimodal Valley)",
-]
-
-# Map UI label → function key
-_THRESHOLD_MODE_TO_KEY: dict[str, str] = {
-    "Predefined (CSV)": "predefined",
-    "Otsu": "Otsu",
-    "Triangle": "Triangle",
-    "Li (Min Cross-Entropy)": "Li",
-    "Yen": "Yen",
-    "Mean": "Mean",
-    "IsoData (Ridler-Calvard)": "IsoData",
-    "Minimum (Bimodal Valley)": "Minimum",
-}
+AUTO_THRESHOLD_METHODS = {method: partial(_auto_threshold, method=method) for method in THRESHOLD_METHODS}
+auto_threshold_otsu = AUTO_THRESHOLD_METHODS["Otsu"]
+auto_threshold_triangle = AUTO_THRESHOLD_METHODS["Triangle"]
+auto_threshold_li = AUTO_THRESHOLD_METHODS["Li"]
+auto_threshold_yen = AUTO_THRESHOLD_METHODS["Yen"]
+auto_threshold_mean = AUTO_THRESHOLD_METHODS["Mean"]
+auto_threshold_isodata = AUTO_THRESHOLD_METHODS["IsoData"]
+auto_threshold_minimum = AUTO_THRESHOLD_METHODS["Minimum"]
+THRESHOLD_MODE_CHOICES = ["Predefined (CSV)", *THRESHOLD_METHODS]
+_THRESHOLD_MODE_TO_KEY = {"Predefined (CSV)": "predefined", **{m: m for m in THRESHOLD_METHODS}, **METHOD_ALIASES}
 
 
 def compute_auto_thresholds(
@@ -3938,6 +3723,7 @@ def compute_auto_thresholds(
     markers: list[str],
     method_name: str,
     batch_col: str | None = None,
+    params: dict | None = None,
 ) -> pd.DataFrame:
     """Compute auto-thresholds for markers, optionally per batch.
 
@@ -3972,12 +3758,12 @@ def compute_auto_thresholds(
             batch_df = df[df[batch_col].astype(str) == bid]
             row: dict = {"batch_id": bid, "Threshold_File": f"auto_{method_name}"}
             for m in markers_present:
-                row[m] = func(batch_df[m].values)
+                row[m] = func(batch_df[m].values, params=params)
             rows.append(row)
     else:
         row = {"batch_id": "all", "Threshold_File": f"auto_{method_name}"}
         for m in markers_present:
-            row[m] = func(df[m].values)
+            row[m] = func(df[m].values, params=params)
         rows.append(row)
 
     return pd.DataFrame(rows)
@@ -4674,18 +4460,20 @@ def build_leiden_heatmap_figure(
         if df_use.empty:
             return None, [], [], {}, pd.DataFrame()
 
-        heatmap_data = df_use.groupby(cluster_col)[numeric_cols].mean()
+        from spacemap.cluster_profiles import summarize
+        heatmap_data, heatmap_z = summarize(df_use, cluster_col, numeric_cols, "mean")
         cell_counts = df_use.groupby(cluster_col).size()
         
         # Clean column names
         clean_names = {col: get_analysis_marker_label(col) for col in heatmap_data.columns}
         heatmap_data.rename(columns=clean_names, inplace=True)
+        heatmap_z.rename(columns=clean_names, inplace=True)
         
         # Transpose
         heatmap_data = heatmap_data.T
         
         # Z-Score
-        heatmap_z = heatmap_data.apply(lambda x: (x - x.mean()) / (x.std() if x.std() > 0 else 1), axis=1).fillna(0)
+        heatmap_z = heatmap_z.T
         
         # Clustering
         cluster_order = list(heatmap_z.columns)
@@ -5466,7 +5254,8 @@ def render_publication_heatmap(
         dpi_val = gc1.number_input("DPI", 100, 600, 300, key=f"{key_prefix}_pub_dpi")
         cmap_val = gc2.selectbox("Color Map", ["bwr", "coolwarm", "viridis", "RdBu_r"], index=3, key=f"{key_prefix}_pub_cmap")
         orient_val = gc3.radio("Phenotypes on:", ["X Axis", "Y Axis"], index=1, key=f"{key_prefix}_pub_orient")
-        cluster_rows = gc4.checkbox("Cluster Phenotypes?", value=True, key=f"{key_prefix}_pub_cluster_rows")
+        cluster_x = gc4.checkbox("Cluster X axis", value=True, key=f"{key_prefix}_pub_cluster_x")
+        cluster_y = gc4.checkbox("Cluster Y axis", value=True, key=f"{key_prefix}_pub_cluster_y")
 
         if st.button("Generate Figure", type="primary", key=f"{key_prefix}_pub_generate"):
             if heatmap_z_ordered is not None and not heatmap_z_ordered.empty and phenotype_map:
@@ -5474,9 +5263,8 @@ def render_publication_heatmap(
                     pmap = phenotype_map
                     pheno_z_df = heatmap_z_ordered.copy()
 
-                    pheno_z_T = pheno_z_df.T
-                    pheno_z_T['phenotype'] = pheno_z_T.index.map(lambda c: pmap.get(c, 'Unassigned'))
-                    df_plot = pheno_z_T.groupby('phenotype').mean()
+                    from spacemap.cluster_profiles import named_profiles
+                    df_plot = named_profiles(pheno_z_df.T, pmap)
 
                     # Sanitize non-finite values before clustering (required by scipy linkage)
                     df_plot = df_plot.replace([np.inf, -np.inf], np.nan)
@@ -5519,33 +5307,19 @@ def render_publication_heatmap(
                         st.error("No finite values available for publication heatmap after orientation.")
                         return
 
-                    do_row_cluster = cluster_rows if orient_val == "Y Axis" else True
-                    do_col_cluster = cluster_rows if orient_val == "X Axis" else True
+                    do_row_cluster, do_col_cluster = cluster_y, cluster_x
 
-                    g = sns.clustermap(
-                        df_plot,
-                        cmap=cmap_val,
-                        col_cluster=do_col_cluster,
-                        row_cluster=do_row_cluster,
-                        center=0,
-                        vmin=vmin,
-                        vmax=vmax,
-                        figsize=(10, 10),
-                        tree_kws={'linewidths': 1.5},
-                        xticklabels=True,
-                        yticklabels=True
-                    )
-                    g.fig.suptitle(
+                    from spacemap.heatmap import publication_heatmap
+                    figure = publication_heatmap(df_plot,
                         f"{method_label} phenotype expression heatmap\n{marker_source_note}",
-                        y=1.02,
-                        fontsize=12,
-                    )
+                        {"cmap": cmap_val, "cluster_y": do_row_cluster, "cluster_x": do_col_cluster,
+                         "vmin": vmin, "vmax": vmax})
 
-                    st.pyplot(g.fig)
+                    st.pyplot(figure)
 
                     import io
                     buf = io.BytesIO()
-                    g.fig.savefig(buf, format="png", dpi=dpi_val, bbox_inches='tight')
+                    figure.savefig(buf, format="png", dpi=dpi_val, bbox_inches='tight')
                     st.download_button("Download Figure", buf.getvalue(), f"{key_prefix}_phenotype_heatmap.png", "image/png")
                 except Exception as e:
                     st.error(f"Error plotting: {e}")

@@ -111,7 +111,8 @@ def render():
         with col_g2:
             input_files = []
             if os.path.exists(global_input_dir):
-                input_files = sorted([f for f in os.listdir(global_input_dir) if f.endswith('.csv')])
+                from spacemap_gui.studio.phenotyping_inputs import table_files
+                input_files = sorted(os.path.basename(f) for f in table_files(global_input_dir))
             
             # Auto-sync to last batch-corrected file if newly generated in Tab 6
             last_bc_file = st.session_state.get('bc_last_run_file')
@@ -131,7 +132,7 @@ def render():
                 default_idx = input_files.index(preferred_file)
             
             global_file_select = st.selectbox(
-                "Select Unified CSV File", 
+                "Select combined cell table (CSV or Parquet)",
                 input_files, 
                 index=default_idx if input_files else 0,
                 key="global_pheno_file"
@@ -171,7 +172,8 @@ def render():
             st.info("Choose a readable unified CSV above to inspect marker columns and configure the shared marker panel.")
         else:
             try:
-                marker_header = pd.read_csv(global_full_path, nrows=5)
+                from spacemap import dataio
+                marker_header = pd.DataFrame(columns=dataio.columns(global_full_path))
                 available_markers = get_marker_list(marker_header)
             except FileNotFoundError:
                 available_markers = []

@@ -2992,7 +2992,7 @@ def render_panel3_fragment(
                 )
             ),
             browser_key_prefix="tab8_density_p3_annot_dir",
-            help_text="Folder holding one merged GeoJSON per ROI image, e.g. P11_roi_1_merged.geojson.",
+            help_text="Folder holding one merged GeoJSON per ROI image, e.g. sample_1_merged.geojson.",
         )
 
         a1, a2 = st.columns(2)

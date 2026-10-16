@@ -146,6 +146,7 @@ def build_system_prompt(
     source_context: str = "",
     registered_tools: str = "",
     allow_action_plan: bool = True,
+    studio_tools: bool = False,
 ) -> str:
     """Build one auditable prompt. Editable text cannot replace the fixed core."""
     normalized = profile.normalized()
@@ -188,7 +189,14 @@ def build_system_prompt(
             "one matches. Otherwise use the exact protected backend callable and signature.\n"
             + registered_tools
         )
-    if allow_action_plan:
+    if studio_tools:
+        parts.append(
+            "CURRENT REQUEST MODE: Use the registered Studio evidence tools and action JSON protocol supplied below. "
+            "Fetch available evidence yourself; do not ask the user to paste profiles or measurements already in Studio. "
+            "Read-only tools run immediately. Edits go through Studio's validated command system under the user's request. "
+            "Do not emit protected general jobs or executable code."
+        )
+    elif allow_action_plan:
         parts.append(
             "CURRENT RELEASE CAPABILITY: Chat may explain, recommend, and prepare executable actions across "
             "all SPACEMAP pages. Public scientific backend functions are automatically registered from the "

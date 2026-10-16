@@ -2520,7 +2520,30 @@ def build_feature_stack(
         selection_mask = np.zeros_like(pixels_z_valid, dtype=bool)
         features = pixels_z_valid
 
+    # Optional Studio features use the same normalized planes and scope statistics.
+    spatial = settings.get("spatial_features", [])
+    feature_names = list(marker_names)
+    if spatial:
+        from scipy.ndimage import uniform_filter, sobel
+        extra = []
+        for channel, name in enumerate(marker_names):
+            plane = image[channel]
+            for metric in spatial:
+                if metric == "texture":
+                    mean = uniform_filter(plane, size=5, mode="reflect")
+                    field = np.sqrt(np.maximum(0, uniform_filter(plane * plane, size=5, mode="reflect") - mean * mean))
+                elif metric == "edges":
+                    field = np.hypot(sobel(plane, axis=0, mode="reflect"), sobel(plane, axis=1, mode="reflect"))
+                else:
+                    raise ValueError("Unknown classification feature.")
+                column = field.ravel()[valid_indices]
+                std = float(column.std())
+                extra.append((column - column.mean()) / std if std > 1e-8 else np.zeros_like(column))
+                feature_names.append(name + ":" + metric)
+        features = np.column_stack([features, *extra]).astype(np.float32)
+
     return {
+        "feature_names": feature_names,
         "marker_names": marker_names,
         "marker_indices": marker_indices,
         "shape": (height, width),
@@ -2540,7 +2563,7 @@ def build_feature_stack(
     }
 
 
-def run_pixel_clustering(feature_stack: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+def run_pixel_clustering(feature_stack: dict[str, Any], config: dict[str, Any], *, predictor=None) -> dict[str, Any]:
     """MiniBatchKMeans over valid-tissue pixel feature vectors (Step 2.1)."""
     settings = {**DEFAULT_CLUSTERING_CONFIG, **(config or {})}
     features = feature_stack["features"]
@@ -2570,9 +2593,10 @@ def run_pixel_clustering(feature_stack: dict[str, Any], config: dict[str, Any]) 
         rng = np.random.default_rng(seed)
         subset = rng.choice(fit_features.shape[0], size=fit_sample, replace=False)
         kmeans.fit(fit_features[subset])
-        fitted_labels = kmeans.predict(fit_features)
+        fitted_labels = predictor(fit_features, kmeans.cluster_centers_) if predictor else kmeans.predict(fit_features)
     else:
-        fitted_labels = kmeans.fit_predict(fit_features)
+        kmeans.fit(fit_features)
+        fitted_labels = predictor(fit_features, kmeans.cluster_centers_) if predictor else kmeans.predict(fit_features)
 
     labels_valid = np.empty(len(features), dtype=np.int32)
     labels_valid[kmeans_mask] = fitted_labels

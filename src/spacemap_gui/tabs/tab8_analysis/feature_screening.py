@@ -1412,13 +1412,10 @@ def _render_feature_controls() -> None:
                 default=True,
                 disabled=not GPU_AVAILABLE,
                 help=(
-                    "Run the dyad/triad label-shuffling null on the GPU. The motifs found and the "
-                    "statistic are identical to the CPU path -- only the random stream differs, exactly "
-                    "as between two CPU runs with different seeds -- but it is roughly 60x faster on an "
-                    "A100. That speed is what makes a defensible permutation count affordable: at 20,000 "
-                    "shuffles the largest triad Z-scores still move by about +/-0.5 between runs, so low "
-                    "counts leave real Monte-Carlo noise in the rankings. Falls back to CPU automatically."
-                    + (f"\n\nDetected GPU: {_gpu_name}." if _gpu_name else "\n\nNo GPU detected on this node.")
+                    "Speed up label shuffling with a compatible GPU, with a CPU fallback. "
+                    "The test is the same; random shuffles can give slightly different estimates. "
+                    "More permutations improve estimate stability."
+                    + (f"\n\nDetected GPU: {_gpu_name}." if _gpu_name else "\n\nNo compatible GPU detected.")
                 ),
             )
             _stateful_number_input(

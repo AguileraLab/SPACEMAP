@@ -1184,6 +1184,10 @@ def _submit_prompt(
             f"Question received from {context.get('page_title', page_id)}",
             details={"conversation_id": conversation_id, "page_id": context.get("page_id")},
         )
+    if not image_files:
+        from spacemap_gui.studio.classic import submit as submit_viewer_request
+        if submit_viewer_request(clean_prompt, requested_page, store, conversation_id):
+            return
     if _launch_chat_approved_action(clean_prompt, store, conversation_id):
         return
     status_answer = _plain_action_status_answer(clean_prompt, store, conversation_id)
@@ -3067,6 +3071,8 @@ def _render_chat(
             "Online session approval is off. Turn it on in the main Chat tab before sending data online."
         )
     _render_messages(store, conversation_id, compact=compact)
+    from spacemap_gui.studio.classic import controls as viewer_request_controls
+    viewer_request_controls(store, conversation_id, page_id + ('_compact' if compact else '_full'))
     _render_conversation_previews(store, conversation_id, compact=compact)
     _render_pending_online_share(store, conversation_id)
 

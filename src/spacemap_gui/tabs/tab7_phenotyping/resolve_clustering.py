@@ -57,6 +57,7 @@ from .common import (
     render_add_custom_phenotype_ui,
     _THRESHOLD_MODE_TO_KEY,
     AUTO_THRESHOLD_METHODS,
+    THRESHOLD_MODE_CHOICES,
     compute_auto_thresholds,
 )
 from spacemap_gui import terminal
@@ -673,13 +674,14 @@ def _apply_resolve_z1_positivity(
     batch_col: str | None,
     cutoff: float = DEFAULT_RESOLVE_Z1_CUTOFF,
     cofactor: float = 5.0,
+    input_space: str = "raw",
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Positive where the per-batch Z1 score is above ``cutoff`` (see
     ``spacemap.ph_thres_utils.apply_z1_positivity``, shared with notebook Step6C)."""
     from spacemap.ph_thres_utils import apply_z1_positivity
 
     return apply_z1_positivity(
-        df, selected_markers, batch_col, method_tag="resolve", cutoff=cutoff, cofactor=cofactor,
+        df, selected_markers, batch_col, method_tag="resolve", cutoff=cutoff, cofactor=cofactor, input_space=input_space,
     )
 
 
@@ -1377,7 +1379,9 @@ def render_resolve(project_root, global_input_path):
             saved_slots,
         )
         st.session_state['resolve_config'] = {
-            'threshold_statistic': notebook_config.get('threshold_statistic', 'median'),
+            'threshold_statistic': cached_params.get('threshold_statistic', notebook_config.get('threshold_statistic', 'median')),
+            'input_space': cached_params.get('input_space', 'raw'),
+            'adaptive_hierarchy': cached_params.get('adaptive_hierarchy', True),
             'threshold_source': cached_params.get('threshold_source', 'Auto'),
             'threshold_mode': _default_mode,
             'z1_cutoff': float(cached_params.get('z1_cutoff', DEFAULT_RESOLVE_Z1_CUTOFF)),
@@ -1408,15 +1412,12 @@ def render_resolve(project_root, global_input_path):
             
             with cfg_col1:
                 st.markdown("**Threshold Settings**")
-                # Resolve-specific: add "None (No Thresholds)" option
-                # Otsu/Triangle/Li/Yen/... were computed on the per-cell means in the
-                # unified CSV. A cell mean has already averaged noise over hundreds of
-                # pixels, so its background mode is narrowed and shifted and the cut does
-                # not mean what the same method means on pixels. Thresholds now come from
-                # the images (Step 2). The Z1 score mode is a relative fallback for
-                # projects that have no threshold tables yet.
-                _resolve_mode_choices = ["Predefined (CSV)", RESOLVE_Z1_MODE, "None (No Thresholds)"]
+                # Local gates use cell measurements, unlike Background's image-pixel
+                # gates. Keep this distinction visible while sharing both choices with Studio.
+                _resolve_mode_choices = [*THRESHOLD_MODE_CHOICES, RESOLVE_Z1_MODE, "None (No Thresholds)"]
+                from spacemap.thresholding_engine import METHOD_ALIASES
                 current_mode = st.session_state['resolve_config'].get('threshold_mode', 'Predefined (CSV)')
+                current_mode = METHOD_ALIASES.get(current_mode, current_mode)
                 mode_index = (
                     _resolve_mode_choices.index(current_mode)
                     if current_mode in _resolve_mode_choices
@@ -1432,8 +1433,11 @@ def render_resolve(project_root, global_input_path):
                         "**Tab 2 > Detect Background**, one file per batch or ROI "
                         "(`<batch>.ome.tiff_-_Merged_Image.csv`). A cell is positive when its raw value is "
                         "above the marker's threshold.\n\n"
+                        "**Automatic methods**: Otsu, Triangle, Li, Yen, Mean, IsoData and Minimum calculate "
+                        "a gate from each batch's cell measurements. These are not the same as pixel-based "
+                        "Background gates; review their thresholds and cell calls.\n\n"
                         "**Z1 score (no threshold files)**: for when no threshold tables exist. Each marker is "
-                        "ArcSinh-transformed and turned into a Z1 score within each batch (how many standard "
+                        "ArcSinh-transformed (unless already in that scale) and turned into a Z1 score within each batch (how many standard "
                         "deviations a cell sits above the batch average). A cell is positive when its Z1 score "
                         "is above the cutoff (default 1.5). Z2, CDF and NLog are switched off in this mode "
                         "because they would change what the cutoff means. This is a relative rule: markers "
@@ -1446,6 +1450,10 @@ def render_resolve(project_root, global_input_path):
                     key="resolve_threshold_mode"
                 )
 
+                threshold_percentile = st.number_input("Percentile", min_value=0.0, max_value=100.0,
+                    value=float(st.session_state['resolve_config'].get('threshold_percentile',95)), key="resolve_threshold_percentile")
+                threshold_manual = st.number_input("Manual cutoff",
+                    value=float(st.session_state['resolve_config'].get('threshold_manual',0)), key="resolve_threshold_manual")
                 _is_z1_mode = (threshold_mode == RESOLVE_Z1_MODE)
                 z1_cutoff = st.number_input(
                     "Z1 cutoff (Z1 score mode only)",
@@ -1519,6 +1527,13 @@ def render_resolve(project_root, global_input_path):
             
             with cfg_col2:
                 st.markdown("**Transformation**")
+                input_space = st.selectbox(
+                    "Measurement scale", ["raw", "arcsinh"],
+                    index=1 if st.session_state['resolve_config'].get('input_space') == 'arcsinh' else 0,
+                    format_func=lambda value: "Already arcsinh (corrected)" if value == "arcsinh" else "Measured values (raw)",
+                    key="resolve_input_space",
+                    help="Choose the scale of the selected columns. Already-arcsinh measurements must not undergo arcsinh again.",
+                )
                 current_transform = st.session_state['resolve_config'].get(
                     'transformation', 'ArcSinh'
                 )
@@ -1577,6 +1592,10 @@ def render_resolve(project_root, global_input_path):
                     ))
 
                 config_errors: list[str] = []
+                if input_space == 'arcsinh' and _is_z1_mode:
+                    transformation = 'None'
+                elif input_space == 'arcsinh' and transformation != 'None':
+                    config_errors.append("Already-arcsinh values need Transformation = None.")
                 pipeline_config = None
                 try:
                     pipeline_config = _normalize_resolve_pipeline(
@@ -1602,11 +1621,18 @@ def render_resolve(project_root, global_input_path):
                 if _is_z1_mode:
                     # The saved slots are kept for when another mode is chosen again;
                     # the Z1 run ignores them.
-                    pipeline_preview = f"ArcSinh -> Z1 per batch (positive if Z1 > {z1_cutoff:g})"
+                    preparation = "Already arcsinh" if input_space == 'arcsinh' else "ArcSinh"
+                    pipeline_preview = f"{preparation} -> Z1 per batch (positive if Z1 > {z1_cutoff:g})"
                     config_errors = []
                 st.code(pipeline_preview, language="text")
                 for config_error in config_errors:
                     st.warning(config_error)
+                adaptive_hierarchy = st.checkbox(
+                    "Adaptive parent/child gates", value=bool(st.session_state['resolve_config'].get('adaptive_hierarchy', True)),
+                    key="resolve_adaptive_hierarchy",
+                    help="Only in Z1 or Above-zero mode. Otsu separates distinguishing markers among parent candidates across the selected dataset. This can replace their initial positive calls; turn off to use only the chosen positivity rule.",
+                    disabled=threshold_mode not in {RESOLVE_Z1_MODE, 'None (No Thresholds)'},
+                )
 
             out_col = st.text_input(
                 "Phenotype Output Column",
@@ -1633,12 +1659,18 @@ def render_resolve(project_root, global_input_path):
                     'threshold_statistic': threshold_stat,
                     'threshold_source': threshold_source,
                     'threshold_mode': threshold_mode,
+                    'threshold_percentile': threshold_percentile, 'threshold_manual': threshold_manual,
+                    'input_space': input_space,
+                    'adaptive_hierarchy': adaptive_hierarchy,
                     'z1_cutoff': float(z1_cutoff),
                     **pipeline_config,
                     'output_col': out_col,
                     'unclassified_label': unclassified_label
                 })
                 params_to_save = {
+                    'threshold_percentile': threshold_percentile, 'threshold_manual': threshold_manual,
+                    'adaptive_hierarchy': adaptive_hierarchy,
+                    'input_space': input_space,
                     'batch_col': st.session_state['resolve_config'].get('batch_col', 'batch_id'),
                     'cell_id_col': st.session_state['resolve_config'].get('cell_id_col', 'cell_id'),
                     'threshold_marker_col': st.session_state['resolve_config'].get('threshold_marker_col', ''),
@@ -1733,16 +1765,15 @@ def render_resolve(project_root, global_input_path):
         _z1_cutoff = float(st.session_state['resolve_config'].get('z1_cutoff', DEFAULT_RESOLVE_Z1_CUTOFF))
         st.info(
             f"**Z1 score mode** — a marker is positive when its Z1 score is above {_z1_cutoff:g} "
-            "(ArcSinh, then a z-score within each batch). No threshold files are needed. "
-            "Use raw marker columns: background-subtracted or batch-corrected values move the "
-            "batch average and change which cells count as positive."
+            "(a z-score within each batch; raw values are ArcSinh-transformed first). No threshold files are needed. "
+            "Background subtraction and batch correction change the distribution and therefore these relative positive calls."
         )
         _affix = str(st.session_state.get("tab7_marker_workspace", {}).get("correction_affix", "_corr") or "")
         _corrected = [m for m in selected_markers if _affix and (m.endswith(_affix) or m.startswith(_affix))]
-        if _corrected:
+        if _corrected and st.session_state['resolve_config'].get('input_space', 'raw') != 'arcsinh':
             st.warning(
                 f"{len(_corrected)} selected marker(s) look batch-corrected ({', '.join(_corrected[:5])}). "
-                "Z1 score mode is meant for raw markers; switch **Values for this method** to raw markers."
+                "If these are already arcsinh-scaled, set **Measurement scale** to **Already arcsinh** to avoid transforming them twice."
             )
 
     # --- CSV-specific inputs ---
@@ -1924,6 +1955,7 @@ def render_resolve(project_root, global_input_path):
                             selected_markers,
                             _mode_key,
                             batch_col=batch_col if batch_col in _df_for_thresh.columns else None,
+                            params={"percentile": st.session_state["resolve_config"].get("threshold_percentile",95), "manual": st.session_state["resolve_config"].get("threshold_manual",0)},
                         )
                         st.session_state['resolve_threshold_table_draft'] = _auto_df
                         threshold_draft_refreshed = True
@@ -2778,9 +2810,12 @@ def render_resolve(project_root, global_input_path):
                         z1_cofactor = float(cfg.get('tie_score_cofactor', 5.0))
                         binary_df, norm_df = _apply_resolve_z1_positivity(
                             df, selected_markers, batch_col, cutoff=z1_cutoff, cofactor=z1_cofactor,
+                            input_space=cfg.get('input_space', 'raw'),
                         )
                         status.write(
-                            f"[{_timestamp()}] Z1 score mode: ArcSinh (cofactor {z1_cofactor:g}) -> Z1 per batch, "
+                            f"[{_timestamp()}] Z1 score mode: "
+                            + ("Already arcsinh" if cfg.get('input_space') == 'arcsinh' else f"ArcSinh (cofactor {z1_cofactor:g})")
+                            + " -> Z1 per batch, "
                             f"positive if Z1 > {z1_cutoff:g}"
                         )
                         _log_console(f"Z1 positivity, cutoff={z1_cutoff:g}")
@@ -2795,6 +2830,7 @@ def render_resolve(project_root, global_input_path):
                                 auto_thres_df = compute_auto_thresholds(
                                     df, selected_markers, run_mode_key,
                                     batch_col=batch_col if batch_col in df.columns else None,
+                                    params={"percentile": cfg.get("threshold_percentile",95), "manual": cfg.get("threshold_manual",0)},
                                 )
                                 binary_df, norm_df = _apply_thresholds_from_table(
                                     df=df,
@@ -2903,7 +2939,7 @@ def render_resolve(project_root, global_input_path):
                     # causes false daughter assignments.  Use Otsu's method
                     # to find a data-driven split between "trace" and
                     # "truly positive" for each distinguishing marker.
-                    if has_hierarchy and not used_external_thresholds:
+                    if has_hierarchy and not used_external_thresholds and cfg.get('adaptive_hierarchy', True):
                         status.write(f"[{_timestamp()}] Running adaptive threshold resolution for parent/child markers...")
                         _log_console(f"Adaptive threshold resolution (no external thresholds)")
                         binary_df = _adaptive_resolve_hierarchy(
@@ -3005,12 +3041,11 @@ def render_resolve(project_root, global_input_path):
                     st.session_state['resolve_cluster_col_name'] = cfg['cluster_col']
                     resolve_plot_provenance = {
                         'marker_columns': list(norm_df.columns),
-                        'normalization_steps': _resolve_enabled_normalization_steps(cfg),
+                        'normalization_steps': ['Z1'] if run_mode_key == 'z1' else _resolve_enabled_normalization_steps(cfg),
+                        'input_space': cfg.get('input_space', 'raw'),
                         'threshold_mode': run_threshold_mode,
                         'thresholds_applied': bool(used_external_thresholds),
-                        'tie_score_transform': cfg.get(
-                            'tie_score_transform', 'identity_residual'
-                        ),
+                        'tie_score_transform': ('identity_residual' if cfg.get('input_space') == 'arcsinh' else 'asinh_difference') if run_mode_key == 'z1' else cfg.get('tie_score_transform', 'identity_residual'),
                         'tie_score_cofactor': cfg.get('tie_score_cofactor', 5.0),
                         'inverse_sinh_applied': False,
                         'batch_column': batch_group_col,

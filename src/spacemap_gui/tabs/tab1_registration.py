@@ -2486,9 +2486,10 @@ def render_batch_registration(project_root: Path):
                     f"Current MPPs: CODEX {current_codex_mpp:.4f}, "
                     f"H&E {current_he_mpp:.4f}"
                 )
+                codex_cont = config["codex"]
+                _render_pair_viewer_buttons(project_root, pair_key, prefix, codex_cont, config["he"])
                 # CODEX Visualization
                 st.markdown("**CODEX Preview**")
-                codex_cont = config["codex"]
                 show_indices = [i for i, ch in enumerate(codex_cont.channels) if ch.show]
                 
                 if show_indices:
@@ -2530,6 +2531,49 @@ def render_batch_registration(project_root: Path):
                  st.info("Select a pair to visualize.")
              else:
                  st.info("Load images to visualize.")
+
+
+def _registered_output(project_root: Path, prefix: str) -> Path | None:
+    """The merged OME-TIFF batch registration wrote for this pair, if any."""
+    folders = [st.session_state.get("tab1_batch_output_dir"), st.session_state.get("registration_output_dir"),
+               project_root / "outputs" / "registered"]
+    for folder in folders:
+        if not folder:
+            continue
+        for candidate in sorted(Path(folder).glob(f"{prefix}_merged.ome.tif*")):
+            if candidate.is_file():
+                return candidate
+    return None
+
+
+def _render_pair_viewer_buttons(project_root: Path, pair_key: str, prefix: str, codex_cont, he_cont) -> None:
+    """Open the pair at full resolution in the image viewer."""
+    from spacemap.viewer.sources import image_info, open_source
+    from spacemap_gui.viewer.ui import default_channels, he_overlay, image_layer, open_viewer
+
+    registered = _registered_output(project_root, prefix)
+    view_codex, view_he, view_registered = st.columns(3)
+    if view_codex.button("View CODEX", key=f"tab1_view_codex_{pair_key}", width="stretch",
+                         help="Open the raw CODEX scan at full resolution with the markers ticked above."):
+        channels = [{"index": index, "color": channel.color_hex, "visible": bool(channel.show)}
+                    for index, channel in enumerate(codex_cont.channels)]
+        open_viewer(f"{prefix}  |  raw CODEX", [image_layer(str(codex_cont.path), name=Path(codex_cont.path).name,
+                                                           channels=channels)])
+    if view_he.button("View H&E", key=f"tab1_view_he_{pair_key}", width="stretch",
+                      help="Open the raw H&E scan at full resolution."):
+        open_viewer(f"{prefix}  |  raw H&E", [image_layer(str(he_cont.path), name=Path(he_cont.path).name)])
+    if view_registered.button("View registered result", key=f"tab1_view_registered_{pair_key}", width="stretch",
+                              disabled=registered is None,
+                              help=("Check the alignment: the registered H&E drawn over CODEX DAPI. "
+                                    "Change the H&E opacity in the layer panel.")
+                              if registered else "Run registration for this pair first."):
+        info = image_info(registered)
+        layers = [image_layer(str(registered), name="CODEX (registered)",
+                              channels=default_channels(info.channel_names))]
+        overlay = he_overlay(str(registered), info.channel_names, visible=True, opacity=0.5)
+        if overlay:
+            layers.append(overlay)
+        open_viewer(f"{prefix}  |  registered: H&E over CODEX", layers)
 
 
 @st.fragment

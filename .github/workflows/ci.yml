@@ -144,13 +144,20 @@ jobs:
         run: python "$GITHUB_WORKSPACE/scripts/check_installed_app.py"
 
   frontend:
-    name: Bundled heatmap assets are current
+    name: Studio scripts and bundled heatmap assets
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
+      - name: Check Studio script syntax
+        run: |
+          for script in src/spacemap_gui/viewer/frontend/*.js \
+                        src/spacemap_gui/viewer/frontend/viewer/*.js \
+                        src/spacemap_gui/viewer/frontend/vendor/*.js; do
+            node --check "$script"
+          done
       - name: Rebuild the shipped widget
         working-directory: src/spacemap_gui/tabs/tab7_phenotyping/heatmap_click_selector/frontend
         run: |

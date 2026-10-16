@@ -200,7 +200,7 @@ def render_spatial_panel(project_root: Path, image_names: Sequence[str], input_d
         browser_key_prefix="tab4_annot_geojson_dir_browse",
         help_text=(
             "Folder holding the annotation files produced by step 4 of the Annotation tab "
-            "(for example P11_roi_1_zones.geojson). Files are matched to images by name."
+            "(for example sample_1_zones.geojson). Files are matched to images by name."
         ),
     )
     geojson_dir = st.session_state.get(GEOJSON_DIR_KEY, "")

@@ -27,3 +27,16 @@ def test_portable_directory_example_is_allowed(tmp_path, monkeypatch):
     monkeypatch.setitem(check.__globals__, "_tracked_files", lambda: [Path("README.md")])
     monkeypatch.chdir(tmp_path)
     assert check() == 0
+
+
+@pytest.mark.parametrize("relative", ["frontend/studio.js", "frontend/build/bundle.js", "docs/install.md"])
+@pytest.mark.parametrize("private_text", ["Nucleus" + "C" + str(140), "/cm/" + "shared/apps/python"])
+def test_internal_hosts_and_install_paths_are_blocked(tmp_path, monkeypatch, capsys, relative, private_text):
+    path = tmp_path / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(private_text)
+    check = runpy.run_path(str(CHECKER))["main"]
+    monkeypatch.setitem(check.__globals__, "_tracked_files", lambda: [Path(relative)])
+    monkeypatch.chdir(tmp_path)
+    assert check() == 1
+    assert "Machine-specific paths found" in capsys.readouterr().out

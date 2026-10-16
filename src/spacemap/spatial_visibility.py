@@ -9,12 +9,60 @@ from __future__ import annotations
 import heapq
 import math
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import numpy as np
 import shapely
 from shapely.strtree import STRtree
 from numba import njit
 
 ENGINE_NAME = "Triangle visibility (CPU)"
+
+
+def cpu_workers(requested=0):
+    """Bound exact geometry workers by the process's CPU allocation."""
+    from spacemap.consensus_execution import cpu_budget
+
+    return cpu_budget(requested or 8)["workers"]
+
+
+def measure_visibility(xy, roots, triangles, neighbors, edge_rois, counts, threshold, workers=1, progress=None):
+    """Share the read-only mesh; each cell retains its original root/visit order.
+
+    The compiled traversal releases the GIL. Chunking across cells adds no
+    approximation and avoids copying the mesh into separate worker processes.
+    """
+    if (workers <= 1 and progress is None) or len(xy) < 2048:
+        result = expand_visibility(xy, roots, triangles, neighbors, edge_rois, counts, threshold)
+        if progress is not None:
+            progress(len(xy), len(xy))
+        return result
+    order = np.argsort(roots[0], kind="stable")
+    roots = roots[:, order]
+    chunk = max(512, math.ceil(len(xy) / max(workers * 4, 20)))
+
+    def measure(start):
+        end = min(start + chunk, len(xy))
+        first, last = np.searchsorted(roots[0], [start, end])
+        local_roots = roots[:, first:last].copy()
+        local_roots[0] -= start
+        return start, end, expand_visibility(xy[start:end], local_roots, triangles, neighbors,
+                                             edge_rois, counts, threshold)
+
+    distances = np.full((len(xy), edge_rois.shape[2]), np.inf)
+    owners = np.full(distances.shape, -1, dtype=np.int64)
+    completed, milestone = 0, 1
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="tag-distance") as pool:
+        pending = [pool.submit(measure, start) for start in range(0, len(xy), chunk)]
+        for future in as_completed(pending):
+            start, end, (values, ids) = future.result()
+            distances[start:end], owners[start:end] = values, ids
+            completed += end - start
+            # Work milestones, never elapsed-time heartbeats. Run callbacks on
+            # the caller thread so status writes and cancellation stay ordered.
+            if progress is not None and completed * 4 >= milestone * len(xy):
+                progress(completed, len(xy))
+                milestone = completed * 4 // len(xy) + 1
+    return distances, owners
 
 def segments_of(geometry):
     result = []
@@ -183,14 +231,15 @@ def expand_visibility(xy, roots, triangles, neighbors, edge_rois, counts, thresh
 class TissueVisibility:
     """One run-local index; callers discard it after measuring a tissue piece."""
 
-    def __init__(self, tissue, targets, tile_size=1024.):
+    def __init__(self, tissue, targets, tile_size=1024., workers=1):
         if not hasattr(shapely, "constrained_delaunay_triangles"):
             raise RuntimeError("Fast tissue visibility requires Shapely 2.1 or newer.")
         self.tissue = tissue
         self.labels = sorted(targets)
         self.targets = targets
         self.tile_size = tile_size
-        self.metadata = {"engine": ENGINE_NAME, "tile_size_px": tile_size}
+        self.workers = workers
+        self.metadata = {"engine": ENGINE_NAME, "tile_size_px": tile_size, "cpu_workers": workers}
         arrays = [segments_of(tissue)]
         classes = [np.full(len(arrays[0]), -1, dtype=np.int64)]
         owners = [np.full(len(arrays[0]), -1, dtype=np.int64)]
@@ -212,8 +261,34 @@ class TissueVisibility:
         self.triangle_tree = None
         shapely.prepare(tissue)
 
-    def _build_triangles(self, tiled=True):
+    def _direct_distances(self, points, outside, counts):
+        """Exact shortcut for a single class with an unobstructed nearest border.
+
+        A line covered by tissue attains the global Euclidean lower bound;
+        no other visible part can be closer. Blocked lines still use the full
+        triangle search, including visible parts of the same target polygon.
+        Empty targets still block and cannot seed distances. No sampling.
+        """
+        positions = np.flatnonzero(outside)
+        label = self.labels[0]
+        geometries = self.geometries[label]
+        if not len(positions) or not len(geometries):
+            return positions[:0], np.empty(0), np.empty(0, dtype=np.int64)
+        pairs = STRtree(geometries).query_nearest(points[positions], all_matches=True)
+        ids = self.region_ids[label]
+        # Equal distances retain the lowest ROI ID, as the traversal does.
+        order = np.lexsort((ids[pairs[1]], pairs[0]))
+        pairs = pairs[:, order]
+        _, first = np.unique(pairs[0], return_index=True)
+        positions, targets = positions[pairs[0, first]], pairs[1, first]
+        lines = shapely.shortest_line(points[positions], geometries[targets])
+        visible = shapely.covers(self.tissue, lines) & (counts[0, ids[targets]] >= 1)
+        return positions[visible], shapely.length(lines[visible]), ids[targets[visible]]
+
+    def _build_triangles(self, tiled=True, progress=None):
         start = time.perf_counter()
+        tell = progress if progress is not None else lambda message: None
+        tell("Preparing tissue geometry for gap-aware distances")
         geometries = [g for label in self.labels for g in self.geometries[label]]
         free = self.tissue.difference(shapely.union_all(geometries))
         source = free
@@ -227,7 +302,9 @@ class TissueVisibility:
                 xx, yy = np.meshgrid(xs, ys)
                 tiles = shapely.box(xx.ravel(), yy.ravel(), xx.ravel() + width, yy.ravel() + width)
                 source = shapely.intersection(free, tiles)
+        tell("Triangulating tissue around gaps and annotation boundaries")
         polygons = shapely.get_parts(shapely.constrained_delaunay_triangles(source))
+        tell(f"Indexing {len(polygons):,} tissue triangles")
         self.triangle_tree = STRtree(polygons)
         if not len(polygons):
             self.triangles = np.empty((0, 3, 2))
@@ -260,7 +337,8 @@ class TissueVisibility:
         if np.any(errors > 1e-6):
             if tiled:
                 self.metadata["untiled_retry"] = True
-                return self._build_triangles(tiled=False)
+                tell("Rebuilding the mesh without tiles to preserve boundary accuracy")
+                return self._build_triangles(tiled=False, progress=progress)
             raise RuntimeError("Tissue triangulation has an unmatched internal boundary")
         matched = matched[:, distances <= 1e-6]
         owners = np.full((len(edges), len(self.labels)), -1, dtype=np.int64)
@@ -273,8 +351,9 @@ class TissueVisibility:
         self.neighbors = neighbors.reshape(-1, 3)
         self.edge_rois = owners.reshape(-1, 3, len(self.labels))
         self.metadata.update(triangles=len(coords), preparation_seconds=time.perf_counter() - start)
+        tell(f"Tissue mesh ready: {len(coords):,} triangles ({time.perf_counter() - start:.1f}s)")
 
-    def measure(self, points, thresholds=(1,), hit_query=None):
+    def measure(self, points, thresholds=(1,), hit_query=None, progress=None):
         """Measure each distinct QC threshold, sharing topology and membership."""
         if hit_query is None:
             from spacemap.cell_spatial_annotation import _point_region_pairs
@@ -282,6 +361,8 @@ class TissueVisibility:
 
         thresholds = sorted({max(1, int(t)) for t in thresholds})
         n, k = len(points), len(self.labels)
+        tell = progress if progress is not None else lambda message: None
+        tell(f"Checking annotation membership and inside distances for {n:,} cells")
         xy = np.column_stack((shapely.get_x(points), shapely.get_y(points)))
         valid = np.isfinite(xy).all(axis=1) & shapely.covers(self.tissue, points)
         inside_owner = np.full((n, k), -1, dtype=np.int64)
@@ -298,12 +379,23 @@ class TissueVisibility:
                 negative[positions, c] = -boundary_distances(xy[positions], self.segments, *self.target_bvhs[c])
         occupied = (inside_owner >= 0).any(axis=1)
         outside = valid & ~occupied
+        direct_positions, direct_values, direct_ids = (np.empty(0, dtype=int), np.empty(0), np.empty(0, dtype=int))
+        if k == 1:
+            tell(f"Checking direct boundary paths for {int(outside.sum()):,} outside cells")
+            direct_positions, direct_values, direct_ids = self._direct_distances(points, outside, counts)
+        self.metadata["direct_cells"] = len(direct_positions)
+        # A target excluded at a stricter QC threshold still blocks the line.
+        # Keep those cells in the visibility search for that threshold.
+        direct_all_thresholds = direct_positions[counts[0, direct_ids] >= max(thresholds)] if k == 1 else direct_positions
+        search = outside.copy()
+        search[direct_all_thresholds] = False
         roots = np.empty((2, 0), dtype=np.int64)
-        if outside.any() and any(len(g) for g in self.geometries.values()):
+        if search.any() and any(len(g) for g in self.geometries.values()):
+            tell(f"{len(direct_all_thresholds):,} direct paths resolved; {int(search.sum()):,} cells need gap-aware search")
             if self.triangle_tree is None:
-                self._build_triangles()
-            roots = self.triangle_tree.query(points[outside], predicate="intersects")
-            if len(np.unique(roots[0])) != int(outside.sum()):
+                self._build_triangles(progress=progress)
+            roots = self.triangle_tree.query(points[search], predicate="intersects")
+            if len(np.unique(roots[0])) != int(search.sum()):
                 raise RuntimeError("A tissue cell could not be located in the visibility triangulation")
         results, skipped, signatures = {}, {}, {}
         for threshold in thresholds:
@@ -319,10 +411,19 @@ class TissueVisibility:
                     distances[selected, c] = negative[selected, c]
                     owners[selected, c] = inside_owner[selected, c]
                 if roots.size:
-                    measured, found_owners = expand_visibility(xy[outside], roots, self.triangles, self.neighbors,
-                                                               self.edge_rois, counts, threshold)
+                    tell(f"Gap-aware search: {int(search.sum()):,} cells, {self.workers} CPU workers, minimum {threshold} cells per target")
+                    def completed(done, total):
+                        tell(f"Gap-aware search: {done:,}/{total:,} cells completed (minimum {threshold} per target)")
+
+                    measured, found_owners = measure_visibility(xy[search], roots, self.triangles, self.neighbors,
+                                                               self.edge_rois, counts, threshold, self.workers,
+                                                               progress=completed if progress is not None else None)
                     measured[~np.isfinite(measured)] = np.nan
-                    distances[outside], owners[outside] = measured, found_owners
+                    distances[search], owners[search] = measured, found_owners
+                if k == 1 and len(direct_positions):
+                    eligible = counts[0, direct_ids] >= threshold
+                    distances[direct_positions[eligible], 0] = direct_values[eligible]
+                    owners[direct_positions[eligible], 0] = direct_ids[eligible]
                 results[threshold] = distances, owners
                 signatures[eligibility] = threshold
             skipped[threshold] = {label: int((counts[c, self.region_ids[label]] < threshold).sum())

@@ -2940,8 +2940,8 @@ def render_qc_correction(project_root: Path):
         
         norm_method = c_conf1.selectbox(
             "Normalization Method (for SOM clustering)",
-            ["scale (Z-score)", "rank"],
-            index=0 if st.session_state.bc_config.get('norm_method', 'scale') == 'scale' else 1,
+            ["scale (Z-score)", "rank", "none"],
+            index={"scale": 0, "rank": 1, "none": 2}.get(st.session_state.bc_config.get('norm_method', 'scale'), 0),
             help="'scale' (Z-score) is recommended for datasets from the same experiment. 'rank' is recommended for datasets with heavy batch effects or from different technologies."
         )
 
@@ -3157,7 +3157,7 @@ def render_qc_correction(project_root: Path):
                     "output_directory": st.session_state.bc_output_dir,
                 },
             )
-            st.session_state.bc_config['norm_method'] = 'scale' if 'scale' in norm_method else 'rank'
+            st.session_state.bc_config['norm_method'] = 'scale' if 'scale' in norm_method else norm_method
             st.session_state.bc_config['mode'] = mode
             st.session_state.bc_config['som_grid_dim'] = int(grid_size)
             st.session_state.bc_config['som_iterations'] = int(iterations)
@@ -3304,6 +3304,8 @@ def render_qc_correction(project_root: Path):
                     parametric=parametric,
                     arcsinh_cofactor=float(st.session_state.bc_config.get('arcsinh_cofactor', 5.0)),
                     correction_mode=correction_mode,
+                    som_rlen=int(st.session_state.bc_config.get('som_rlen', 10)),
+                    cycombine_seed=int(st.session_state.bc_config.get('cycombine_seed', 473)),
                 )
 
                 corrected_valid = corrector.correct_batch_effects(df_for_correction_valid)
@@ -3333,7 +3335,8 @@ def render_qc_correction(project_root: Path):
                         data=corrected_valid,
                         markers=markers,
                         batch_col='batch',
-                        percentile_threshold=float(percentile_val)
+                        percentile_threshold=float(percentile_val),
+                        cofactor=float(st.session_state.bc_config.get('arcsinh_cofactor', 5.0)),
                     )
                     
                     # 2. Build thresholds dict

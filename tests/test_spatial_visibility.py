@@ -126,3 +126,66 @@ def test_missing_targets_and_invalid_coordinates_remain_blank(tmp_path):
     result, summary = spatial.annotate_cells(cells, path, rules("tumor"),
         bed_labels=["tumor", "normal"], require_clean_path=True)
     assert result[["tumor_distance", "tumor_bed", "normal_bed"]].isna().all().all()
+
+
+def test_direct_shortcut_matches_full_visibility_with_holes_ties_and_qc(monkeypatch):
+    tissue = box(0, 0, 100, 100).difference(box(40, 35, 50, 65))
+    targets = {"tumor": [{"id": 1, "geom": box(70, 5, 80, 95)},
+                         {"id": 2, "geom": box(20, 5, 30, 15)},
+                         {"id": 3, "geom": box(1, 97, 2, 98)}]}
+    xy = np.random.default_rng(171).uniform(0, 100, (1800, 2))
+    # Include blocked nearest points and a tie between two annotations.
+    points = shapely.points(np.vstack((xy, [[10, 50], [50, 10], [75, 50], [np.nan, 3], [110, 50]])))
+    scene = visibility.TissueVisibility(tissue, targets)
+    actual, skipped = scene.measure(points, thresholds=(1, 40))
+    assert scene.metadata["direct_cells"] > 500
+    with monkeypatch.context() as patch:
+        patch.setattr(visibility.TissueVisibility, "_direct_distances", lambda *a: (
+            np.empty(0, dtype=int), np.empty(0), np.empty(0, dtype=int)))
+        expected, expected_skipped = visibility.TissueVisibility(tissue, targets).measure(points, thresholds=(1, 40))
+    assert skipped == expected_skipped
+    for threshold in (1, 40):
+        np.testing.assert_allclose(actual[threshold][0], expected[threshold][0], atol=1e-10, equal_nan=True)
+        np.testing.assert_array_equal(actual[threshold][1], expected[threshold][1])
+
+
+@pytest.mark.parametrize("workers", [1, 4])
+def test_parallel_traversal_matches_serial_with_multiple_roots_and_qc(workers):
+    tissue = box(0, 0, 100, 100).difference(box(40, 35, 50, 65))
+    targets = {"tumor": [{"id": 1, "geom": box(70, 5, 80, 95)}],
+               "normal": [{"id": 2, "geom": box(20, 5, 30, 15)}]}
+    xy = np.random.default_rng(71).uniform(0, 100, (4200, 2))
+    points = shapely.points(np.vstack((xy, np.tile([[50, 0], [70, 5], [80, 95], [0, 0]], (20, 1)))))
+    serial, _ = visibility.TissueVisibility(tissue, targets, workers=1).measure(points, thresholds=(1, 100))
+    events = []
+    parallel, _ = visibility.TissueVisibility(tissue, targets, workers=workers).measure(points, thresholds=(1, 100), progress=events.append)
+    for threshold in (1, 100):
+        np.testing.assert_array_equal(serial[threshold][0], parallel[threshold][0])
+        np.testing.assert_array_equal(serial[threshold][1], parallel[threshold][1])
+    assert any("Triangulating tissue" in message for message in events)
+    assert any("cells completed" in message for message in events)
+    assert len([message for message in events if "cells completed" in message]) <= 8
+
+
+@pytest.mark.parametrize("overwrite", [True, False])
+def test_independent_distances_share_preparation_but_preserve_studio_rules(tmp_path, overwrite):
+    from dataclasses import replace
+
+    path = _geojson(tmp_path, [_feature("tissue", box(0, 0, 100, 100).difference(box(40, 35, 50, 65))),
+        _feature("tumor", box(70, 5, 80, 95)), _feature("normal", box(30, 0, 35, 100))])
+    cells = pd.DataFrame({"x_centroid": [10., 32., 75., 75., np.nan, 120.], "y_centroid": [50.] * 6,
+                          "normal_distance": [999.] * 6}, index=[10, 20, 30, 40, 50, 60])
+    chosen = rules("tumor", "normal", "tissue")
+    options = dict(require_clean_path=True, min_cells_per_bed_target=2, overwrite_existing=overwrite)
+    expected, _ = spatial.annotate_cells(cells, path, [replace(r, distance=False) for r in chosen],
+                                        bed_labels=["tumor", "normal"], **options)
+    for rule in chosen:
+        part, _ = spatial.annotate_cells(cells, path, [replace(rule, binary=False, roi_id=False, roi_size=False)],
+                                        bed_labels=[], **options)
+        expected[f"{rule.label}_distance"] = part[f"{rule.label}_distance"]
+    events = []
+    actual, _ = spatial.annotate_cells(cells, path, chosen, bed_labels=["tumor", "normal"],
+                                      independent_distances=True, progress=lambda message, fraction=None: events.append((message, fraction)), **options)
+    pd.testing.assert_frame_equal(actual[expected.columns], expected)
+    fractions = [fraction for _, fraction in events if fraction is not None]
+    assert fractions == sorted(fractions) and fractions[-1] == 1

@@ -17,7 +17,11 @@ def check_wheel(path: Path) -> None:
         names = set(archive.namelist())
         for required in ("spacemap_gui/app.py", "spacemap/model_catalog.json",
                          "spacemap/marker_configs.json", widget + "index.html",
-                         widget + "THIRD_PARTY_NOTICES.txt"):
+                         widget + "THIRD_PARTY_NOTICES.txt",
+                         "spacemap_gui/studio/jobs.py",
+                         "spacemap_gui/viewer/frontend/index.html",
+                         "spacemap_gui/viewer/frontend/studio.js",
+                         "spacemap_gui/viewer/frontend/vendor/OPENSEADRAGON_LICENSE.txt"):
             if required not in names:
                 raise ValueError(f"{path.name}: missing {required}")
         manifest = json.loads(archive.read("spacemap/marker_configs.json"))
@@ -29,6 +33,11 @@ def check_wheel(path: Path) -> None:
                 raise ValueError(f"Missing or external widget asset: {asset}")
         if not any(name.startswith(widget + "assets/plotly.min-") for name in names):
             raise ValueError("The heatmap's local Plotly library is missing")
+        viewer = "spacemap_gui/viewer/frontend/"
+        viewer_html = archive.read(viewer + "index.html").decode()
+        for asset in re.findall(r'(?:src|href)="([^"]+)"', viewer_html):
+            if asset.startswith(("http:", "https:", "/")) or viewer + asset not in names:
+                raise ValueError(f"Missing or external Studio asset: {asset}")
         entries = next(name for name in names if name.endswith(".dist-info/entry_points.txt"))
         if "spacemap = spacemap_gui.launch:main" not in archive.read(entries).decode():
             raise ValueError("The spacemap command is missing")
@@ -37,7 +46,7 @@ def check_wheel(path: Path) -> None:
             raise ValueError("The UT Southwestern license is missing")
         if any("node_modules" in PurePosixPath(name).parts for name in names):
             raise ValueError("Build-time node_modules must not be packaged")
-    print(f"OK: {path.name}: GUI, marker defaults, local widget assets, notices and license")
+    print(f"OK: {path.name}: Studio and Classic, marker defaults, local assets, notices and license")
 
 
 def check_sdist(path: Path) -> None:
@@ -46,7 +55,8 @@ def check_sdist(path: Path) -> None:
                  for name in archive.getnames()}
     for required in ("LICENSE", "CITATION.cff", "environment.yml", "Dockerfile", "docker-compose.yml",
                      "requirements-lock.txt", "marker_configs.json", "docs/first-project.md",
-                     "docs/installation.md", "scripts/check_release_artifacts.py",
+                     "docs/installation.md", "docs/studio-guide.md", "docs/studio-release.md",
+                     "docs/assets/spacemap-studio-workflow.png", "scripts/check_release_artifacts.py",
                      "scripts/check_runtime.py", "scripts/check_container.py", "scripts/check_installed_app.py"):
         if required not in names:
             raise ValueError(f"{path.name}: missing {required}")

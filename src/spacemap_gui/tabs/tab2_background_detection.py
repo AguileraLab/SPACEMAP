@@ -34,6 +34,17 @@ from spacemap.background_detection import (
 from spacemap_gui.process_log import record_process_event
 from spacemap_gui.ui_utils import directory_input_with_browse
 
+def _threshold_parameters(prefix):
+    """The same bounded configuration as Studio; shared through session state."""
+    from spacemap.thresholding_engine import parameters
+    with st.expander("Percentile / Manual parameters"):
+        percentile = st.number_input("Percentile", min_value=0.0, max_value=100.0, value=95.0, key=prefix + "_percentile")
+        manual = st.number_input("Manual cutoff", value=0.0, key=prefix + "_manual")
+    params = parameters({"percentile": percentile, "manual": manual})
+    st.session_state["thresholding_parameters"] = params
+    return params
+
+
 TABLE_KEY = "tab2_bgdet_table"
 MASK_KEY = "tab2_bgdet_mask"
 BATCH_KEY = "tab2_bgdet_batch_table"
@@ -318,6 +329,7 @@ def _render_single(project_root: Path, threshold_dir: str) -> None:
                 "lower values. Compare a few markers before committing."
             ),
         )
+        threshold_params = _threshold_parameters("tab2_threshold")
         output_label = output_column.selectbox(
             "CSV output",
             list(POLYGON_OUTPUT_OPTIONS),
@@ -388,12 +400,13 @@ def _render_single(project_root: Path, threshold_dir: str) -> None:
                     )
                 status.write(f"Measuring inside {mask_note}")
                 table = detect_backgrounds(
-                    image_path, markers=markers, method=method, downsample=int(downsample),
+                    image_path, markers=markers, method=method, downsample=int(downsample), params=threshold_params,
                     mask=mask, region_masks=per_region,
                     aggregate=export_mode,
                     progress=lambda done, total, name: (
                         progress.progress(done / total), status.write(f"{name} ({done}/{total})")),
                 )
+                st.session_state["thresholding_results"] = {"image": str(image_path), "method": method, "parameters": threshold_params, "table": table}
                 table.insert(0, "image", stem)
                 table["manual_override"] = np.nan
                 table["mask"] = mask_note
@@ -709,6 +722,7 @@ def _render_batch(project_root: Path, threshold_dir: str) -> None:
     method = settings[0].selectbox(
         "Threshold method", list(THRESHOLD_METHODS),
         index=list(THRESHOLD_METHODS).index("Triangle"), key="tab2_bgdet_batch_method")
+    threshold_params = _threshold_parameters("tab2_batch_threshold")
     downsample = settings[1].select_slider(
         "Downsample", options=[1, 2, 4, 5, 8, 16], value=5,
         key="tab2_bgdet_batch_downsample",
@@ -785,7 +799,7 @@ def _render_batch(project_root: Path, threshold_dir: str) -> None:
                     fallback_status = "none"
                     effective_region_unit = "feature"
                 table = detect_backgrounds(
-                    path, markers=markers, method=method,
+                    path, markers=markers, method=method, params=threshold_params,
                     downsample=int(downsample), mask=mask, region_masks=per_region,
                     aggregate=batch_export_mode,
                 )
@@ -813,6 +827,7 @@ def _render_batch(project_root: Path, threshold_dir: str) -> None:
             combined = pd.concat(results, ignore_index=True)
             combined["final"] = combined["threshold"]
             st.session_state[BATCH_KEY] = combined
+            st.session_state["thresholding_results"] = {"method": method, "parameters": threshold_params, "table": combined}
             st.success(f"Measured {combined['image'].nunique()} image(s) in {time.time() - started:.0f}s.")
             record_process_event("tab2", "Batch background detection complete", status="complete",
                                  duration_s=time.time() - started,

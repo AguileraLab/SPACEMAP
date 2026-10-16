@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from collections import Counter
 from dataclasses import dataclass
 from typing import Any, Iterable, Sequence
@@ -204,11 +205,15 @@ def _split_and_sort(geometry) -> list[dict[str, Any]]:
     ]
 
 
-def _prepare_targets(polygons_by_name: dict[str, list], labels: Iterable[str]) -> dict[str, dict]:
+def _prepare_targets(polygons_by_name: dict[str, list], labels: Iterable[str], progress=None) -> dict[str, dict]:
     """Merge, split and index the polygons for every label a rule references."""
     prepared: dict[str, dict] = {}
-    for label in {str(value).lower() for value in labels}:
+    names = sorted({str(value).lower() for value in labels})
+    for number, label in enumerate(names):
         polygons = polygons_by_name.get(label, [])
+        if progress is not None:
+            progress(f"Preparing annotation {number + 1}/{len(names)}: {label} ({len(polygons):,} features)",
+                     .02 + .08 * number / max(len(names), 1))
         if not polygons:
             prepared[label] = {"parts": [], "tree": None}
             continue
@@ -728,6 +733,9 @@ def annotate_cells(
     bed_labels: Sequence[str] | None = None,
     overwrite_existing: bool = True,
     use_gpu: bool = False,
+    cpu_workers: int = 0,
+    independent_distances: bool = False,
+    progress=None,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
     """Add spatial annotation columns to a cell table.
 
@@ -753,9 +761,21 @@ def annotate_cells(
     alphabetically (case-insensitive), matching the existing two-class rule.
     ``overwrite_existing`` replaces complete generated columns, including NaNs.
     When False, existing columns are retained in full and only new ones added.
+    ``independent_distances`` measures each class independently of the other
+    annotation classes, while retaining their shared blocking topology for beds.
+    ``cpu_workers`` controls exact CPU visibility traversal (0: Auto, up to 8).
+    ``progress(message, fraction=None)`` reports work stages and completed
+    batches. Fractions track stages, not a prediction of remaining time.
     """
     dataframe = dataframe.copy()
+    tell = progress if progress is not None else lambda message, fraction=None: None
     summary: dict[str, Any] = {"columns": [], "counts": {}, "warnings": []}
+    workers = 1
+    if require_clean_path:
+        from spacemap.spatial_visibility import cpu_workers as resolve_workers
+
+        workers = resolve_workers(cpu_workers)
+    summary["cpu_workers"] = workers
     boundary_engine = None
     if use_gpu:
         from spacemap.spatial_distance_acceleration import BoundaryDistanceEngine
@@ -794,13 +814,15 @@ def annotate_cells(
     if edge_config is not None:
         required.add(str(edge_config.reference).lower())
 
+    tell(f"Reading annotation polygons for {len(dataframe):,} cells", 0)
     polygons_by_name = load_annotation_polygons(geojson_path)
     missing = sorted(label for label in required if not polygons_by_name.get(label))
     if missing:
         summary["warnings"].append(
             "Annotation(s) not found in the GeoJSON: " + ", ".join(missing)
         )
-    prepared = _prepare_targets(polygons_by_name, required)
+    prepared = _prepare_targets(polygons_by_name, required, progress=progress)
+    tell(f"Assigning {len(dataframe):,} cells to tissue pieces", .10)
 
     points = shapely.points(
         pd.to_numeric(dataframe[resolved_x], errors="coerce").to_numpy(dtype=float),
@@ -836,6 +858,7 @@ def annotate_cells(
     # Tissue piece 1 first, cells outside every piece last, so the per-piece ROI
     # numbering below depends only on the geometry, not on row order.
     containment.sort(key=lambda group: (group[0] == 0, group[0]))
+    tell(f"Tissue assignment ready: {sum(group[0] != 0 for group in containment):,} pieces; {len(leftover):,} cells outside tissue", .15)
 
     scoped_cache: dict[tuple[str, bool], dict[int, list[dict[str, Any]]]] = {}
     visibility_probes: dict = {}
@@ -855,10 +878,11 @@ def annotate_cells(
     visibility_labels: set[str] = set()
     visibility_beds_requested = False
     if require_clean_path:
-        visibility_labels.update(
-            rule.label.lower() for rule in active_rules
-            if rule.distance and rule.group_by_roi and rule.label.lower() != str(tissue_label).lower()
-        )
+        if not independent_distances:
+            visibility_labels.update(
+                rule.label.lower() for rule in active_rules
+                if rule.distance and rule.group_by_roi and rule.label.lower() != str(tissue_label).lower()
+            )
         if bed_labels is not None:
             visibility_labels.update(label.lower() for label in bed_labels)
             visibility_beds_requested = bool(bed_labels)
@@ -867,30 +891,42 @@ def annotate_cells(
                 if rule.bed and rule.bed_target and rule.group_by_roi:
                     visibility_labels.update((rule.label.lower(), str(rule.bed_target).lower()))
                     visibility_beds_requested = True
-    visibility_results: dict[int, Any] = {}
+    visibility_results: dict[tuple, Any] = {}
     summary["distance_method"] = "Euclidean / legacy"
 
-    def visible_values(tissue_id, container, positions, label, threshold):
+    def visible_values(tissue_id, container, positions, label, threshold, independent=False):
         """Return one class from a shared, run-local tissue visibility result."""
         if container is None:
             return np.array([], dtype=int), np.array([], dtype=float), np.array([], dtype=int), 0, False
-        if tissue_id not in visibility_results:
+        names = (label,) if independent else tuple(sorted(visibility_labels))
+        key = (tissue_id, names)
+        if key not in visibility_results:
             from spacemap.spatial_visibility import TissueVisibility, ENGINE_NAME
 
+            started = time.perf_counter()
+            context = f"{', '.join(names)} · tissue {tissue_id}"
+            detailed = progress is not None and len(positions) >= 2048
+            def scene_progress(message):
+                tell(f"{context}: {message}")
+
+            if detailed:
+                scene_progress(f"Preparing boundary index for {len(positions):,} cells")
             targets = {name: regions_for(name, True).get(int(tissue_id), [])
-                       for name in sorted(visibility_labels)}
-            scene = TissueVisibility(container, targets)
+                       for name in names}
+            scene = TissueVisibility(container, targets, workers=workers)
             measurements, skipped = scene.measure(
-                points[np.asarray(positions)], (1, minimum_bed_cells) if visibility_beds_requested else (1,),
-                hit_query=_point_region_pairs
+                points[np.asarray(positions)], (1, minimum_bed_cells) if visibility_beds_requested and not independent else (1,),
+                hit_query=_point_region_pairs, progress=scene_progress if detailed else None
             )
-            visibility_results[tissue_id] = (scene.labels, measurements, skipped,
+            if detailed:
+                scene_progress(f"Distances finished ({time.perf_counter() - started:.1f}s)")
+            visibility_results[key] = (scene.labels, measurements, skipped,
                                              {name: len(regions) for name, regions in targets.items()})
             summary["distance_method"] = ENGINE_NAME
             summary.setdefault("visibility_tissue_rois", []).append({"tissue_roi": int(tissue_id), **scene.metadata})
             # Keep only the cell results. Large mesh/index arrays are released
             # before preparing the next tissue piece.
-        labels, measurements, skipped, sizes = visibility_results[tissue_id]
+        labels, measurements, skipped, sizes = visibility_results[key]
         index = labels.index(label)
         distances, owners = measurements[threshold]
         matched = np.flatnonzero(np.isfinite(distances[:, index]))
@@ -899,7 +935,10 @@ def annotate_cells(
 
     # Membership, ROI and distance columns are generated once per rule. Beds
     # are handled in a separate de-duplicated pass below.
-    for rule in active_rules:
+    for rule_number, rule in enumerate(active_rules):
+        started = time.perf_counter()
+        tell(f"Annotation {rule_number + 1}/{len(active_rules)}: {rule.label} · membership and region measurements",
+             .15 + .60 * rule_number / max(len(active_rules), 1))
         label_lower = rule.label.lower()
         target = prepared.get(label_lower, {"parts": [], "tree": None})
         has_target = bool(target["parts"]) and target["tree"] is not None
@@ -965,6 +1004,7 @@ def annotate_cells(
                 summary["columns"].append(size_column)
 
         if rule.distance:
+            tell(f"{rule.label}: calculating {'gap-aware' if require_clean_path and rule.group_by_roi else 'ordinary boundary'} distances")
             column = f"{rule.label}_distance"
             dataframe[column] = np.nan
             measurable = 0
@@ -980,9 +1020,10 @@ def annotate_cells(
                     if not positions:
                         continue
                     subset = points[positions]
-                    if clean_path and label_lower in visibility_labels:
+                    if clean_path and (label_lower in visibility_labels or
+                                       (independent_distances and label_lower != str(tissue_label).lower())):
                         matched, distances, _owners, _skipped, has_eligible = visible_values(
-                            tissue_id, container_geometry, positions, label_lower, 1
+                            tissue_id, container_geometry, positions, label_lower, 1, independent=independent_distances
                         )
                         if has_eligible:
                             measurable += len(positions)
@@ -1018,6 +1059,8 @@ def annotate_cells(
                 summary.setdefault("clean_path_blanked", {})[column] = int(
                     max(measurable - int(dataframe[column].notna().sum()), 0)
                 )
+        tell(f"{rule.label}: finished ({time.perf_counter() - started:.1f}s)",
+             .15 + .60 * (rule_number + 1) / max(len(active_rules), 1))
 
     # Process each unordered bed pair once. Reciprocal rules previously reset
     # and overwrote the same four columns; canonical ordering also makes ties
@@ -1050,7 +1093,9 @@ def annotate_cells(
             competitions.append((pair, group_pair))
 
     filtered_bed_targets: Counter[str] = Counter()
-    for labels, group_by_roi in competitions:
+    for competition_number, (labels, group_by_roi) in enumerate(competitions):
+        tell(f"Assigning beds: {', '.join(display_names[name] for name in labels)} (minimum {minimum_bed_cells} cells per target)",
+             .75 + .19 * competition_number / max(len(competitions), 1))
         bed_columns = [f"{display_names[name]}_bed" for name in labels]
         id_columns = [f"{display_names[name]}_bed_id" for name in labels]
         for column in bed_columns + id_columns:
@@ -1112,6 +1157,7 @@ def annotate_cells(
         )
 
     if edge_config is not None:
+        tell(f"Calculating edge cells near {edge_config.reference}", .95)
         column = edge_config.column
         dataframe[column] = 0
         reference = prepared.get(str(edge_config.reference).lower(), {"parts": [], "tree": None})
@@ -1150,6 +1196,7 @@ def annotate_cells(
             summary["warnings"].append(boundary_engine.fallback_reason)
     else:
         summary["distance_acceleration"] = {"requested": False, "backend": "CPU", "gpu_groups": 0}
+    tell(f"Measurements ready: {len(summary['columns'])} columns for {len(dataframe):,} cells", 1)
     return dataframe, summary
 
 

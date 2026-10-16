@@ -24,8 +24,7 @@ activate_spacemap_env() {
             "$HOME/miniconda3/etc/profile.d/conda.sh" \
             "$HOME/anaconda3/etc/profile.d/conda.sh" \
             "$HOME/.conda/etc/profile.d/conda.sh" \
-            "/opt/conda/etc/profile.d/conda.sh" \
-            "/cm/shared/apps/python/3.12.x-mamba/etc/profile.d/conda.sh"; do
+            "/opt/conda/etc/profile.d/conda.sh"; do
             if [ -f "$conda_sh" ]; then
                 source "$conda_sh" 2>/dev/null || true
                 break
@@ -109,16 +108,13 @@ export MKL_NUM_THREADS="${MKL_NUM_THREADS:-$_SPACEMAP_THREAD_CAP}"
 export NUMEXPR_NUM_THREADS="${NUMEXPR_NUM_THREADS:-$_SPACEMAP_THREAD_CAP}"
 echo "Thread pools capped at $_SPACEMAP_THREAD_CAP (node has $_SPACEMAP_CORES cores)."
 
-_SPACEMAP_HAS_PORT=0
-for _SPACEMAP_ARG in "$@"; do
-    case "$_SPACEMAP_ARG" in
-        --server.port|--server.port=*) _SPACEMAP_HAS_PORT=1 ;;
-    esac
-done
+# server.py runs the same interface and also serves the image viewer's data on
+# the same port. Streamlit releases without st.App fall back to app.py; the
+# viewer then serves its data on a second port.
+_SPACEMAP_ENTRY="$SCRIPT_DIR/src/spacemap_gui/server.py"
+if ! "$PYTHON_BIN" -c "import streamlit, sys; sys.exit(0 if hasattr(streamlit, 'App') else 1)" >/dev/null 2>&1; then
+    _SPACEMAP_ENTRY="$SCRIPT_DIR/src/spacemap_gui/app.py"
+fi
 
 echo "Starting SPACEMAP AI Streamlit GUI..."
-if [ "$_SPACEMAP_HAS_PORT" -eq 1 ]; then
-    exec "$PYTHON_BIN" -m streamlit run "$SCRIPT_DIR/src/spacemap_gui/app.py" "$@"
-else
-    exec "$PYTHON_BIN" -m streamlit run "$SCRIPT_DIR/src/spacemap_gui/app.py" --server.port=8502 "$@"
-fi
+exec "$PYTHON_BIN" -m spacemap_gui.launch "$_SPACEMAP_ENTRY" "$@"

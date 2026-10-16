@@ -59,7 +59,7 @@ __all__ = [
 ]
 
 
-_INVALID_REFERENCE_LABELS = {"", "unclassified", "unknown", "nan", "none"}
+_INVALID_REFERENCE_LABELS = {"", "unclassified", "unassigned", "unknown", "nan", "none"}
 
 # Sentinel written in place of a declined call so the cell still counts against
 # recall. Matches the Tab 9 validation view, which keeps abstentions in scope.
@@ -381,6 +381,8 @@ def prepare_morphology_features(
             return pd.DataFrame()
 
     morph_df = df[cols_to_extract].copy()
+    for column in morphology_cols:
+        morph_df[column] = pd.to_numeric(morph_df[column], errors="raise")
     
     # Apply transformations
     size_length_cols = [col for col in morphology_cols if col in ['area', 'major_axis_length', 'minor_axis_length'] and col in morph_df.columns]
@@ -1206,6 +1208,8 @@ def run_ml_mr_analysis(
     write_backup_csv: bool = False,
     update_source_csv: bool = False,
     results_callback=None,
+    preserve_reference_labels: bool | None = None,
+    log_to_stdout: bool = True,
 ) -> bool:
     """
     Run the complete ML-MR analysis workflow.
@@ -1221,7 +1225,8 @@ def run_ml_mr_analysis(
     ground_truth_column : str
         Name of the ground truth column (e.g., 'phenotype_ref1')
     phenotyping_methods : list[str]
-        List of phenotyping method column names
+        Optional automated method columns. An empty list trains solely from
+        the reference labels and measured features, without ensemble votes.
     marker_suffix : str
         Suffix for marker columns
     test_size : float
@@ -1275,6 +1280,11 @@ def run_ml_mr_analysis(
     results_callback : callable, optional
         Receives the result DataFrame for in-memory review regardless
         of whether either CSV-writing option is enabled.
+    preserve_reference_labels : bool, optional
+        Keep valid reference labels in both output label columns, with a blank
+        prediction score for those cells. Defaults to True with no additional
+        methods, False for the historical ensemble workflow. Validation always
+        uses model predictions, before reference labels are restored.
         
     Returns
     -------
@@ -1289,7 +1299,8 @@ def run_ml_mr_analysis(
     def _notify(msg: str) -> None:
         """Print to terminal AND optionally to UI callback."""
         stamped = f"[{_ts()}] {msg}"
-        print(stamped, flush=True)
+        if log_to_stdout:
+            print(stamped, flush=True)
         if progress_callback:
             try:
                 progress_callback(stamped)
@@ -1337,6 +1348,18 @@ def run_ml_mr_analysis(
         )
 
     invalid_marker_rows_dropped = 0
+    for column in morphology_cols or []:
+        if column not in unified_df:
+            _notify(f"[ERROR] Selected morphology column '{column}' was not found.")
+            return False
+        raw = unified_df[column]
+        numeric = pd.to_numeric(raw, errors="coerce")
+        if (raw.notna() & numeric.isna()).any() or not np.isfinite(numeric).any():
+            _notify(f"[ERROR] Morphology column '{column}' must contain numeric measurements.")
+            return False
+        if column in {"area", "major_axis_length", "minor_axis_length"} and (numeric < 0).any():
+            _notify(f"[ERROR] Morphology column '{column}' cannot contain negative sizes.")
+            return False
     if drop_invalid_marker_rows:
         marker_candidates = (
             list(clustering_markers)
@@ -1346,6 +1369,7 @@ def run_ml_mr_analysis(
         existing_marker_candidates = [
             column for column in marker_candidates if column in unified_df.columns
         ]
+        existing_marker_candidates = list(dict.fromkeys(existing_marker_candidates + list(morphology_cols or [])))
         if existing_marker_candidates:
             marker_values = unified_df[existing_marker_candidates].apply(
                 pd.to_numeric, errors="coerce"
@@ -1359,7 +1383,7 @@ def run_ml_mr_analysis(
                 unified_df = unified_df.loc[valid_marker_mask].copy()
                 _notify(
                     f"[OK] Excluded {invalid_marker_rows_dropped:,} rows with missing/"
-                    "infinite selected-marker values"
+                    "infinite selected-feature values (markers or morphology)"
                 )
                 if unified_df.empty:
                     _notify("[ERROR] No rows remain after selected-marker completeness filtering.")
@@ -1370,9 +1394,11 @@ def run_ml_mr_analysis(
     if ground_truth_column not in unified_df.columns:
         _notify(f"[ERROR] Training reference column '{ground_truth_column}' was not found.")
         return False
+    phenotyping_methods = list(dict.fromkeys(phenotyping_methods or []))
+    if preserve_reference_labels is None:
+        preserve_reference_labels = not phenotyping_methods
     if not phenotyping_methods:
-        _notify("[ERROR] Select at least one non-reference phenotyping method to integrate.")
-        return False
+        _notify("[OK] Reference-only mode: learning from measured features without other method columns.")
     if ml_method not in ML_METHOD_OPTIONS:
         _notify(f"[ERROR] Unsupported ML classifier: '{ml_method}'.")
         return False
@@ -1514,7 +1540,8 @@ def run_ml_mr_analysis(
         )
         weights_df = weights_df.loc[keep_weight_rows]
     if weights_df is None or weights_df.empty:
-        _notify("[WARN] F1 weights unavailable; assigning uniform method weights of 1.0.")
+        if phenotyping_methods:
+            _notify("[WARN] F1 weights unavailable; assigning uniform method weights of 1.0.")
         candidate_labels = set(training_reference_df[ground_truth_column].astype(str).str.strip())
         if not candidate_labels:
             _notify("[ERROR] Could not infer phenotype classes for method weighting.")
@@ -1526,6 +1553,7 @@ def run_ml_mr_analysis(
             dtype=float,
         )
     _notify(f"[OK] Method-weight matrix: {weights_df.shape[0]} phenotypes x {weights_df.shape[1]} methods")
+    weights_df.to_csv(output_dir / 'training_reference_f1_weights.csv', index_label='Phenotype')
 
     # Build one shared matrix so training, validation, and prediction use the
     # exact same transformed values.
@@ -1657,6 +1685,8 @@ def run_ml_mr_analysis(
     low_confidence_mask = (
         unified_df[confidence_col_name] < refined_confidence_threshold
     )
+    if preserve_reference_labels:
+        low_confidence_mask &= ~training_mask
     n_low_confidence = int(low_confidence_mask.sum())
     unified_df.loc[low_confidence_mask, refined_output_phenotype_col] = (
         refined_low_confidence_label
@@ -1693,6 +1723,15 @@ def run_ml_mr_analysis(
         )
 
     assert validation_results is not None
+
+    # Preserve annotations only after validation, so held-out accuracy never
+    # benefits from copying the known answer into the prediction column.
+    if preserve_reference_labels:
+        references = unified_df.loc[training_mask, ground_truth_column].astype("string").str.strip()
+        for name in (output_phenotype_col, refined_output_phenotype_col):
+            unified_df.loc[training_mask, name] = references
+        unified_df.loc[training_mask, confidence_col_name] = np.nan
+        _notify(f"[OK] Kept {int(training_mask.sum()):,} reference labels; their prediction scores are blank.")
     
     _notify(f"[OK] ML-MR predictions generated for all {len(unified_df):,} cells")
     _notify(f"  Phenotype distribution: {unified_df[output_phenotype_col].value_counts().to_dict()}")
@@ -1715,6 +1754,16 @@ def run_ml_mr_analysis(
         ]
     else:
         saved_df = unified_df
+
+    if preserve_reference_labels and row_subset_applied:
+        # Known labels remain useful even when their measurements are missing.
+        # Do not label excluded analysis subsets or fabricate scores for them.
+        known = _valid_reference_mask(source_df[ground_truth_column], excluded_phenotypes)
+        if analysis_filter_applied:
+            known &= analysis_mask
+        for name in (output_phenotype_col, refined_output_phenotype_col):
+            saved_df.loc[known, name] = source_df.loc[known, ground_truth_column].astype("string").str.strip()
+        saved_df.loc[known, confidence_col_name] = np.nan
 
     if results_callback is not None:
         try:

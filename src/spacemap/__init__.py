@@ -67,70 +67,39 @@ try:
 except Exception:
     pass
 
-# Core modules
-from . import config
-from . import utils
-try:
-    from . import registration
-except (ImportError, TypeError, RuntimeError):
-    registration = None
+# Submodules load on first use (PEP 562). Importing them all here made
+# ``import spacemap`` pull in PyTorch, Cellpose and SCIMAP -- about a minute on a
+# cold start -- for every worker process, test and tool, whether it needed them
+# or not. ``spacemap.segmentation_cellpose`` and ``from spacemap import
+# ph_leiden_utils`` work exactly as before.
+import importlib as _importlib
+
+_SUBMODULES = (
+    "config", "utils", "registration", "segmentation_cellpose", "segmentation_deepcell",
+    "ph_leiden_utils", "ph_som_utils", "ph_thres_utils", "ph_scimap_utils", "ml_mr_utils",
+    "ml_consensus", "annotation_utils", "batch_correction_utils", "comparison_utils", "acc_utils",
+)
+# These were set to None when their dependencies were missing; keep that contract.
+_NONE_WHEN_UNAVAILABLE = ("registration", "annotation_utils", "batch_correction_utils",
+                          "comparison_utils", "acc_utils")
 
 
-# Segmentation modules
-try:
-    from . import segmentation_cellpose
-except (ImportError, TypeError, RuntimeError):
-    pass
-try:
-    from . import segmentation_deepcell
-except (ImportError, TypeError, RuntimeError):
-    pass
+def __getattr__(name):
+    if name in _SUBMODULES:
+        try:
+            module = _importlib.import_module(f".{name}", __name__)
+        except (ImportError, TypeError, RuntimeError):
+            if name in _NONE_WHEN_UNAVAILABLE:
+                globals()[name] = None
+                return None
+            raise
+        globals()[name] = module
+        return module
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
-# Phenotyping modules
-try:
-    from . import ph_leiden_utils
-except (ImportError, TypeError, RuntimeError):
-    pass
-try:
-    from . import ph_som_utils
-except (ImportError, TypeError, RuntimeError):
-    pass
-try:
-    from . import ph_thres_utils
-except (ImportError, TypeError, RuntimeError):
-    pass
-try:
-    from . import ph_scimap_utils
-except (ImportError, TypeError, RuntimeError):
-    pass
 
-# Machine learning modules
-try:
-    from . import ml_mr_utils
-except (ImportError, TypeError, RuntimeError):
-    pass
-try:
-    from . import ml_consensus
-except (ImportError, TypeError, RuntimeError):
-    pass
-
-# Utility modules
-try:
-    from . import annotation_utils
-except (ImportError, TypeError, RuntimeError):
-    annotation_utils = None
-try:
-    from . import batch_correction_utils
-except (ImportError, TypeError, RuntimeError):
-    batch_correction_utils = None
-try:
-    from . import comparison_utils
-except (ImportError, TypeError, RuntimeError):
-    comparison_utils = None
-try:
-    from . import acc_utils
-except (ImportError, TypeError, RuntimeError):
-    acc_utils = None
+def __dir__():
+    return sorted(set(globals()) | set(_SUBMODULES))
 
 
 # Version and metadata

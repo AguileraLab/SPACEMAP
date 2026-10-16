@@ -16,6 +16,7 @@ import pandas as pd
 import gc
 import tqdm
 import sys
+from contextlib import nullcontext
 from datetime import datetime
 from typing import Sequence
 from skimage.measure import regionprops_table
@@ -123,10 +124,8 @@ class SegmentationConfig:
         # Cellpose tiles within each outer ROI tile. Keeping this modest avoids
         # a single U-Net inference allocating memory for a full 2048 px tile.
         self.cellpose_internal_tile_size = 224
-        # Benchmarked on an A100-40GB with a 2048px tile at 83% tissue: batch 8
-        # with the flow check on the GPU is 2.2x the old batch-1/CPU-flow default,
-        # for the same cells (0.06% spread). Batch 16 was no better.
         self.cellpose_batch_size = 8
+        self.cellpose_batch_auto = True
         self.adaptive_gpu_memory = True
         self.min_cellpose_internal_tile_size = 128
         # cuDNN was disabled unconditionally to dodge a libcudnn_graph.so
@@ -842,6 +841,10 @@ class CellposeSegmenter:
             
         self.config = config
         self.model = None
+        self._tuned_batches = {}
+        self._batch_limits = {}
+        self._last_execution = None
+        self.timings = {"network and masks": 0.0, "flow check": 0.0, "batch tuning": 0.0}
         self._load_model()
     
     def _load_model(self):
@@ -850,6 +853,8 @@ class CellposeSegmenter:
         
         # Print GPU status
         if self.config.use_gpu and GPU_AVAILABLE:
+            if not 0 <= self.config.gpu_device < torch.cuda.device_count():
+                raise ValueError("The selected GPU is unavailable. Choose an available GPU index.")
             print(f"Using GPU: {torch.cuda.get_device_name(self.config.gpu_device)}")
             self._configure_cudnn()
         else:
@@ -905,7 +910,7 @@ class CellposeSegmenter:
                 probe = torch.zeros((1, 1, 8, 8), device=device)
                 weight = torch.zeros((1, 1, 3, 3), device=device)
                 torch.nn.functional.conv2d(probe, weight, padding=1)
-                torch.cuda.synchronize()
+                torch.cuda.synchronize(device)
             # benchmark picks the fastest algorithm for the block size, which is
             # constant across tiles here, so the one-off autotune pays for itself.
             torch.backends.cudnn.benchmark = True
@@ -913,6 +918,59 @@ class CellposeSegmenter:
         except Exception as error:
             torch.backends.cudnn.enabled = False
             print(f"cuDNN probe failed ({error}); continuing without cuDNN.")
+
+    def _available_memory(self):
+        """Include this process's reusable cache, on the selected GPU only."""
+        device = self.config.gpu_device
+        free, _ = torch.cuda.mem_get_info(device)
+        cached = torch.cuda.memory_reserved(device) - torch.cuda.memory_allocated(device)
+        return free + max(0, cached)
+
+    def _device_context(self):
+        # Cellpose also contains CUDA calls without an explicit device argument.
+        return torch.cuda.device(self.config.gpu_device) if self.config.use_gpu and GPU_AVAILABLE else nullcontext()
+
+    def _auto_batch(self, bsize):
+        if bsize in self._tuned_batches:
+            return self._tuned_batches[bsize]
+        from .segmentation_execution import batch_candidates, fastest_batch
+        from time import perf_counter
+
+        started = perf_counter()
+        print("Checking GPU batch throughput (once per model and block size)…")
+        selected = 8
+        try:
+            from cellpose.core import _forward
+            cp = self.model.cp if hasattr(self.model, "cp") else self.model
+            net = cp.net
+            nchan = int(getattr(net, "nchan", getattr(net, "nbase", [2])[0]))
+            candidates = batch_candidates(self._available_memory(), bsize)
+            def measure(batch):
+                # Probe only the network; no cell filtering, image normalisation,
+                # model weights or real image pixels are changed by tuning.
+                probe = np.zeros((batch, nchan, bsize, bsize), dtype=np.float32)
+                torch.cuda.synchronize(self.config.gpu_device)
+                start = perf_counter()
+                with self._device_context():
+                    _forward(net, probe)
+                torch.cuda.synchronize(self.config.gpu_device)
+                return perf_counter() - start
+
+            def recover(error):
+                if not _is_cuda_oom_error(error):
+                    return False
+                gc.collect()
+                with torch.cuda.device(self.config.gpu_device):
+                    torch.cuda.empty_cache()
+                return True
+
+            selected = fastest_batch(candidates, measure, recover)
+        except Exception as error:
+            print(f"GPU batch tuning unavailable ({error}); starting with batch 8.")
+        self.timings["batch tuning"] += perf_counter() - started
+        self._tuned_batches[bsize] = selected
+        print(f"Auto GPU batch: {selected} blocks at {bsize}px.")
+        return selected
 
     def segment(self, image_stack, progress_callback=None, **kwargs):
         """
@@ -948,14 +1006,8 @@ class CellposeSegmenter:
         est_total_tiles = int(n_tiles_h * n_tiles_w)
         # print(f"Estimated number of tiles: ~{est_total_tiles} (based on size {est_tile_size})")
         
-        # Only collect Python garbage here. Calling torch.cuda.empty_cache() on
-        # every tile returns the caching allocator's blocks to the driver and
-        # forces it to re-acquire them, which is pure overhead; it is still
-        # called on the OOM path where it actually helps.
-        gc.collect()
-        if self.config.use_gpu and GPU_AVAILABLE:
-            mem_free, mem_total = torch.cuda.mem_get_info()
-            # print(f"GPU Memory before run: {mem_free/1024**3:.2f}GB free / {mem_total/1024**3:.2f}GB total")
+        # Keep the allocator's reusable blocks across tiles. Collect/clear only
+        # on allocation failure, not twice for every tile in a large image.
         
         # Context manager to patch tqdm for progress reporting
         class TqdmPatcher:
@@ -1005,7 +1057,6 @@ class CellposeSegmenter:
 
         # Run segmentation with flow_threshold=None to avoid GPU OOM during flow error check
         # We will perform the flow error check manually on CPU afterwards
-        print("Step 1: Running network prediction (flow_threshold=None)...")
         
         # Determine tiling parameters. `tile` is not present in Cellpose 3's
         # public eval signature, but `bsize` is. A small bsize keeps Cellpose
@@ -1026,12 +1077,15 @@ class CellposeSegmenter:
                     f"from {requested_bsize}px to 512px."
                 )
                 requested_bsize = 512
+        if self.config.use_gpu and GPU_AVAILABLE and getattr(self.config, 'cellpose_batch_auto', False):
+            batch_size = self._auto_batch(requested_bsize)
+        batch_size = min(batch_size, self._batch_limits.get(requested_bsize, batch_size))
+        if self.config.use_gpu and GPU_AVAILABLE and self.config.adaptive_gpu_memory:
             # Scale the batch to the memory actually free rather than forcing 1.
             # Forcing 1 serialises ~85 blocks per 2048px tile, which leaves a
             # 40 GB card almost idle. The OOM retry below remains the safety net.
             try:
-                free_bytes, _total = torch.cuda.mem_get_info()
-                free_gb = free_bytes / (1024 ** 3)
+                free_gb = self._available_memory() / (1024 ** 3)
             except Exception:
                 free_gb = 0.0
             if free_gb > 0:
@@ -1043,11 +1097,6 @@ class CellposeSegmenter:
                         f"from {batch_size} to {affordable} ({free_gb:.1f} GB free)."
                     )
                     batch_size = affordable
-                else:
-                    print(
-                        f"Cellpose GPU batch size {batch_size} at {requested_bsize}px "
-                        f"blocks ({free_gb:.1f} GB free)."
-                    )
             if retry_floor >= requested_bsize:
                 retry_floor = 128
         
@@ -1115,16 +1164,17 @@ class CellposeSegmenter:
             attempts.append((size, 1))
 
         last_oom: BaseException | None = None
+        from time import perf_counter
+        network_started = perf_counter()
         for attempt_index, (bsize, attempt_batch) in enumerate(attempts):
             if 'bsize' in eval_kwargs:
                 eval_kwargs['bsize'] = bsize
             eval_kwargs['batch_size'] = attempt_batch
             try:
-                print(
-                    f"Cellpose internal block size: {bsize}px "
-                    f"(attempt {attempt_index + 1}/{len(attempts)}, batch size {attempt_batch})."
-                )
-                with TqdmPatcher(progress_callback):
+                if self._last_execution != (bsize, attempt_batch):
+                    print(f"Cellpose: {bsize}px blocks, batch {attempt_batch}.")
+                    self._last_execution = (bsize, attempt_batch)
+                with self._device_context(), TqdmPatcher(progress_callback):
                     evaluation = self.model.eval(
                         image_stack,
                         **eval_kwargs,
@@ -1133,6 +1183,9 @@ class CellposeSegmenter:
                 # (masks, flows, styles); `models.Cellpose` (pretrained
                 # model_type) additionally returns the estimated diameters.
                 masks, flows, styles = evaluation[0], evaluation[1], evaluation[2]
+                if attempt_index:
+                    # Do not repeat a known failing batch on every outer tile.
+                    self._batch_limits[requested_bsize] = attempt_batch
                 break
             except RuntimeError as error:
                 if not _is_cuda_oom_error(error) or attempt_index == len(attempts) - 1:
@@ -1144,16 +1197,18 @@ class CellposeSegmenter:
                     f"Clearing GPU cache and retrying with {next_bsize}px / batch {next_batch}."
                 )
                 gc.collect()
-                torch.cuda.empty_cache()
+                with torch.cuda.device(self.config.gpu_device):
+                    torch.cuda.empty_cache()
         else:
             raise RuntimeError(
                 "CUDA out of memory after reducing Cellpose internal tile size. "
                 "Use a smaller internal block size or disable GPU."
             ) from last_oom
         
-        # Perform flow error check on CPU if needed
+        self.timings["network and masks"] += perf_counter() - network_started
+        flow_started = perf_counter()
+        # Apply the same flow threshold, preferably on the GPU.
         if self.config.flow_threshold is not None and self.config.flow_threshold > 0:
-            print(f"Step 2: Applying flow threshold {self.config.flow_threshold}...")
             try:
                 # flows output format from Cellpose eval: [plot_flows, cellprob, dP, p]
                 # We need dP (flow field) which is usually at index 2
@@ -1213,9 +1268,10 @@ class CellposeSegmenter:
                 if use_gpu_flow:
                     try:
                         device = torch.device(f"cuda:{self.config.gpu_device}")
-                        result = dynamics.remove_bad_flow_masks(
-                            masks, dP, threshold=self.config.flow_threshold, device=device
-                        )
+                        with self._device_context():
+                            result = dynamics.remove_bad_flow_masks(
+                                masks, dP, threshold=self.config.flow_threshold, device=device
+                            )
                     except Exception as flow_error:
                         print(f"    GPU flow check unavailable ({flow_error}); using CPU.")
                         result = None
@@ -1235,16 +1291,11 @@ class CellposeSegmenter:
                     # Assume it returned just the masks
                     masks = result
                     
-                print("Flow threshold applied successfully.")
             except Exception as e:
                 print(f"Warning: Failed to apply flow threshold on CPU: {e}")
                 print("Returning masks without flow threshold filtering.")
 
-        # Clear memory after segmentation
-        if self.config.use_gpu and GPU_AVAILABLE:
-            torch.cuda.empty_cache()
-        
-        print(f"Segmentation completed. Found {len(np.unique(masks)) - 1} cells.")
+        self.timings["flow check"] += perf_counter() - flow_started
         return masks, flows, styles
 
 
@@ -1488,22 +1539,19 @@ def segment_image_cellpose(ome_tiff_path, output_dir, config, markers=None, dapi
     # Decide whether to use fast whole-image path or tiled path
     use_tiled_processing = config.use_input_geojson and os.path.exists(config.input_geojson_path)
     
-    if not use_tiled_processing:
-        # FAST PATH: Load whole image, let Cellpose handle tiling internally
-        return _segment_whole_image(
-            ome_tiff_path, output_dir, config, segmenter,
-            channel_names, dapi_index, marker_indices,
-            input_image_name, progress_callback, update_progress, 
-            current_step, total_steps, start_time
-        )
-    else:
-        # TILED PATH: Manual tiling with ROI masking
-        return _segment_with_tiles(
-            ome_tiff_path, output_dir, config, segmenter,
-            channel_names, dapi_index, marker_indices,
-            input_image_name, progress_callback, update_progress,
-            current_step, total_steps, start_time
-        )
+    process = _segment_with_tiles if use_tiled_processing else _segment_whole_image
+    result = process(
+        ome_tiff_path, output_dir, config, segmenter,
+        channel_names, dapi_index, marker_indices,
+        input_image_name, progress_callback, update_progress,
+        current_step, total_steps, start_time,
+    )
+    elapsed = (datetime.now() - start_time).total_seconds()
+    timings = dict(segmenter.timings)
+    timings["setup, I/O and measurements"] = max(0.0, elapsed - sum(timings.values()))
+    print("Segmentation timing: " + "; ".join(f"{name} {seconds:.1f}s" for name, seconds in timings.items()))
+    result["timings"] = timings
+    return result
 
 
 def _segment_whole_image(ome_tiff_path, output_dir, config, segmenter,
@@ -1938,7 +1986,6 @@ def _segment_with_tiles(ome_tiff_path, output_dir, config, segmenter,
             props = regionprops_table(masks, properties=['label', 'centroid'])
             if len(props['label']) == 0:
                 del masks, dapi_tile, marker_tiles, image_for_segmentation
-                gc.collect()
                 continue
 
             valid_labels = []
@@ -1957,7 +2004,6 @@ def _segment_with_tiles(ome_tiff_path, output_dir, config, segmenter,
 
             if not valid_labels:
                 del masks, dapi_tile, marker_tiles, image_for_segmentation
-                gc.collect()
                 continue
 
             label_map = {old: new + current_max_label for new, old in enumerate(valid_labels, 1)}
@@ -1970,7 +2016,6 @@ def _segment_with_tiles(ome_tiff_path, output_dir, config, segmenter,
             tile_features = tile_features[tile_features['label'].isin(valid_labels)].copy()
             if tile_features.empty:
                 del masks, dapi_tile, marker_tiles, all_tile_images, image_for_segmentation
-                gc.collect()
                 continue
 
             # Update labels and centroids
@@ -2009,7 +2054,8 @@ def _segment_with_tiles(ome_tiff_path, output_dir, config, segmenter,
             current_max_label += len(valid_labels)
 
             del masks, dapi_tile, marker_tiles, all_tile_images, image_for_segmentation
-            gc.collect()
+            if (i + 1) % 16 == 0:
+                gc.collect()
 
     # Merge results
     update_progress("Merging results")

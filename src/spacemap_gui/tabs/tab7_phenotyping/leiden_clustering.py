@@ -198,7 +198,8 @@ def _autoload_existing_leiden_from_csv(global_full_path: str | None, project_roo
         return
 
     try:
-        df_sample = pd.read_csv(global_full_path, nrows=5)
+        from spacemap import dataio
+        df_sample = pd.DataFrame(columns=dataio.columns(global_full_path))
         lid_col = "leiden_cluster"
         found_leiden = lid_col in df_sample.columns
         found_pheno = "phenotype_leiden" in df_sample.columns
@@ -413,7 +414,8 @@ def render_leiden(project_root, global_input_path):
     
     if full_input_path and os.path.exists(full_input_path):
         try:
-            sample_df = pd.read_csv(full_input_path, nrows=5)
+            from spacemap import dataio
+            sample_df = pd.DataFrame(columns=dataio.columns(full_input_path))
             available_columns = list(sample_df.columns)
             
             # Get all potential marker columns (exclude metadata columns)
@@ -808,7 +810,8 @@ def render_leiden(project_root, global_input_path):
 
         can_load_existing = False
         try:
-            df_head = pd.read_csv(full_input_path, nrows=1)
+            from spacemap import dataio
+            df_head = pd.DataFrame(columns=dataio.columns(full_input_path))
             can_load_existing = (
                 "leiden_cluster" in df_head.columns
                 and output_col_name in df_head.columns

@@ -21,19 +21,8 @@ from typing import Iterator, Sequence
 import numpy as np
 import pandas as pd
 
-THRESHOLD_METHODS = (
-    "Geometric elbow",
-    "Triangle",
-    "Otsu",
-    "Yen",
-    "Li",
-    "IsoData",
-    "Mean",
-    "Minimum",
-)
+from .thresholding_engine import THRESHOLD_METHODS
 
-MIN_THRESHOLD = 5.0
-_FALLBACK_THRESHOLD = 150.0
 DEFAULT_MIN_COMPONENT_AREA_PX = 30_000.0
 THRESHOLD_SCHEMA_VERSION = "spacemap-threshold-v2"
 
@@ -53,260 +42,8 @@ def _polygon_components(geometry) -> Iterator:
             yield from _polygon_components(part)
 
 
-def _imagej_bilevel(histogram: np.ndarray) -> int | None:
-    """ImageJ ``AutoThresholder.bilevel`` with its default subtract-one rule."""
-    occupied = np.flatnonzero(histogram > 0)
-    if occupied.size == 1:
-        return int(occupied[0]) - 1
-    if occupied.size == 2:
-        return int(occupied[1]) - 1
-    return None
-
-
-def _imagej_triangle(histogram: np.ndarray) -> int:
-    """Exact port of ImageJ's 256-bin ``AutoThresholder.Triangle``."""
-    data = np.asarray(histogram, dtype=np.int64).copy()
-    bilevel = _imagej_bilevel(data)
-    if bilevel is not None and bilevel >= 0:
-        return bilevel
-
-    nonzero = np.flatnonzero(data > 0)
-    if not nonzero.size:
-        return 0
-    minimum = max(int(nonzero[0]) - 1, 0)
-    maximum2 = min(int(nonzero[-1]) + 1, data.size - 1)
-    maximum = int(np.argmax(data))
-
-    inverted = (maximum - minimum) < (maximum2 - maximum)
-    if inverted:
-        data = data[::-1].copy()
-        minimum = data.size - 1 - maximum2
-        maximum = data.size - 1 - maximum
-
-    if minimum == maximum:
-        split = minimum
-    else:
-        nx = float(data[maximum])
-        ny = float(minimum - maximum)
-        norm = float(np.hypot(nx, ny))
-        if norm == 0:
-            split = minimum
-        else:
-            nx /= norm
-            ny /= norm
-            distance0 = nx * minimum + ny * float(data[minimum])
-            split = minimum
-            split_distance = 0.0
-            for index in range(minimum + 1, maximum + 1):
-                distance = nx * index + ny * float(data[index]) - distance0
-                if distance > split_distance:
-                    split = index
-                    split_distance = distance
-            split -= 1
-    return data.size - 1 - split if inverted else split
-
-
-def _imagej_li(histogram: np.ndarray) -> int:
-    """Port ImageJ's histogram-based Li implementation."""
-    data = np.asarray(histogram, dtype=np.float64)
-    bins = np.arange(data.size, dtype=np.float64)
-    total = float(data.sum())
-    if total <= 0:
-        return 0
-    new_threshold = float(np.dot(bins, data) / total)
-    threshold = int(new_threshold + 0.5)
-    for _ in range(10_000):
-        old_threshold = new_threshold
-        threshold = int(old_threshold + 0.5)
-        threshold = min(max(threshold, 0), data.size - 1)
-        background = data[: threshold + 1]
-        foreground = data[threshold + 1 :]
-        mean_background = (
-            float(np.dot(bins[: threshold + 1], background) / background.sum())
-            if background.sum() else 0.0
-        )
-        mean_foreground = (
-            float(np.dot(bins[threshold + 1 :], foreground) / foreground.sum())
-            if foreground.sum() else 0.0
-        )
-        if mean_background <= 0 or mean_foreground <= 0 or mean_background == mean_foreground:
-            return threshold
-        temp = ((mean_background - mean_foreground) /
-                (np.log(mean_background) - np.log(mean_foreground)))
-        new_threshold = float(int(temp - 0.5) if temp < -np.finfo(float).eps else int(temp + 0.5))
-        if abs(new_threshold - old_threshold) <= 0.5:
-            return threshold
-    raise RuntimeError("Li threshold did not converge after 10,000 iterations")
-
-
-def _imagej_histogram(
-    values: np.ndarray,
-    value_range: tuple[float, float] | None,
-    imagej_dtype,
-) -> tuple[np.ndarray, float, float]:
-    """Convert pixels to the 8-bit histogram used by ``ImageProcessor``.
-
-    QuPath's extracted CODEX channels are unsigned 16-bit ``ShortProcessor``
-    images. ImageJ first resets the display range to the request rectangle's
-    actual minimum and maximum, then converts to byte with the same rounding as
-    ``ShortProcessor.create8BitImage``.
-    """
-    minimum, maximum = value_range or (float(values.min()), float(values.max()))
-    if not np.isfinite(minimum) or not np.isfinite(maximum):
-        minimum, maximum = float(values.min()), float(values.max())
-    histogram = np.zeros(256, dtype=np.int64)
-    if maximum <= minimum:
-        histogram[0] = values.size
-    else:
-        dtype = np.dtype(imagej_dtype) if imagej_dtype is not None else values.dtype
-        if dtype == np.dtype(np.uint16):
-            scale = 256.0 / (maximum - minimum + 1.0)
-        else:
-            scale = 255.0 / (maximum - minimum)
-        # Chunking avoids a second multi-gigabyte conversion array for a
-        # full-resolution tissue ROI.
-        for start in range(0, values.size, 10_000_000):
-            block = values[start : start + 10_000_000]
-            converted = np.clip(
-                (block - minimum) * scale + 0.5, 0, 255
-            ).astype(np.uint8)
-            histogram += np.bincount(converted, minlength=256)
-    return histogram, float(minimum), float(maximum)
-
-
-def _imagej_threshold_bin(histogram: np.ndarray, method: str) -> int:
-    """Threshold a 256-bin histogram, matching ImageJ for the default methods."""
-    from skimage import filters
-
-    bilevel = _imagej_bilevel(histogram)
-    if bilevel is not None and bilevel >= 0:
-        return bilevel
-    if method == "Triangle":
-        return _imagej_triangle(histogram)
-    if method == "Mean":
-        total = int(histogram.sum())
-        return int(np.dot(np.arange(256, dtype=np.int64), histogram) // total) if total else 0
-    if method == "Li":
-        return _imagej_li(histogram)
-
-    centers = np.arange(256, dtype=np.float64)
-    histogram_input = (histogram.astype(np.float64), centers)
-    if method == "Otsu":
-        return int(filters.threshold_otsu(hist=histogram_input))
-    if method == "Yen":
-        return int(filters.threshold_yen(hist=histogram_input))
-    if method == "IsoData":
-        return int(filters.threshold_isodata(hist=histogram_input))
-    if method == "Minimum":
-        return int(filters.threshold_minimum(hist=histogram_input))
-    raise ValueError(f"Unknown threshold method: {method}")
-
-
-def find_background(
-    pixels: np.ndarray,
-    method: str = "Geometric elbow",
-    *,
-    value_range: tuple[float, float] | None = None,
-    imagej_dtype=None,
-) -> dict:
-    """Estimate one marker's background level from its pixel values.
-
-    Returns the threshold plus the smoothed histogram and its peak, so the UI
-    can show what the decision was based on instead of only the number.
-    """
-    from scipy.ndimage import gaussian_filter1d
-    original = np.asarray(pixels)
-    values = original.ravel()
-    if np.issubdtype(values.dtype, np.floating):
-        all_finite = all(
-            np.isfinite(values[start : start + 10_000_000]).all()
-            for start in range(0, values.size, 10_000_000)
-        )
-        if not all_finite:
-            values = values[np.isfinite(values)]
-    if values.size == 0:
-        return {
-            "threshold": _FALLBACK_THRESHOLD,
-            "peak": 0.0,
-            "histogram": np.array([]),
-            "method": method,
-            "n_pixels": 0,
-            "fallback_status": "empty_pixels_fallback_150",
-            "threshold_error": "No finite pixels were available.",
-        }
-
-    fallback_status = "none"
-    threshold_error = ""
-    smooth = np.array([], dtype=float)
-    peak = 0.0
-    if method == "Geometric elbow":
-        # A clipped histogram is appropriate for the custom elbow only; the
-        # ImageJ methods below deliberately use the complete 256-bin range.
-        p99 = float(np.percentile(values, 99))
-        clipped = values[values <= max(p99, 10.0)]
-        counts = (
-            np.bincount(np.clip(clipped, 0, None).astype(np.int64))
-            if clipped.size else np.array([0])
-        )
-        smooth = gaussian_filter1d(counts.astype(float), sigma=2.0)
-        peak = float(np.argmax(smooth)) if smooth.size else 0.0
-        # Walk from the noise peak to the tail and take the point furthest from
-        # the straight line joining them: where the noise mode stops falling
-        # steeply and the real signal begins.
-        tail = smooth.size - 1
-        if tail <= peak:
-            threshold = max(peak + 1.0, MIN_THRESHOLD)
-        else:
-            x = np.arange(int(peak), tail + 1, dtype=float)
-            y = smooth[int(peak): tail + 1]
-            xn = (x - x.min()) / (x.max() - x.min() + 1e-9)
-            yn = (y - y.min()) / (y.max() - y.min() + 1e-9)
-            p1, p2 = np.array([xn[0], yn[0]]), np.array([xn[-1], yn[-1]])
-            span = np.linalg.norm(p2 - p1)
-            if span <= 0:
-                threshold = max(float(peak) + 1.0, MIN_THRESHOLD)
-            else:
-                dist = np.abs(np.cross(p2 - p1, p1 - np.stack([xn, yn], axis=1))) / span
-                threshold = max(float(x[int(np.argmax(dist))]), MIN_THRESHOLD)
-    else:
-        # The Groovy reference calls ImageProcessor.setAutoThreshold(), which
-        # thresholds a display-scaled 8-bit histogram and maps the selected bin
-        # back into the original intensity range. Running skimage directly on
-        # raw float pixels is not equivalent and was the main source of the GUI
-        # discrepancy.
-        try:
-            imagej_histogram, range_minimum, range_maximum = _imagej_histogram(
-                values, value_range, imagej_dtype or original.dtype
-            )
-            threshold_bin = _imagej_threshold_bin(imagej_histogram, method)
-            threshold = (
-                range_minimum
-                if range_maximum <= range_minimum
-                else range_minimum + (float(threshold_bin) / 255.0) *
-                (range_maximum - range_minimum)
-            )
-            smooth = gaussian_filter1d(imagej_histogram.astype(float), sigma=2.0)
-            peak_bin = int(np.argmax(smooth)) if smooth.size else 0
-            peak = (
-                range_minimum
-                if range_maximum <= range_minimum
-                else range_minimum + (float(peak_bin) / 255.0) *
-                (range_maximum - range_minimum)
-            )
-        except Exception as error:
-            threshold = _FALLBACK_THRESHOLD
-            fallback_status = "method_error_fallback_150"
-            threshold_error = f"{type(error).__name__}: {error}"
-
-    return {
-        "threshold": float(threshold),
-        "peak": peak,
-        "histogram": smooth,
-        "method": method,
-        "n_pixels": int(values.size),
-        "fallback_status": fallback_status,
-        "threshold_error": threshold_error,
-    }
+# Backwards-compatible public entry point, with one shared mathematical engine.
+from .thresholding_engine import estimate_background as find_background
 
 
 def _kept_polygon_components(geometry, minimum_area: float) -> tuple[list, int]:
@@ -602,6 +339,7 @@ def detect_backgrounds(
     region_masks: dict[str, np.ndarray] | None = None,
     aggregate: str = "mean",
     progress=None,
+    params=None,
 ) -> pd.DataFrame:
     """Background level for every requested marker in one image.
 
@@ -640,7 +378,7 @@ def detect_backgrounds(
                     if raster.shape != plane.shape or not raster.any():
                         continue
                     result = find_background(
-                        plane[raster], method,
+                        plane[raster], method, params=params,
                         value_range=_roi_request_value_range(plane, raster),
                         imagej_dtype=source_dtype,
                     )
@@ -672,7 +410,7 @@ def detect_backgrounds(
 
             selected = plane[mask] if mask is not None and mask.shape == plane.shape else plane
             result = find_background(
-                selected, method,
+                selected, method, params=params,
                 value_range=_roi_request_value_range(plane, mask),
                 imagej_dtype=source_dtype,
             )
@@ -718,7 +456,7 @@ def align_region_aggregate(table: pd.DataFrame, export_mode: str = "individual")
     return frame
 
 
-def prepare_threshold_export(table: pd.DataFrame, export_mode: str = "individual") -> pd.DataFrame:
+def prepare_threshold_export(table: pd.DataFrame, export_mode: str = "individual", *, precision: int = 2) -> pd.DataFrame:
     """Prepare a RESOLVE-compatible threshold table with explicit provenance.
 
     Parameters
@@ -736,6 +474,8 @@ def prepare_threshold_export(table: pd.DataFrame, export_mode: str = "individual
     frame. ``write_threshold_csv`` then emits the compact legacy Marker +
     Polygon layout and applies any manual override to its saved polygon values.
     """
+    if not isinstance(precision, int) or not 0 <= precision <= 15:
+        raise ValueError("Choose threshold export precision from 0 to 15 decimals.")
     frame = table.copy()
     if "threshold" not in frame.columns:
         raise ValueError("The threshold table needs a 'threshold' column.")
@@ -775,7 +515,7 @@ def prepare_threshold_export(table: pd.DataFrame, export_mode: str = "individual
     polygon_columns: list[str]
     if region_columns and requested_mode == "individual":
         for position, column in enumerate(region_columns, start=1):
-            frame[f"Polygon_{position}"] = numeric_regions[column].round(2)
+            frame[f"Polygon_{position}"] = numeric_regions[column].round(precision)
         polygon_columns = [f"Polygon_{i}" for i in range(1, len(region_columns) + 1)]
         selected = detected
         effective_mode = "individual"
@@ -795,10 +535,10 @@ def prepare_threshold_export(table: pd.DataFrame, export_mode: str = "individual
     if effective_mode.startswith("collapse_"):
         # Keep the selected region statistic visible even when a manual override
         # exists. ``threshold_final`` records the override independently.
-        frame["Polygon_1"] = selected.round(2)
+        frame["Polygon_1"] = selected.round(precision)
     elif effective_mode == "pooled":
         # Preserve historical pooled-mode behaviour for Polygon-only readers.
-        frame["Polygon_1"] = frame["threshold_final"].round(2)
+        frame["Polygon_1"] = frame["threshold_final"].round(precision)
     # Version 2 makes the scalar column authoritative for readers that prefer a
     # named threshold over Polygon_* values. The untouched detector result is
     # retained separately for auditability.
@@ -828,6 +568,7 @@ def write_threshold_csv(
     output_path: str | os.PathLike,
     image_stem: str | None = None,
     export_mode: str = "individual",
+    *, precision: int = 2,
 ) -> Path:
     """Write the compact legacy layout RESOLVE reads.
 
@@ -840,15 +581,15 @@ def write_threshold_csv(
     del image_stem  # Kept for API compatibility with the original writer.
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    frame = prepare_threshold_export(table, export_mode=export_mode)
+    frame = prepare_threshold_export(table, export_mode=export_mode, precision=precision)
     polygon_columns = frame.attrs["polygon_columns"]
     output = frame[["Marker"] + polygon_columns].copy()
     manual = pd.to_numeric(frame.get("manual_override"), errors="coerce")
     overridden = manual.notna()
     if overridden.any():
         for column in polygon_columns:
-            output.loc[overridden, column] = manual.loc[overridden].round(2)
-    output.to_csv(output_path, index=False, float_format="%.2f")
+            output.loc[overridden, column] = manual.loc[overridden].round(precision)
+    output.to_csv(output_path, index=False, float_format=f"%.{precision}f")
     return output_path
 
 

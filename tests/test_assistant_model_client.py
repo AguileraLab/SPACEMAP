@@ -103,6 +103,62 @@ def test_muse_glimmer_is_available_for_selection() -> None:
     assert metadata["max_output_tokens"] == 8192
 
 
+def test_nemotron_uses_only_hosted_reasoning_controls():
+    client = NvidiaModelClient(model_id="nvidia/nemotron-3-ultra-550b-a55b")
+    payload = client._payload([{"role":"user", "content":"Hello"}], temperature=1,
+                              max_tokens=8192, stream=True)
+    assert payload["chat_template_kwargs"] == {"enable_thinking":True}
+    assert "reasoning_budget" not in payload
+
+
+def test_nemotron_rejects_images_before_sending_them():
+    client = NvidiaModelClient(model_id="nvidia/nemotron-3-ultra-550b-a55b")
+    with pytest.raises(ValueError, match="text only"):
+        client._payload([{"role":"user", "content":[{"type":"image_url", "image_url":{"url":"data:image/png;base64,abc"}}]}],
+                        temperature=1, max_tokens=8192, stream=True)
+
+
+def test_reasoning_stream_has_a_total_budget_and_remains_cancellable(monkeypatch):
+    client = NvidiaModelClient()
+    client.max_response_seconds = 12
+    clock = [0]
+    monkeypatch.setattr(model_client.time, "monotonic", lambda: clock[0])
+    class SlowReasoning(_Response):
+        def __iter__(self):
+            for i in range(4):
+                clock[0] += 6
+                yield b'data: {"choices":[{"delta":{"reasoning_content":"private"}}]}\n'
+    monkeypatch.setattr(client, "_request", lambda **kwargs: SlowReasoning([]))
+    events = []
+    with pytest.raises(ModelUnavailable, match="within 12 seconds"):
+        list(client.stream_complete([], on_progress=events.append))
+    assert len(events) >= 3 and "private" not in json.dumps(events)
+
+
+def test_connection_check_is_small_and_does_not_change_provider(monkeypatch):
+    from spacemap_gui.studio import ai_setup
+    captured = []
+    def respond(self, *, payload):
+        captured.append(payload)
+        return _Response([b'data: {"choices":[{"delta":{"content":"{\\"status\\":\\"ready\\"}"},"finish_reason":"stop"}]}\n'])
+    monkeypatch.setattr(NvidiaModelClient, "_request", respond)
+    monkeypatch.setattr(model_client, "save_provider_settings", lambda *args: pytest.fail("A check must not select a provider"))
+    monkeypatch.setattr(ai_setup, "_online_checks", {})
+    result = ai_setup.check_online("nvidia/nemotron-3-ultra-550b-a55b")
+    assert result["ok"] and result["first_answer_seconds"] is not None
+    assert captured[0]["chat_template_kwargs"] == {"enable_thinking":False}
+    assert "project" not in json.dumps(captured).lower()
+
+
+def test_connection_check_reports_service_failure(monkeypatch):
+    from spacemap_gui.studio import ai_setup
+    monkeypatch.setattr(NvidiaModelClient, "_request", lambda self, **kwargs: _Response([
+        b'data: {"error":{"message":"Service overloaded","code":503}}\n']))
+    monkeypatch.setattr(ai_setup, "_online_checks", {})
+    result = ai_setup.check_online("meta/muse-glimmer-30b")
+    assert not result["ok"] and result["message"] == "Service overloaded (503)"
+
+
 def test_nvidia_client_rejects_unapproved_model_and_endpoint() -> None:
     with pytest.raises(ValueError, match="approved model list"):
         NvidiaModelClient(model_id="unapproved/model")
@@ -192,6 +248,41 @@ def test_nvidia_stream_hides_reasoning_and_returns_answer(monkeypatch) -> None:
     client = NvidiaModelClient()
     monkeypatch.setattr(client, "_request", lambda **kwargs: _Response(lines))
     assert "".join(client.stream_complete([{"role": "user", "content": "Hi"}])) == "Public answer"
+
+
+@pytest.mark.parametrize("client_class", [LocalModelClient, NvidiaModelClient])
+def test_stream_reports_activity_and_finish_without_exposing_reasoning(monkeypatch, client_class):
+    client = client_class()
+    chunks = [{"choices":[{"delta":{"reasoning_content":"private reasoning"}}]},
+              {"choices":[{"delta":{"content":"Done"}, "finish_reason":"stop"}], "usage":{"completion_tokens":12}}]
+    lines = [("data: "+json.dumps(c)+"\n\n").encode() for c in chunks]
+    monkeypatch.setattr(client, "_request", lambda *args, **kwargs: _Response(lines))
+    events = []
+    assert "".join(client.stream_complete([], on_progress=events.append)) == "Done"
+    assert any("reasoning" in event["status"] for event in events)
+    assert client.last_completion["finish_reason"] == "stop"
+    assert client.last_completion["usage"]["completion_tokens"] == 12
+    assert "private reasoning" not in json.dumps([events, client.last_completion])
+
+
+@pytest.mark.parametrize("reason,text", [("length", ""), ("length", '{"action":'), ("stop", "")])
+def test_strict_stream_rejects_empty_and_truncated_completions(monkeypatch, reason, text):
+    client = NvidiaModelClient()
+    client.require_complete = True
+    chunks = [{"choices":[{"delta":{"content":text}, "finish_reason":reason}]}]
+    monkeypatch.setattr(client, "_request", lambda **kwargs: _Response([("data: "+json.dumps(chunks[0])+"\n\n").encode()]))
+    with pytest.raises(ModelUnavailable, match="response limit|no answer"):
+        list(client.stream_complete([]))
+    assert client.last_completion["finish_reason"] == reason
+
+
+def test_muse_uses_documented_reasoning_prompt_without_mutating_history():
+    messages = [{"role":"system", "content":"Studio instructions"}, {"role":"user", "content":"Review clusters"}]
+    payload = NvidiaModelClient(model_id="meta/muse-glimmer-30b")._payload(messages,
+        temperature=1, max_tokens=8192, stream=True, reasoning_strength="medium")
+    assert payload["messages"][0]["content"].startswith("Reasoning strength: medium\n")
+    assert messages[0]["content"] == "Studio instructions"
+    assert "reasoning_budget" not in payload and "chat_template_kwargs" not in payload
 
 
 def test_nvidia_key_is_saved_owner_only_and_can_be_removed(tmp_path, monkeypatch) -> None:

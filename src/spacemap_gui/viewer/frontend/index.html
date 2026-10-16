@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SPACEMAP Viewer</title>
+  <link rel="stylesheet" href="viewer.css" />
+  <script src="vendor/openseadragon.min.js"></script>
+</head>
+<body>
+  <div id="app">
+    <div id="stage">
+      <div id="osd"></div>
+      <div id="toolbar">
+        <button type="button" id="btn-home" title="Fit the whole image">Fit</button>
+        <button type="button" id="btn-native" title="Native image pixels: one image pixel per viewer pixel (100%)">100%</button>
+        <button type="button" id="btn-zoom-in" title="Zoom in">+</button>
+        <button type="button" id="btn-zoom-out" title="Zoom out">&minus;</button>
+        <span class="sep"></span>
+        <div id="drawtools" class="seg tools" hidden>
+          <button type="button" data-tool="off" title="Move around and click cells or shapes">Move</button>
+          <button type="button" data-tool="rect" title="Drag a rectangle. On a selected polygon: Shift-drag paints, Alt-drag erases; hold the key and scroll to resize the round brush.">Rectangle</button>
+          <button type="button" data-tool="polygon" title="Click corners; Enter finishes. On a selected polygon: Shift-drag paints, Alt-drag erases; hold the key and scroll to resize the round brush.">Polygon</button>
+          <button type="button" data-tool="freehand" title="Drag an outline. On a selected polygon: Shift-drag paints, Alt-drag erases; hold the key and scroll to resize the round brush.">Freehand</button>
+          <button type="button" data-tool="merge" title="Merge selected polygons or click two polygons. Maximum gap controls how far apart they can be.">Merge</button>
+          <button type="button" data-tool="split" title="Select a polygon and drag right across a neck. Cut width is in full-resolution image pixels.">Split</button>
+          <button type="button" data-mode="select" title="Selection mode: a rectangle, polygon or freehand outline selects the regions inside it instead of drawing (Shift adds to the selection)">Select</button>
+        </div>
+        <span class="sep"></span>
+        <button type="button" id="btn-save" title="Save what is on screen as a PNG image">Save image</button>
+        <button type="button" id="btn-save-full" title="Save the area on screen at full image resolution (up to 8,192 px wide), for figures">Save full resolution</button>
+        <span class="sep"></span>
+        <button type="button" id="btn-fullscreen" title="Fill the screen with the viewer (Esc to leave)">Full screen</button>
+        <button type="button" id="btn-window" title="Open the viewer in its own browser window, beside SPACEMAP. It follows what you open from the tabs.">Separate window</button>
+        <button type="button" id="btn-minimize" title="Close the viewer for now; Restore image viewer brings it back as you left it">Minimize</button>
+        <span id="title"></span>
+        <select id="image-picker" hidden title="Open another of the project's images in this window"></select>
+      </div>
+      <div id="readout"></div>
+      <div id="scalebar"><div class="bar"></div><span class="text"></span></div>
+      <div id="selbox" hidden></div>
+      <div id="cellcard" hidden></div>
+      <div id="message" hidden></div>
+    </div>
+    <aside id="panel"></aside>
+  </div>
+  <script src="studio_selection.js"></script>
+  <script src="artifact-review.js"></script>
+  <script src="classification.js"></script>
+  <script src="annotation-difference.js"></script>
+  <script src="spatial-panels.js"></script>
+  <script src="studio.js"></script>
+  <!-- The viewer, in parts that share their names: keep this order; start.js runs it and comes last. -->
+  <script src="viewer/core.js"></script>
+  <script src="viewer/setup.js"></script>
+  <script src="viewer/image.js"></script>
+  <script src="viewer/cells.js"></script>
+  <script src="viewer/shapes.js"></script>
+  <script src="viewer/regions.js"></script>
+  <script src="viewer/annotation-rows.js"></script>
+  <script src="viewer/cell-rows.js"></script>
+  <script src="viewer/bring.js"></script>
+  <script src="viewer/data-view.js"></script>
+  <script src="viewer/brush.js"></script>
+  <script src="viewer/histogram.js"></script>
+  <script src="viewer/layers.js"></script>
+  <script src="viewer/panel.js"></script>
+  <script src="viewer/markers.js"></script>
+  <script src="viewer/resolve.js"></script>
+  <script src="viewer/legends.js"></script>
+  <script src="viewer/split-markers.js"></script>
+  <script src="viewer/start.js"></script>
+</body>
+</html>

@@ -110,7 +110,7 @@ def list_csv_files(directory: str) -> list[str]:
 
 
 def sample_id_from_csv(filename: str, strip_suffix: str = DEFAULT_CSV_SUFFIX) -> str:
-    """Turn ``P11_roi_1_cell_features.csv`` into ``P11_roi_1``.
+    """Turn ``sample_1_cell_features.csv`` into ``sample_1``.
 
     ``strip_suffix`` is configurable because the cell table may come from
     somewhere other than this pipeline; an empty value keeps the whole stem.
@@ -639,9 +639,8 @@ def _render_rules_form(all_classes: Sequence[str], tissue_label: str) -> None:
             value=bool(st.session_state.get(USE_GPU_KEY, False)),
             key="seg_tag_use_gpu_distances_widget",
             help=(
-                "Accelerate large boundary-distance calculations with CUDA. Run the app on a GPU node "
-                "to use it; this option does not submit a remote job. Polygon membership and gap checks "
-                "remain exact CPU operations. If no GPU is available, tagging uses the CPU and reports it."
+                "CUDA can accelerate large ordinary boundary-distance calculations. Gap-aware distances "
+                "and beds use CPU workers. If no compatible GPU is available, calculations use the CPU."
             ),
         )
 
@@ -846,7 +845,7 @@ def render_cell_tagging_panel(project_root: Path) -> None:
             default_value=st.session_state.get(CSV_DIR_KEY, "")
             or str(project_root / "outputs" / "segmentation" / "cellpose" / "features"),
             browser_key_prefix="seg_tag_csv_dir_browse",
-            help_text="Folder holding one cell table per image, for example P11_roi_1_cell_features.csv.",
+            help_text="Folder holding one cell table per image, for example sample_1_cell_features.csv.",
         )
         csv_dir = st.session_state.get(CSV_DIR_KEY, "")
         available = list_csv_files(csv_dir)
@@ -864,7 +863,7 @@ def render_cell_tagging_panel(project_root: Path) -> None:
             key="seg_tag_csv_suffix_widget",
             help=(
                 "Removed from the CSV stem before looking for the annotation file. With the default, "
-                "P11_roi_1_cell_features.csv is matched as P11_roi_1. Clear it to match on the whole stem."
+                "sample_1_cell_features.csv is matched as sample_1. Clear it to match on the whole stem."
             ),
         )
         st.session_state[CSV_SUFFIX_KEY] = csv_suffix
@@ -1010,7 +1009,7 @@ def render_cell_tagging_panel(project_root: Path) -> None:
         key="seg_tag_output_suffix_widget",
         help=(
             "Appended to the input file name to name the output, so "
-            "P11_roi_1_cell_features.csv becomes P11_roi_1_cell_features_tagged.csv. Keep it non-empty so a "
+            "sample_1_cell_features.csv becomes sample_1_cell_features_tagged.csv. Keep it non-empty so a "
             "tagged table can never overwrite the segmentation output it came from."
         ),
     )

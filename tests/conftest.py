@@ -58,6 +58,20 @@ def _build_scaffold() -> None:
 _build_scaffold()
 
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _own_project_list(monkeypatch, request):
+    """Give each test independent state while exercising the real path resolver.
+
+    Tests of storage overrides and legacy migration may replace or clear this
+    environment value. Mocking the resolver itself would conceal that behavior.
+    """
+    state = _TEST_HOME / "gui_state" / str(abs(hash(request.node.nodeid)))
+    monkeypatch.setenv("SPACEMAP_STATE_DIR", str(state))
+
+
 def pytest_sessionfinish(session, exitstatus) -> None:  # noqa: ARG001
     """Remove the throwaway home once the run is over."""
     import shutil

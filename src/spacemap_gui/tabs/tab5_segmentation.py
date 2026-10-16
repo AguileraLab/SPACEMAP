@@ -1619,7 +1619,7 @@ def generate_summary_thumbnail(image_path, tis_indices, objects, scale_x, scale_
     return pil_img
 
 def _run_batch_segmentation_v2(to_proc, input_dir, mask_save_dir, output_dir, use_mask, create_log, model_type, custom_model_path, diameter, flow, tile_size, tile_overlap, cellpose_internal_tile_size, cellpose_batch_size, adaptive_gpu_memory, min_cellpose_internal_tile_size, min_tissue_fraction, tissue_crop_padding, gpu, save_geojson, save_npy, save_png, overwrite, use_annotation_mask=False,
-                               cudnn_mode='auto', flow_device='auto'):
+                               cudnn_mode='auto', flow_device='auto', batch_auto=True, gpu_device=0):
     """Process cellpose segmentation for checked images."""
     session_start_time = time.time()
     total_pairs = len(to_proc)
@@ -1744,6 +1744,8 @@ def _run_batch_segmentation_v2(to_proc, input_dir, mask_save_dir, output_dir, us
             seg_config.tile_overlap = tile_overlap
             seg_config.cellpose_internal_tile_size = cellpose_internal_tile_size
             seg_config.cellpose_batch_size = cellpose_batch_size
+            seg_config.cellpose_batch_auto = batch_auto
+            seg_config.gpu_device = gpu_device
             seg_config.adaptive_gpu_memory = adaptive_gpu_memory
             seg_config.min_cellpose_internal_tile_size = min_cellpose_internal_tile_size
             seg_config.cudnn_mode = cudnn_mode
@@ -1785,7 +1787,8 @@ def _run_batch_segmentation_v2(to_proc, input_dir, mask_save_dir, output_dir, us
                 'Flow_Threshold': flow,
                 'Tile_Size': tile_size,
                 'Cellpose_Internal_Tile_Size': cellpose_internal_tile_size,
-                'Cellpose_Batch_Size': cellpose_batch_size,
+                'Cellpose_Batch_Size': 'auto' if batch_auto else cellpose_batch_size,
+                'GPU_Device': gpu_device if gpu else 'cpu',
                 'Adaptive_GPU_Memory': adaptive_gpu_memory,
                 'Min_Tissue_Fraction': min_tissue_fraction,
                 'Tissue_Crop_Padding': tissue_crop_padding,
@@ -2340,8 +2343,9 @@ def _render_segmentation_pipeline():
             st.markdown("**Tissue mask & spatial annotation**")
             spatial_ui.render_spatial_panel(project_root, [p["image"] for p in pairs], input_dir)
             st.markdown("---")
-            with st.expander("GPU Memory Safety", expanded=True):
-                st.caption("The outer ROI tile controls stitching. The Cellpose internal block controls GPU memory. A 2048px outer ROI tile is safe when Cellpose uses small internal blocks.")
+            with st.expander("GPU settings", expanded=False):
+                st.checkbox("Auto batch", value=st.session_state.get("tab4_cellpose_batch_auto", True), key="tab4_cellpose_batch_auto", help="Test block batches on the selected GPU and reuse a fast size.")
+                st.number_input("GPU index", min_value=0, max_value=255, value=st.session_state.get("tab4_gpu_device", 0), key="tab4_gpu_device", help="The visible GPU to use, starting at 0. One GPU is used per job.")
                 memory_col1, memory_col2 = st.columns(2)
                 internal_block_size = memory_col1.number_input(
                     "Cellpose Internal Block Size (px)",
@@ -2355,16 +2359,12 @@ def _render_segmentation_pipeline():
                 memory_col2.number_input(
                     "Cellpose GPU Batch Size",
                     min_value=1,
-                    max_value=64,
+                    max_value=256,
+                    disabled=st.session_state.get("tab4_cellpose_batch_auto", True),
                     step=1,
                     value=st.session_state.get("tab4_cellpose_batch_size", 8),
                     key="tab4_cellpose_batch_size",
-                    help=(
-                        "Number of internal Cellpose blocks sent to the GPU together. 8 measured fastest on a "
-                        "40 GB A100; 16 was no better. Batch size only helps once the flow check runs on the "
-                        "GPU, because otherwise the CPU flow step dominates. It is reduced automatically when "
-                        "free GPU memory is low, and again after any out-of-memory error."
-                    ),
+                    help="Maximum blocks sent to the GPU together in Manual mode. Reduced automatically if memory is short.",
                 )
                 speed_col1, speed_col2 = st.columns(2)
                 cudnn_options = ["auto", "enabled", "disabled"]
@@ -2375,8 +2375,7 @@ def _render_segmentation_pipeline():
                     index=cudnn_options.index(saved_cudnn) if saved_cudnn in cudnn_options else 0,
                     key="tab4_cudnn_mode",
                     help=(
-                        "auto probes cuDNN once and falls back if the install is broken. Measured about 12% "
-                        "faster than running without it. Set disabled only if you hit libcudnn errors."
+                        "Auto uses accelerated convolutions when available. Disable only when troubleshooting GPU errors."
                     ),
                 )
                 flow_options = ["auto", "gpu", "cpu"]
@@ -2387,27 +2386,9 @@ def _render_segmentation_pipeline():
                     index=flow_options.index(saved_flow) if saved_flow in flow_options else 0,
                     key="tab4_flow_device",
                     help=(
-                        "Where the flow threshold is applied after network prediction. This was the single "
-                        "biggest cost in the old pipeline: moving it to the GPU alone was 1.6x faster, with "
-                        "the same cells. auto uses the GPU whenever one is available."
+                        "Where to check predicted cell shapes. Auto uses the GPU when available, with a CPU fallback."
                     ),
                 )
-                if int(internal_block_size) > 256 or int(st.session_state.get("tab4_cellpose_batch_size", 1)) > 1:
-                    st.warning(
-                        "These settings are high-memory. For large masked images, start with a 224px internal block and GPU batch size 1. "
-                        "A 1024px block with batch size 3 can be slower and can exceed GPU memory."
-                    )
-                    def use_recommended_gpu_settings() -> None:
-                        st.session_state["tab4_cellpose_internal_tile_size"] = 224
-                        st.session_state["tab4_cellpose_batch_size"] = 1
-                        st.session_state["tab4_adaptive_gpu_memory"] = True
-                        st.session_state["tab4_min_cellpose_internal_tile_size"] = 128
-                    st.button(
-                        "Use Recommended Large-Image GPU Settings",
-                        key="tab4_use_safe_gpu_settings",
-                        width="stretch",
-                        on_click=use_recommended_gpu_settings,
-                    )
                 st.checkbox(
                     "Retry automatically with smaller Cellpose blocks after GPU memory errors",
                     value=st.session_state.get("tab4_adaptive_gpu_memory", True),
@@ -2580,7 +2561,9 @@ def _render_segmentation_pipeline():
                             tile_size=st.session_state.get("tab4_tile_size", 2048),
                             tile_overlap=st.session_state.get("tab4_tile_overlap", 0.1),
                             cellpose_internal_tile_size=st.session_state.get("tab4_cellpose_internal_tile_size", 224),
-                            cellpose_batch_size=st.session_state.get("tab4_cellpose_batch_size", 1),
+                            cellpose_batch_size=st.session_state.get("tab4_cellpose_batch_size", 8),
+                            batch_auto=st.session_state.get("tab4_cellpose_batch_auto", True),
+                            gpu_device=st.session_state.get("tab4_gpu_device", 0),
                             adaptive_gpu_memory=st.session_state.get("tab4_adaptive_gpu_memory", True),
                             min_cellpose_internal_tile_size=st.session_state.get("tab4_min_cellpose_internal_tile_size", 128),
                             min_tissue_fraction=st.session_state.get("tab4_min_tissue_fraction", 0.002),

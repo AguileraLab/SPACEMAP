@@ -382,6 +382,9 @@ def _compute(request, job_dir, logger, audit_result):
 
     # Commit results before telling the UI that the run completed. Unique run
     # paths preserve earlier results even if a later run fails.
+    protect_output = getattr(logger, "protect_output", None)
+    if protect_output is not None:
+        protect_output()
     temp_file = job_dir / "results.parquet"
     logger.info("Saving Leiden results to %s", temp_file)
     write_dataframe_parquet_atomic(df_results, temp_file)
