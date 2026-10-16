@@ -59,11 +59,16 @@ def register(port, source=""):
 
 def _alive_here(pid):
     try:
-        os.kill(int(pid), 0)
-    except (OSError, ValueError):
+        pid = int(pid)
+        os.kill(pid, 0)
+    except (OSError, TypeError, ValueError):
         return False
+    # This process registered itself; its launcher need not name SPACEMAP.
+    # Keep the command-line check for other PIDs before offering to stop them.
+    if pid == os.getpid():
+        return True
     try:
-        command = Path(f"/proc/{int(pid)}/cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
+        command = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
     except OSError:
         return True
     return "streamlit" in command or "spacemap" in command

@@ -44,3 +44,34 @@ def test_a_refused_save_says_what_changed_the_file(tmp_path):
     edits.replace(path, [square], first["revision"], "Detected tissue")  # a job writes it meanwhile
     with pytest.raises(ValueError, match=r"changed at \d\d:\d\d \(Detected tissue\)"):
         edits.replace(path, [], first["revision"], "Edited by hand")
+
+
+def test_current_server_survives_a_generic_python_launcher(tmp_path, monkeypatch):
+    monkeypatch.setattr(servers, "_folder", lambda: tmp_path)
+    monkeypatch.setattr(servers.Path, "read_bytes", lambda self: b"python\0-m\0pytest\0-q\0")
+    entry = {"host": socket.gethostname(), "port": 9999, "pid": os.getpid(),
+             "started": time.time(), "seen": time.time()}
+    record = tmp_path / "current.json"
+    record.write_text(json.dumps(entry))
+
+    assert servers.listing()[0]["this"] is True
+    assert record.exists()
+    with pytest.raises(ValueError, match="This is the server"):
+        servers.stop(entry["host"], entry["port"])
+
+
+def test_an_unrelated_python_process_is_not_offered_or_stopped(tmp_path, monkeypatch):
+    monkeypatch.setattr(servers, "_folder", lambda: tmp_path)
+    monkeypatch.setattr(servers.Path, "read_bytes", lambda self: b"python\0-m\0pytest\0-q\0")
+    signals = []
+    monkeypatch.setattr(servers.os, "kill", lambda pid, sig: signals.append((pid, sig)))
+    other_pid = os.getpid() + 1
+    entry = {"host": socket.gethostname(), "port": 9998, "pid": other_pid,
+             "started": time.time(), "seen": time.time()}
+    record = tmp_path / "unrelated.json"
+    record.write_text(json.dumps(entry))
+
+    with pytest.raises(ValueError, match="not running any more"):
+        servers.stop(entry["host"], entry["port"])
+    assert signals == [(other_pid, 0)]  # Only probe liveness; never terminate it.
+    assert not record.exists()

@@ -59,6 +59,28 @@ one Linux environment; it is not a portable installation recipe. AI packages
 are optional. Each installation should pass `spacemap doctor` and
 `python -m pip check` before analysis.
 
+### GitHub CI follow-up (2026-10-16)
+
+The [first Studio PR run](https://github.com/AguileraLab/SPACEMAP/actions/runs/38957399285)
+passed Docker, packaged startup, lint, repository hygiene and frontend checks.
+Both test configurations failed the same server-listing test: base had 2,122
+passing tests and eight skips; AI had 2,127 passing tests and five skips.
+
+Server discovery incorrectly required its own Python command line to contain
+`spacemap` or `streamlit`. GitHub invokes `python -m pytest`, so the test's
+registered current process was removed from the list. The local validation
+interpreter's path contained `spacemap`, which concealed this assumption.
+Launching locally with a plain `python` process name reproduced the failure.
+
+Discovery now recognizes its own live PID without the command-line heuristic;
+other PIDs retain the existing identity check. All four focused server tests
+pass with the plain launcher, including regressions for retaining the current
+server, refusing to stop it, and refusing to stop an unrelated Python process.
+Lint and the local-path check also pass. The full GitHub base/AI suites must be
+rerun on the corrected branch before merge; the original full-suite and archive
+validation above describes the initial release snapshot, not this follow-up.
+Rebuild distribution archives from the final merged release before publishing.
+
 ## Publish through a pull request
 
 From the prepared `release/studio` checkout:
