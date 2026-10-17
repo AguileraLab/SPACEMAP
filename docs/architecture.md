@@ -1,7 +1,7 @@
 # Architecture
 
-SPACEMAP is four Python packages under `src/`. The dependency direction is
-strictly one way, which is what makes the AI assistant removable.
+SPACEMAP has four Python packages under `src/`, separating scientific routines,
+interfaces, workflows and optional model services.
 
 ```
 spacemap_gui  ──────────────┐
@@ -19,17 +19,40 @@ spacemap_workflows ─────────┘
 | Package | Responsibility | Optional? |
 | --- | --- | --- |
 | `spacemap` | The science: registration, segmentation, phenotyping, spatial analysis. Importable on its own from a script or notebook. | No |
-| `spacemap_gui` | The Streamlit interface and its tabs. | No |
-| `spacemap_assistant` | The AI assistant: model catalog, installer, runtime, actions. | **Yes** |
+| `spacemap_gui` | Studio, its viewer/API/workers, and the Classic Streamlit tabs. | No |
+| `spacemap_assistant` | The AI assistant: model catalog, installer, runtime, actions. | Model dependencies are optional; package code ships with the base install. |
 | `spacemap_workflows` | A registry describing pipeline steps so they can be called programmatically. | No |
 
-`spacemap` never imports `spacemap_gui` or `spacemap_assistant`. That is what
-lets the pipeline run headless, and lets the assistant be absent entirely.
+Scientific functions can run without opening the GUI or enabling an AI model.
+One current coupling is the RESOLVE text parser: `ph_accel_utils` imports the
+lightweight parser from `spacemap_gui`. The diagram describes responsibilities,
+not a strict enforcement of package boundaries.
+
+## Studio
+
+`spacemap_gui.server` mounts the Classic page and Studio's viewer API on one
+port through `st.App`. `viewer/frontend/` contains local JavaScript, styles and
+OpenSeadragon; no frontend build is required for the Studio viewer. The Classic
+heatmap widget has a separate compiled frontend with bundled dependencies.
+
+`spacemap_gui.studio` validates settings, dispatches commands and starts
+background Python workers. Job requests, status and logs live under the
+project's `outputs/studio/jobs/`. A shared filesystem lock limits a project to
+one active job across servers. Requests capture settings at launch; later UI
+changes apply to subsequent jobs. Supported compute workers have an independent
+stop watcher and protected result publication.
+
+Viewer sessions and pending table edits are separate from committed analysis
+results. Stage-specific workers call the scientific functions and publish
+results through checked save paths. User data and project configuration stay
+outside the installed Python package.
 
 ---
 
 ## The pipeline
 
+The following numbers refer to Classic tabs. Studio separates Cell tagging
+from Segmentation; its full step mapping is in the README.
 Each tab is one stage, and each writes into the project's `outputs/` tree so a
 later stage can pick it up.
 
@@ -50,9 +73,11 @@ later stage can pick it up.
 
 ## Where state lives
 
-Nothing is written inside the installed package. `spacemap.userpaths` resolves
-one root — `$SPACEMAP_HOME`, else `$XDG_DATA_HOME/spacemap`, else
-`~/.spacemap` — and every writable location hangs off it. An `XDG_DATA_HOME`
+Application state is written outside the installed package.
+`spacemap.userpaths` resolves a root — `$SPACEMAP_HOME`, else
+`$XDG_DATA_HOME/spacemap`, else `~/.spacemap` — for settings, caches and models.
+Project data, result tables and their sidecars use the project's configured
+folders instead. An `XDG_DATA_HOME`
 inside `/tmp` is ignored: some clusters set it to `/tmp/$USER` for everyone,
 and `/tmp` is local to one node and cleaned.
 
@@ -87,8 +112,8 @@ pipeline down:
    standard library, so the question can be asked before any AI code loads.
 
 2. **Page registration.** `app.py` only constructs the assistant `st.Page` when
-   the assistant is enabled. When it is off, nothing under
-   `spacemap_assistant` is ever imported.
+   the assistant is enabled. Studio can still use lightweight action/context
+   helpers; opening the pipeline does not require model weights or a model server.
 
 3. **Guarded call sites.** The header launcher and the Tab 0 panel are wrapped
    so that a missing dependency degrades to a caption, never a traceback.

@@ -1714,8 +1714,8 @@ def _continuous_cox_feature_summary(
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                ph_test = proportional_hazard_test(fitter, model_df[[time_col, event_col, "feature_z"]], time_fit="km")
-                summary["ph_test_p"] = float(ph_test.p_value.iloc[0])
+                ph_test = proportional_hazard_test(fitter, model_df[[time_col, event_col, "feature_z"]], time_transform="km")
+                summary["ph_test_p"] = float(np.asarray(ph_test.p_value).reshape(-1)[0])
         except Exception:
             summary["ph_test_p"] = float("nan")
     except Exception as exc:
@@ -4623,8 +4623,8 @@ def _cox_hr_and_ci(
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                ph_test = proportional_hazard_test(fitter, model_df, time_fit="km")
-                ph_p = float(ph_test.p_value.iloc[0])
+                ph_test = proportional_hazard_test(fitter, model_df, time_transform="km")
+                ph_p = float(np.asarray(ph_test.p_value).reshape(-1)[0])
         except Exception:
             ph_p = float("nan")
 

@@ -32,6 +32,8 @@ FORBIDDEN = [
     (re.compile(r"/(?:[A-Za-z0-9_.-]+/)?(?:work|scratch)/(?!<)[A-Za-z0-9_.-]+/"), "a site-specific work directory"),
     (re.compile(r"\bs\d{6}\b"), "a personal account identifier"),
     (re.compile(r"OneDrive", re.IGNORECASE), "a personal cloud folder"),
+    (re.compile(r"\bNucleus[A-Za-z]*[0-9]+\b", re.IGNORECASE), "an internal compute host"),
+    (re.compile(r"/cm/shared/apps/"), "a site-specific application directory"),
 ]
 
 #: Directories that are never scanned.
@@ -60,14 +62,16 @@ ACCOUNT_IDENTIFIER = re.compile(rb"s[0-9]{6}", re.IGNORECASE)
 #: Other path patterns are checked in these text formats.
 EXTENSIONS = {
     ".py", ".ipynb", ".md", ".txt", ".toml", ".yml", ".yaml", ".json",
-    ".sh", ".cfg", ".ini", ".in", ".dockerfile",
+    ".sh", ".cfg", ".ini", ".in", ".dockerfile", ".js", ".mjs", ".ts", ".tsx", ".html", ".css", ".svg", ".cff",
 }
 
 EXTRA_FILES = {"Dockerfile", "docker-compose.yml", ".gitignore", ".gitmessage"}
 
 
 def _is_scannable(path: Path) -> bool:
-    if any(part in SKIP_DIRECTORIES for part in path.parts):
+    # Compiled frontend assets are tracked release files and need the same
+    # checks as their sources. Only fallback directory discovery skips builds.
+    if any(part in (SKIP_DIRECTORIES - {"build", "dist"}) for part in path.parts):
         return False
     if path.as_posix() in ALLOWLIST:
         return False

@@ -27,6 +27,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from matplotlib.collections import PolyCollection
 from matplotlib.colors import to_rgb
+from .phenotype_presets import DEFAULT_PHENOTYPE_COLORS
 
 __all__ = [
 	"extract_classification_data",
@@ -750,34 +751,6 @@ DEFAULT_UNASSIGNED_COLOR = "#D9D9D9"
 # Values match PHENOTYPE_COLORS in test_codes/Fig3_code_results/fig3_code_v1.py,
 # so the GUI overlays, the GeoJSON exports and the published Figure 3 all render
 # a given cell type in the same colour.
-DEFAULT_PHENOTYPE_COLORS: dict[str, str] = {
-    "B": "#24306e",
-    "CD4": "#e78ac3",
-    "CD8": "#e31a1c",
-    "DC": "#2ca02c",
-    "Endothelial": "#006d6f",
-    "Epithelial": "#7b3294",
-    "Fibroblast": "#737373",
-    "IMC": "#348abd",
-    "Macrophage": "#9ecae1",
-    "Plasma": "#b65cff",
-    "Treg": "#ff9800",
-    "Others": "#d9d9d9",
-}
-
-# Aliases for the same cell types under the names other methods emit.
-DEFAULT_PHENOTYPE_COLORS.update(
-    {
-        "B cell": DEFAULT_PHENOTYPE_COLORS["B"],
-        "Plasma B cell": DEFAULT_PHENOTYPE_COLORS["Plasma"],
-        "CAF": DEFAULT_PHENOTYPE_COLORS["Fibroblast"],
-        "Endothelia": DEFAULT_PHENOTYPE_COLORS["Endothelial"],
-        "Epithelia": DEFAULT_PHENOTYPE_COLORS["Epithelial"],
-        "Mac": DEFAULT_PHENOTYPE_COLORS["Macrophage"],
-        "Other": DEFAULT_PHENOTYPE_COLORS["Others"],
-    }
-)
-
 # Agreement-map defaults, applied by role rather than by name so they still hold
 # when the labels are renamed (for example "Mismatch" -> "Missmatch").
 DEFAULT_MATCH_COLOR = "#00693C"
@@ -876,8 +849,8 @@ def build_color_mapping(
 ) -> dict[str, str]:
     """Assign a hex color to every label, keeping any colors already chosen.
 
-    Resolution order is `existing` (a project's saved choices), then the house
-    palette in `DEFAULT_PHENOTYPE_COLORS`, then the cycling fallback. Fallback
+    Resolution order is `existing` (a project's saved choices), the user's
+    phenotype preset, the house palette, then the distinct-colour fallback. Fallback
     labels are colored in sorted order so the same panel always gets the same
     palette regardless of the order the labels were discovered in.
     """
@@ -889,7 +862,8 @@ def build_color_mapping(
         mapping.setdefault(unassigned_label, unassigned_color)
 
     if use_known_colors:
-        known = {name.strip().lower(): color for name, color in DEFAULT_PHENOTYPE_COLORS.items()}
+        from .phenotype_presets import colours as preset_colours
+        known = {name.strip().lower(): color for name, color in {**DEFAULT_PHENOTYPE_COLORS, **preset_colours()}.items()}
         still_pending = []
         for label in pending:
             color = known.get(label.strip().lower())

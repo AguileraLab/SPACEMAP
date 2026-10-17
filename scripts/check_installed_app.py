@@ -35,7 +35,11 @@ def main() -> None:
         assert not ai_settings.is_enabled()
         assert marker_config_path().is_file()
         assert heatmap_click_selector_available(), "Compiled heatmap widget missing"
-        app = AppTest.from_file(str(app_path()), default_timeout=180).run()
+        entry = app_path()
+        # st.App's server entry mounts app.py; AppTest executes a page, not an
+        # HTTP server. Exercise that same installed page without launching one.
+        page = entry.with_name("app.py") if entry.name == "server.py" else entry
+        app = AppTest.from_file(str(page), default_timeout=180).run()
         assert not app.exception, [str(error) for error in app.exception]
         assert any(button.label == "Create and Initialize Project" for button in app.button)
         app.text_input(key="new_proj_name").input("InstallCheck")

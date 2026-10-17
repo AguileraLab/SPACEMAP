@@ -55,6 +55,8 @@ outputs/
 # They are derived data: deleting one only costs the time to rebuild it.
 *.parquet
 *.labels.parquet
+*.labels.parquet.review.sqlite*
+*.labels.lock
 *.spatial.parquet
 *.qptiff
 *.svs
@@ -76,3 +78,16 @@ node_modules/
 
 # Local backup checkouts are not release inputs.
 SPACEMAP_stage_*/
+
+# Local credentials, agent state and release preparation artifacts.
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+.aws/
+.ssh/
+.codex/
+.agents/
+*.pem
+*.key
+release-artifacts/

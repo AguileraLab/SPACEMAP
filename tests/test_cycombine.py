@@ -5,6 +5,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from spacemap import cycombine
 from spacemap.batch_correction_utils import BatchCorrector
@@ -65,3 +66,53 @@ def test_both_methods_remove_a_shift_without_widening_cell_types():
             spread = after[~second & (kind == k)].std(axis=0) / before[~second & (kind == k)].std(axis=0)
             assert np.all((spread > 0.8) & (spread < 1.2)), (mode, spread)
         assert "som_cluster" in corrected
+
+
+def test_rank_uses_average_ties_and_each_batch_size():
+    # R: rank(c(1, 1, 4, 8)) / 4; rank(c(7, 2)) / 2.
+    values = np.array([[1, 0], [1, 0], [4, 0], [8, 0], [7, 0], [2, 0]], dtype=float)
+    actual = cycombine.normalize(values, ["a"] * 4 + ["b"] * 2, norm_method="rank")
+    np.testing.assert_array_equal(actual[:, 0], [0.375, 0.375, 0.75, 1.0, 1.0, 0.5])
+    np.testing.assert_array_equal(actual[:, 1], 0)
+    np.testing.assert_array_equal(cycombine.normalize(values, ["a"] * 6, "none"), values)
+    with pytest.raises(ValueError, match="normalization"):
+        cycombine.normalize(values, ["a"] * 6, "unknown")
+
+
+def test_wrapper_honours_rank_instead_of_silently_scaling():
+    frame, _ = _two_batches(n=300)
+    raw = frame[["A", "B", "C"]].to_numpy()
+    expected, labels, _ = cycombine.batch_correct(np.arcsinh(raw / 5), frame.batch.to_numpy(),
+                                                 norm_method="rank", xdim=3, ydim=3)
+    corrector = BatchCorrector(["A", "B", "C"], normalization_method="rank", som_grid_size=(3, 3), verbose=False)
+    result = corrector.correct_batch_effects(frame.copy())
+    np.testing.assert_array_equal(result.som_cluster, labels)
+    np.testing.assert_allclose(result[["A_corr", "B_corr", "C_corr"]], expected)
+    assert corrector.run_summary["som"]["normalization"] == "rank"
+
+
+def test_small_som_input_has_an_actionable_error():
+    with pytest.raises(ValueError, match="smaller SOM grid"):
+        cycombine.create_som(np.zeros((3, 2)), xdim=2, ydim=2)
+
+
+def test_confounded_covariates_and_single_batch_groups_are_reported():
+    rng = np.random.default_rng(29)
+    values = rng.normal(size=(90, 4))
+    batches = np.array(["a"] * 40 + ["b"] * 50)
+    labels = np.array([1] * 80 + [2] * 10)
+    corrected, summary = cycombine.correct_data(values, batches, labels, covar=batches)
+    assert summary["covar_omitted"] == 1 and summary["covar_used"] == 0
+    assert summary["one_batch"] == 1 and summary["one_batch_cells"] == 10
+    np.testing.assert_array_equal(corrected[-10:], values[-10:])
+    assert np.isfinite(corrected).all()
+
+
+def test_post_qc_compares_on_the_same_scale_with_custom_cofactor():
+    from spacemap.batch_correction_utils import detect_overcorrected_cells
+    frame, _ = _two_batches(n=100)
+    for marker in ('A', 'B', 'C'):
+        frame[marker + '_corr'] = np.arcsinh(frame[marker] / 150)
+    found = detect_overcorrected_cells(frame, ['A', 'B', 'C'], batch_col='batch', cofactor=150)
+    assert (found.correction_distance == 0).all()
+    assert not found.overcorrected.any()

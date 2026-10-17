@@ -83,7 +83,7 @@ class BatchCorrector:
             which is typical of imaging/segmentation data) that reorders cells
             and blurs the negative/positive boundary that defines a phenotype.
 
-            ``'monotonic'`` (default) keeps the SOM for what it is actually
+            ``'monotonic'`` keeps the SOM for what it is actually
             needed for -- estimating the batch effect within matched cell
             populations, so a batch that simply contains more of one cell type
             is not mistaken for a batch that is brighter -- but then applies the
@@ -197,7 +197,8 @@ class BatchCorrector:
         chosen = [c for c in self.covariates if c in full_df.columns]
         if chosen:
             # cyCombine takes one covariate: several chosen together are one factor (each combination a level).
-            covar = full_df[chosen].astype(str).agg('|'.join, axis=1).to_numpy()
+            # Factorize tuples so values containing a separator cannot collide.
+            covar = pd.factorize(pd.MultiIndex.from_frame(full_df[chosen].astype(str)))[0].astype(str)
         rows, cols = self.som_grid_size
         corrected, labels, summary = cycombine.batch_correct(
             marker_data.to_numpy(dtype=np.float64),
@@ -208,15 +209,19 @@ class BatchCorrector:
             rlen=self.som_rlen,
             seed=self.cycombine_seed,
             parametric=self.parametric,
+            norm_method=self.normalization_method,
             report=print if self.verbose else None,
         )
         full_df['som_cluster'] = labels
         self.run_summary['som'].update(rlen=self.som_rlen, seed=self.cycombine_seed)
+        self.run_summary['som']['normalization'] = self.normalization_method
         self.run_summary['combat'].update(
             n_clusters_total=int(rows) * int(cols),
             n_clusters_corrected=summary['groups'],
             n_clusters_one_batch=summary['one_batch'],
             n_clusters_with_covariate=summary['covar_used'],
+            n_clusters_covar_fallback=summary['covar_omitted'],
+            n_cells_one_batch=summary['one_batch_cells'],
             n_cells_kept_as_measured=summary['cells_kept_as_measured'],
         )
         if self.verbose:
@@ -1768,7 +1773,7 @@ def calculate_batch_variance_preservation(data, markers, batch_col='batch_id'):
     return metrics
 
 
-def detect_overcorrected_cells(data, markers, batch_col='batch_id', magnitude_threshold=2.0, percentile_threshold=95.0):
+def detect_overcorrected_cells(data, markers, batch_col='batch_id', magnitude_threshold=2.0, percentile_threshold=95.0, cofactor=5.0):
     """
     Detect cells that may have been overcorrected during batch correction.
     
@@ -1808,10 +1813,10 @@ def detect_overcorrected_cells(data, markers, batch_col='batch_id', magnitude_th
     corrected_cols = [f"{m}_corr" for m in available_markers]
     
     # Get clean data
-    original_data = data[original_cols].fillna(0)
+    original_data = np.arcsinh(data[original_cols].fillna(0) / cofactor)
     corrected_data = data[corrected_cols].fillna(0)
     
-    # Calculate correction vectors
+    # Both sides must be in arcsinh space; subtracting raw intensities flags bright cells even without correction.
     correction_vectors = corrected_data.values - original_data.values
     
     # Calculate covariance matrix of correction vectors
@@ -3059,8 +3064,9 @@ def generate_qc_plots_emd_silhouette(emd_df, sil_dict, output_dir):
 def calculate_emd_reduction(uncorrected_df, corrected_df, markers, batch_col='batch', cofactor=5.0):
     """
     Calculate the Earth Mover's Distance (EMD) reduction between batches.
-    Follows cyCombine methodology: 1 - (EMD_corrected / EMD_uncorrected)
-    Values closer to 1 indicate more technical variance removed.
+    Pooled diagnostic: 1 - (EMD_corrected / EMD_uncorrected).
+    Not cyCombine's benchmark: no post-correction population grouping or bin/filter steps.
+    Values closer to 1 indicate more similar pooled batch distributions; biology can also cause differences.
     """
     try:
         from scipy.stats import wasserstein_distance
@@ -3110,8 +3116,8 @@ def calculate_emd_reduction(uncorrected_df, corrected_df, markers, batch_col='ba
 def calculate_mad_score(uncorrected_df, corrected_df, markers, batch_col='batch', cofactor=5.0):
     """
     Calculate the Median Absolute Deviation (MAD) score.
-    Follows cyCombine methodology.
-    Values closer to 0 indicate better preservation of biological variance.
+    Pooled mean relative MAD change, not cyCombine's median absolute population-level MAD difference.
+    This diagnostic alone does not establish biological preservation.
     """
     import pandas as pd
     import numpy as np

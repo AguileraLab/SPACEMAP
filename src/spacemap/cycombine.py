@@ -137,17 +137,26 @@ def _r_sum(values):
     return np.cumsum(values, dtype=np.longdouble)[-1]
 
 
-def normalize(values, batches):
-    """cyCombine's normalize(norm_method = "scale"): each marker z-scored within each batch (R's scale())."""
+def normalize(values, batches, norm_method="scale"):
+    """Per-batch SOM input: R's scale(), rank / n (average ties), or unchanged values."""
+    if norm_method not in ("scale", "rank", "none"):
+        raise ValueError("SOM normalization must be scale, rank or none.")
     values = np.asarray(values, dtype=np.float64)
     batches = np.asarray(batches)
     out = values.copy()
+    if norm_method == "none":
+        return out
     for batch in np.unique(batches):
         rows = np.flatnonzero(batches == batch)
         for column in range(values.shape[1]):
             v = values[rows, column]
             total = _r_sum(v)
             if float(total) == 0:  # cyCombine leaves an all-zero marker as it is
+                continue
+            if norm_method == "rank":
+                from scipy.stats import rankdata
+
+                out[rows, column] = rankdata(v, method="average") / len(v)
                 continue
             centred = v - float(total / np.longdouble(v.size))
             sd = math.sqrt(float(_r_sum(centred * centred)) / max(1, v.size - 1))
@@ -224,6 +233,8 @@ def create_som(normed, xdim=8, ydim=8, rlen=10, seed=473):
     data = np.ascontiguousarray(normed, dtype=np.float64)
     random = RRandom(seed)
     units = xdim * ydim
+    if len(data) < units:
+        raise ValueError(f"The {xdim} × {ydim} SOM needs at least {units} valid cells. Choose a smaller SOM grid.")
     codes = np.ascontiguousarray(data[random.sample(len(data), units) - 1])
     neighbours = grid_distances(xdim, ydim)
     radius = float(np.quantile(neighbours, 2 / 3))  # R's quantile type 7, over the whole matrix
@@ -420,12 +431,14 @@ def correct_data(values, batches, labels, covar=None, anchor=None, parametric=Tr
         levels = sorted(set(column))
         if len(levels) > 1:
             factors[name] = (column, levels)
-    summary = {"groups": 0, "one_batch": 0, "covar_used": 0, "anchor_used": 0, "cells_kept_as_measured": 0}
+    summary = {"groups": 0, "one_batch": 0, "covar_used": 0, "anchor_used": 0,
+               "covar_omitted": 0, "one_batch_cells": 0, "cells_kept_as_measured": 0}
     groups = sorted(set(labels.tolist()))
     for number, label in enumerate(groups):
         rows = np.flatnonzero(labels == label)
         if len(set(batches[rows])) == 1:
             summary["one_batch"] += 1
+            summary["one_batch_cells"] += len(rows)
             continue
         summary["groups"] += 1
         batch = batches[rows]
@@ -434,6 +447,8 @@ def correct_data(values, batches, labels, covar=None, anchor=None, parametric=Tr
             mod = _dummies(column[rows], levels)
             if not _confounded(batch, mod) and not _skewed(column[rows], levels):
                 use[name] = mod
+            elif name == "covar":
+                summary["covar_omitted"] += 1
         if len(use) == 2 and _confounded(batch, np.column_stack([use["covar"], use["anchor"][:, 1:]])):
             use.pop("anchor")
         mod = None
@@ -470,6 +485,7 @@ def batch_correct(
     ref_batch=None,
     labels=None,
     report=None,
+    norm_method="scale",
 ):
     """cyCombine's batch_correct_df on *values* (cells x markers, already arcsinh-transformed).
 
@@ -479,8 +495,8 @@ def batch_correct(
     batches = np.asarray(batches).astype(str)
     if labels is None:
         if report:
-            report("Scaling each marker within each batch (for the SOM only)")
-        normed = normalize(values, batches)
+            report(f"Normalizing markers within each batch ({norm_method}, for the SOM only)")
+        normed = normalize(values, batches, norm_method=norm_method)
         if report:
             report(f"Training the {xdim} x {ydim} SOM ({rlen} passes over {len(values):,} cells)")
         labels = create_som(normed, xdim=xdim, ydim=ydim, rlen=rlen, seed=seed)

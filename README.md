@@ -1,211 +1,152 @@
-# SPACEMAP
+# SPACEMAP Studio
 
-**Spatial multiplex imaging analysis, end to end.**
+**Spatial multiplex imaging analysis, from images to interpretable spatial results.**
 
-SPACEMAP takes multiplexed tissue images from raw acquisition to spatial
-statistics: registration, background subtraction, ROI extraction, tissue
-annotation, cell segmentation, batch correction, immune phenotyping, spatial
-analysis and publication figures — through a graphical interface, a set of
-reusable Python modules, or notebooks.
+![SPACEMAP Studio workflow: multiplex images, annotation and segmentation, cell tagging and phenotyping, spatial analysis, and figures](docs/assets/spacemap-studio-workflow.png)
 
-An optional, local-first AI assistant can help you drive the pipeline. It is
-**switched off by default** and everything works without it.
+*Conceptual workflow illustration; the tissue and charts are synthetic, not research results.*
 
 [![CI](https://github.com/AguileraLab/SPACEMAP/actions/workflows/ci.yml/badge.svg)](https://github.com/AguileraLab/SPACEMAP/actions/workflows/ci.yml)
-[![License: Academic research only](https://img.shields.io/badge/License-Academic%20research%20only-blue.svg)](LICENSE)
 [![Python 3.10](https://img.shields.io/badge/python-3.10-blue.svg)](https://www.python.org/)
+[![License: Academic research only](https://img.shields.io/badge/License-Academic%20research%20only-blue.svg)](LICENSE)
 
----
+**Studio** brings the pipeline, image viewer, cell table, figures and background
+jobs into one browser workspace. Review an image, adjust annotations, inspect
+cell identities and run analyses without losing your place. The classic
+SPACEMAP interface, Python modules and notebooks remain available.
 
-## Quick start
+## Get started
 
 ```bash
 git clone https://github.com/AguileraLab/SPACEMAP.git
 cd SPACEMAP
-
 conda env create -f environment.yml
 conda activate spacemap
 spacemap doctor
-
 spacemap
 ```
 
-Open <http://localhost:8501> and start at **Tab 0 — Project Workspace**.
-Follow **[Your first project](docs/first-project.md)** to create a project,
-connect your images, and move through the pipeline. The clone contains the
-software and notebooks; study images and model weights are separate downloads.
-While this repository is private, cloning requires collaborator access.
+Open the address printed in the terminal (normally <http://localhost:8501>).
+Create or open a project in **Project Workspace**, then click **SPACEMAP Studio**
+in the top bar. Use **Classic SPACEMAP** to return to the tabbed interface.
 
-The setup uses **Python 3.10** and includes JupyterLab. AI packages and DeepCell
-are optional. `spacemap doctor` reports `PROBLEM` for issues to fix; a `NOTE`
-about no GPU or missing optional AI packages is expected on a CPU-only setup.
+The environment uses **Python 3.10**, includes JupyterLab and keeps AI packages
+optional. A GPU is useful for segmentation but is not required to open Studio
+or run CPU analyses. Images and custom model weights are separate from this
+software repository.
 
-Prefer Docker, or installing with pip into an environment you already manage?
-See **[docs/installation.md](docs/installation.md)**.
+See [Your first project](docs/first-project.md) and
+[Installation](docs/installation.md) for data setup, pip, Docker and GPU details.
 
----
+## What Studio adds
+
+- **An integrated image workspace:** full-resolution navigation, marker contrast,
+  H&E overlays, cell outlines, annotation layers and linked figures.
+- **Interactive review:** draw and correct polygons, assign manual cell labels,
+  inspect phenotype disagreements and edit cell-table values and columns.
+- **Reusable models:** train Cellpose from existing models; use manual-reference
+  models or reference-weighted phenotyping for cohort prediction.
+- **Background analysis:** saved job results, independent elapsed timers,
+  informative progress and safe stopping for supported compute workers.
+- **Spatial exploration:** neighbourhoods, interactions, density, triads and
+  reviewable **TLS candidates**, including structure boundaries and signed distances.
+- **Shared project formats:** Studio and the classic tools use the same project
+  settings, images and tables. Choose CPU workers and supported GPU backends in
+  the relevant step.
+
+TLS candidates are exploratory lymphoid aggregates that require biological
+review; detecting a candidate is not a diagnosis of a mature TLS. GPU support
+is backend-specific: gap-aware cell-tagging visibility runs on CPU, and an
+optional GPU random forest uses different split calculations from the CPU model.
 
 ## The pipeline
 
-| Tab | Stage | What it does |
+Studio has a dedicated Cell tagging step. Classic tab numbers remain unchanged.
+
+| Studio step | Classic tab | Purpose |
 | --- | --- | --- |
-| **0** | Project workspace | Create or load a project, set directories, configure the optional AI assistant |
-| **1** | Registration | Align CODEX rounds to each other and to H&E |
-| **2** | Background subtraction | Detect and remove autofluorescence and background |
-| **3** | ROI extraction | Cut regions of interest from whole-slide images |
-| **4** | Annotation | Annotate tissue compartments and zones |
-| **5** | Segmentation | Segment cells with Cellpose, or DeepCell/Mesmer |
-| **6** | Batch correction | Harmonize marker intensities across batches (ComBat and cyCombine) |
-| **7** | Phenotyping | Leiden, SOM, thresholds, SCIMAP, VORTEX, ML consensus |
-| **8** | Spatial analysis | Neighbourhoods, distances, interactions, tissue continuity |
-| **9** | Visualization | Spatial maps, heatmaps and publication figures |
+| 0 · Project | 0 | Project files, input/output folders and optional AI setup |
+| 1 · Registration | 1 | Align multiplex images and matching H&E |
+| 2 · Background | 2 | Detect background and correct marker images |
+| 3 · Regions of interest | 3 | Draw, import and extract tissue regions |
+| 4 · Annotation | 4 | Define and review tissue compartments and zones |
+| 5 · Segmentation | 5 | Cellpose segmentation, model training and cell measurements |
+| 6 · Cell tagging | 5 | Annotation membership, tissue pieces, areas, distances and beds |
+| 7 · Batch correction | 6 | Combine tables and correct marker batch effects |
+| 8 · Phenotyping | 7 | Thresholds, Leiden, SOM, VORTEX, SCIMAP, consensus and manual-reference ML |
+| 9 · Spatial analysis | 8 | Neighbourhoods, interactions, density and TLS candidates |
+| 10 · Visualization | 9 | Maps, heatmaps and exported figures |
 
-Every stage writes into the project's `outputs/` tree, so stages compose and
-you can stop and resume anywhere.
+Start at the stage matching your existing inputs. Confirm image/channel names,
+cell IDs, annotation alignment and micrometres per pixel before analysing a
+cohort. Test a small image first.
 
-Prefer scripting? Call the scientific modules without starting the GUI:
+## Projects and jobs
 
-```python
-from spacemap.config import get_config
-from spacemap.segmentation_cellpose import SegmentationConfig, segment_image_cellpose
-
-config = get_config("/path/to/project", create_directories=True)
-segment_image_cellpose("image.ome.tiff", config.segmentation_dir, SegmentationConfig())
-```
-
-The `notebooks/` folder carries the same workflow step by step, ready to edit.
-Each one opens with a configuration cell; point `DATA_DIR` at your data and the
-rest follows.
-
----
-
-## The AI assistant is optional
-
-A fresh install starts with the assistant disabled and does not load a language
-model. Installing packages and downloading Cellpose or AI model weights require
-network access. Download the needed weights before using the pipeline offline.
-
-**To turn it on:** Tab 0 → *AI Assistant (optional)* → **Enable AI assistant**.
-
-From that panel you can, without editing a file or leaving the browser:
-
-- see what your machine can run — the panel reads your CPU, memory and GPU and
-  says so plainly;
-- install the AI packages (it prints the exact command for *your* interpreter);
-- browse a **model library**, download a model with a progress bar, and pick
-  which one is active;
-- install weights from a folder instead, on a machine with no network;
-- **add any model the catalog does not know about** — a Hugging Face repository
-  or a GGUF file — so new models need no code change;
-- move the model store to a bigger disk;
-- turn the whole thing off again.
-
-**It runs without a GPU.** A machine with no accelerator loads the model on the
-CPU. For that case the catalog includes a ~2.5 GB quantized model that is
-practical on a laptop.
-
-| Model | Size | Needs | Reads images |
-| --- | --- | --- | --- |
-| Qwen3 4B Instruct (Q4_K_M) | ~2.5 GB | No GPU | No |
-| Gemma 4 12B Instruct | ~24 GB | ~28 GB GPU | Yes |
-| Llama 3.1 8B Instruct | ~16 GB | ~20 GB GPU | No |
-
-Local model inference runs on your machine: the model server binds to
-loopback, requires a locally generated key, and runs with proxy variables
-stripped. Downloads and any explicitly enabled online tools still use the network. Every action the assistant proposes needs your approval before it
-runs, and it can never write to the installed source or your configuration.
-
-To disable it across a shared installation regardless of the setting:
+Keep study projects **outside the software checkout**. Each project has its own
+configuration and `outputs/` tree; each step shows its input and output folders.
+Settings, application caches and downloaded models normally live under
+`~/.spacemap`. You can choose other locations:
 
 ```bash
-export SPACEMAP_ASSISTANT=off
+export SPACEMAP_HOME=/path/to/application-state
+export SPACEMAP_MODELS_DIR=/path/to/models
 ```
 
-Full details: **[docs/ai-assistant.md](docs/ai-assistant.md)**.
+Studio allows **one active background job per project**, including across
+computers sharing the same storage. For a concurrent test, use a separate
+project folder with independent configuration, job history and outputs. Input
+images and cell tables can be shared for reading; changing only an output
+folder does not create a separate project.
 
----
+## Optional AI assistant
 
-## Where SPACEMAP keeps its files
+The assistant is off by default and the analysis workflow works without it.
+Install `python -m pip install -e ".[ai]"` and open **AI setup** to configure a
+local model. Model weights are downloaded separately; CPU and GPU requirements
+vary by model. Downloads and explicitly enabled online tools require network
+access. See [AI assistant](docs/ai-assistant.md) for configuration and privacy.
 
-Nothing is written inside the installed package. Everything lives under
-`~/.spacemap` (settings, caches, logs, models), and you can move it:
+Set `SPACEMAP_ASSISTANT=off` to disable it for an installation.
 
-```bash
-export SPACEMAP_HOME=/data/shared/spacemap
-export SPACEMAP_MODELS_DIR=/mnt/bigdisk/spacemap-models   # or just the models
-```
+## Python and notebooks
 
-Your imaging data stays wherever you keep it; SPACEMAP only records the paths.
+The `spacemap` package exposes the scientific modules for scripts. The
+`notebooks/` directory contains step-by-step workflows; configure their data
+paths before running. Notebook outputs are stripped from the repository.
 
----
+## Documentation and development
 
-## Documentation
-
-| Page | |
+| Guide | Contents |
 | --- | --- |
-| [Your first project](docs/first-project.md) | Create a project, prepare inputs, and follow the stages |
-| [Installation](docs/installation.md) | Conda, pip, Docker, offline, where files go |
-| [AI assistant](docs/ai-assistant.md) | Enabling it, installing models, no-GPU setups, privacy |
-| [Architecture](docs/architecture.md) | How the packages fit together and why the assistant is removable |
-| [Troubleshooting](docs/troubleshooting.md) | Common failures and their fixes |
-| [Handover](docs/handover.md) | What SPACEMAP is, what has been done to it, and the lessons behind it |
-| [Publishing changes](docs/publishing-changes.md) | The exact procedure for getting an edit onto GitHub safely |
-| [Working with this repository](docs/working-with-this-repository.md) | Using it on your own data, keeping data out of Git, sending changes back |
-| [Contributing](CONTRIBUTING.md) | The Git workflow, in plain language |
-| [Change ledger](docs/LEDGER.md) | Every change ever made, who made it, and why |
-| [Changelog](CHANGELOG.md) | What each release means for users |
-
----
-
-## Requirements
-
-- **Python** 3.10 (the supported version for the current imaging dependencies)
-- **OS** Linux is the tested platform; macOS and Windows via Docker/WSL2 need platform validation
-- **RAM** 16 GB minimum; 64 GB+ for whole-slide work
-- **GPU** optional — accelerates Cellpose segmentation and the AI assistant
-- **Disk** whole-slide imaging is large; plan for your cohort, plus ~3–25 GB
-  per AI model if you install one
-
----
-
-## Development
+| [First project](docs/first-project.md) | Inputs, calibration and stage-by-stage setup |
+| [Installation](docs/installation.md) | Environment, Docker, GPU setup and troubleshooting |
+| [Studio](docs/studio-guide.md) | Viewer, tables, annotations, jobs and interpretation |
+| [Troubleshooting](docs/troubleshooting.md) | Common failures and fixes |
+| [Architecture](docs/architecture.md) | Packages and optional services |
+| [Studio release](docs/studio-release.md) | Release checks and publishing this version |
+| [Contributing](CONTRIBUTING.md) | Development and review conventions |
+| [Changelog](CHANGELOG.md) | Changes for users |
 
 ```bash
-git clone https://github.com/AguileraLab/SPACEMAP.git
-cd SPACEMAP
-conda env create -f environment.yml
-conda activate spacemap
 python -m pip install --upgrade pip
-bash scripts/install_hooks.sh      # commit template and the Why: check
 python -m pip install -e . --group dev
-
-python -m pytest                   # self-contained: no data, models or GPU needed
+python -m pip check
 python -m ruff check src scripts
+python scripts/check_no_local_paths.py
+python -m pytest
 ```
 
-Every change is recorded in [docs/LEDGER.md](docs/LEDGER.md) — what changed,
-who made it, and why — generated from the Git history and checked by CI. See
-[CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request.
+The default test suite uses synthetic inputs. GPU, browser, container and
+full-dataset checks are recorded separately; passing unit tests alone does not
+validate a study's biological conclusions. See the release guide for the
+validation scope.
 
----
+## Citation and license
 
-## Citing SPACEMAP
+Use [CITATION.cff](CITATION.cff) to cite SPACEMAP, and record the software version
+or commit, analysis settings and input data version with published results.
 
-If SPACEMAP contributes to work you publish, please cite it. Machine-readable
-metadata is in [CITATION.cff](CITATION.cff); GitHub renders a formatted
-citation from the sidebar.
-
----
-
-## License
-
-SPACEMAP is available for academic research use only under the
-[UT Southwestern license](LICENSE). Commercial use and redistribution,
-including any use or redistribution by a for-profit entity, are prohibited.
-
-Copyright (c) 2025-2026 The University of Texas Southwestern Medical Center.
-All rights reserved.
-
-SPACEMAP builds on Cellpose, DeepCell, SCIMAP, scanpy, palom and others; each
-keeps its own license. Models installed through the assistant are covered by
-their own terms, which you accept with the model provider, not with SPACEMAP.
+SPACEMAP retains the repository's **[academic research use only license](LICENSE)**,
+© The University of Texas Southwestern Medical Center. Dependencies and model
+weights have their own licenses and terms.

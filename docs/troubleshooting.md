@@ -67,6 +67,46 @@ The home directory is read-only or full. Point it somewhere writable:
 
 ---
 
+## Studio annotation layers
+
+**`IsADirectoryError` for `studio_history/<annotation>.geojson`**
+
+Studio keeps each annotation's saved edits in a directory named after the file,
+including its `.geojson` suffix. An older viewer search mistook these history
+directories for annotation files. This error means it tried to read a directory
+as JSON; it does not establish that the working annotation is damaged.
+
+The corrected search lists regular GeoJSON files and skips history/cache trees.
+Stale directory layers receive a readable error and are excluded when restoring
+added layers. Start Studio with the updated code and reopen the image to rebuild
+its layer list. Keep the `studio_history` directory: it contains saved revisions.
+
+## Shared projects: "Permission denied" for a collaborator
+
+A project shared by a lab group (for example `Aguilera_lab`) must stay readable and writable by the whole group.
+Older versions made lock and settings files writable by their creator only, so a collaborator saw errors such as
+`Permission denied: .../outputs/viewer/views/<image>.json.lock`.
+
+SPACEMAP now:
+
+- writes new files and folders with group read and write, and nothing for others (umask 007; set
+  `SPACEMAP_KEEP_UMASK=1` to keep your own);
+- opens a lock read-only when it cannot write it, which is enough for locking, so old locks no longer fail;
+- gives group access back to files written through private temporary files (project settings, panels, annotations,
+  the model library);
+- when a project opens, repairs the files *you* own in it, in the background (group read and write; folders keep
+  passing the group on to new files).
+
+Only a file's owner can change its permissions, so each collaborator's files are repaired when they open the project
+with this version, or at once with:
+
+```bash
+spacemap share-project /path/to/project
+```
+
+The project folder itself should belong to the group and pass it on (`chgrp -R <group> <project>` and
+`chmod g+s <project>` by its owner, once). Check with `ls -ld <project>`: the mode shows `drwxrws---` or `drwxrwsr-x`.
+
 ## The AI assistant
 
 **There is no AI Assistant page**
@@ -155,3 +195,51 @@ Saved outputs. Strip them: `pip install nbstripout && nbstripout --install`.
 Open an issue with `spacemap --version`, your OS, how you installed, whether
 you have a GPU, and the full error text. Describe the shape of a problem image
 or CSV rather than attaching data from a study.
+
+
+## Artifact model training and prediction
+
+**`Unable to determine overlay result geometry dimension` during training**
+
+Earlier training preparation could leave isolated points or lines where an
+artifact touched the Tissue boundary. GEOS 3.13.1 can fail when comparing that
+mixed result with an empty Good tissue class. Training now keeps only polygon
+area in its sampling copy and skips an empty-class overlap check. Original
+annotations and saved models remain unchanged. Refresh Studio and retry Train
+model; adding green examples or redrawing valid polygons is not required for
+this error.
+
+**Training appears stuck while reading a few example polygons**
+
+Update Studio and restart its process. Earlier artifact preparation could
+repeatedly decompress every marker plane when a fine-resolution marker panel
+exceeded the image cache. Preparation now reads windows channel by channel and
+runs inside the visible training job. Check Jobs for marker progress or Cancel.
+Similar polygon areas can have different costs at different detection scales.
+
+**`invalid value encountered in sqrt` from `artifact_quality.py`**
+
+Update and restart Studio. Training and prediction now clamp tiny negative
+rounding errors in squared-energy averages before the square root. Warnings
+should not be hidden with a global warning filter.
+
+**Does artifact learning use my GPU?**
+
+Usable CUDA devices are detected through PyTorch, with CPU fallback. GPU texture
+measurements speed preparation and prediction; saved random-forest inference can
+also run on GPU without retraining the trees. Forest fitting retains sklearn.
+No CuPy or cuML installation is required. Hover the completed training or
+prediction status for device details. The scheduler must expose an allocated GPU
+to the Studio process; merely installing CUDA does not allocate one.
+# Studio port and update checks (1 October 2026)
+
+`run_interface.sh` now tries the next available port when 8502 (or the requested
+port) is occupied. Use the local/network address printed by that launch. You do not
+need to kill the running application or request another node. If using SSH forwarding,
+forward the newly printed port as well.
+
+A Classification `HTTP 404` on an older process means that process has not loaded
+the new route; it is separate from whether the Assistant is running. Launch the updated
+interface and use its new address. Running processes now keep a matching snapshot of
+their UI, preventing newly edited frontend files from calling old backend routes.
+The AI model can remain running while a new interface process starts.

@@ -97,6 +97,11 @@ def fast_copies_enabled() -> bool:
     }
 
 
+def is_parquet_table(path: str | Path) -> bool:
+    """A table saved as Parquet (Studio saves its tables so): it is its own fast copy, never a CSV."""
+    return Path(path).suffix.lower() == ".parquet"
+
+
 def _source_fingerprint(path: Path) -> str:
     """Identify a source file by size and modification time."""
     stat = path.stat()
@@ -111,6 +116,8 @@ def fast_copy_path(path: str | Path) -> Path:
     the user cache, keyed by the full source path, for read-only shares.
     """
     source = Path(path).expanduser().resolve()
+    if is_parquet_table(source):
+        return source
     beside = source.with_suffix(source.suffix + ".parquet")
     if os.access(source.parent, os.W_OK):
         return beside
@@ -141,6 +148,8 @@ def _cache_root() -> Path:
 
 def _twin_matches_source(twin: Path, source: Path) -> bool:
     """True when *twin* was built from the current contents of *source*."""
+    if is_parquet_table(source) and Path(twin).resolve() == Path(source).expanduser().resolve():
+        return True
     try:
         import pyarrow.parquet as pq
 
@@ -224,6 +233,8 @@ def ensure_fast_copy(
     source = Path(path).expanduser().resolve()
     if not source.is_file():
         raise DataIOError(f"{source} does not exist.")
+    if is_parquet_table(source):
+        return source
     if not fast_copies_enabled():
         return None
 
@@ -523,9 +534,11 @@ def columns(path: str | Path, *, include_pending: bool = True) -> list[str]:
     names = _file_columns(path)
     if include_pending and names:
         try:
+            from . import labels as label_store
             from . import pending_columns
 
-            names = names + [name for name in pending_columns.pending_names(path) if name not in names]
+            extra = pending_columns.pending_names(path) + label_store.pending_columns(path)
+            names = names + [name for name in dict.fromkeys(extra) if name not in names]
         except Exception as exc:
             logger.warning("Could not list pending columns for %s: %s", path, exc)
     return names
@@ -536,6 +549,10 @@ def _file_columns(path: str | Path) -> list[str]:
     source = Path(path).expanduser()
     if not source.is_file():
         return []
+    if is_parquet_table(source):
+        import pyarrow.parquet as pq
+
+        return list(pq.read_schema(source).names)
     twin = fast_copy_path(source)
     if twin.is_file() and _twin_matches_source(twin, source):
         try:
@@ -630,7 +647,9 @@ def load(
 
     twin = fast_copy_path(source)
     frame = None
-    if fast_copies_enabled():
+    if is_parquet_table(source):
+        frame = pd.read_parquet(source, columns=file_wanted)
+    elif fast_copies_enabled():
         if twin.is_file() and _twin_matches_source(twin, source):
             try:
                 frame = pd.read_parquet(twin, columns=file_wanted)

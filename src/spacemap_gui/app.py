@@ -52,6 +52,9 @@ _USER_TAB_KEY = "_spacemap_user_tab"  # The tab user is actually in
 _DRAW_MODE_KEY = "_spacemap_draw_mode"  # Skip heavy processing when drawing
 
 from spacemap_gui import terminal
+from spacemap.sharing import apply_group_umask
+
+apply_group_umask()  # shared lab projects: owner and group read and write (also when started without the launcher)
 
 
 def _log_console(message: str, level: str = "info") -> None:
@@ -398,6 +401,8 @@ active_proj = st.session_state.get("active_project")
 if active_proj:
     from spacemap_gui.persistence import sync_project_state
     sync_project_state()
+    if st.session_state.get('_studio_settings_notice'):
+        st.info(st.session_state.pop('_studio_settings_notice'))
 else:
     # Fallback to persistent state values if present, without inventing paths in repo root
     for key in PERSISTENT_DIRECTORY_KEYS:
@@ -449,10 +454,22 @@ if config_path.exists():
     except Exception as e:
         _log_console(f"Error loading config: {e}", level="error")
 
-title_column, assistant_column = st.columns([4, 1], vertical_alignment="center")
+# The top bar: the title, then SPACEMAP Studio, Image viewer and the AI Assistant in the
+# same place on every page. The first two are filled further down, once the sidebar has
+# loaded the project (the Studio link carries it).
+title_column, studio_column, viewer_column, assistant_column = st.columns(
+    [3.2, 1, 1, 1], vertical_alignment="center"
+)
+# The assistant's launcher adds a style element before its button; as layout it pushed the
+# button below the other two. Style-only st.html takes no room, and this keeps the style
+# element out of the layout so the three buttons sit level.
+st.html(
+    "<style>.st-key-spacemap-topbar-assistant [data-testid='stElementContainer']:has(style)"
+    "{display:none}</style>"
+)
 with title_column:
     st.title("SPACEMAP AI Pipeline Interface")
-with assistant_column:
+with assistant_column, st.container(key="spacemap-topbar-assistant"):
     if not ASSISTANT_ENABLED:
         # Nothing is shown here when the assistant is off, so the header stays
         # clean for users who never enable it.
@@ -480,6 +497,18 @@ with st.sidebar:
     from spacemap_gui.persistence import load_projects_index
     from spacemap_gui.tabs.tab0_project import load_project_callback
     
+    # A project opened in Studio: load it here too, saving the one open now first (as choosing it below does).
+    from spacemap_gui.viewer.ui import studio_project_choice, apply_studio_table_choice
+    apply_studio_table_choice()
+    chosen_in_studio = studio_project_choice()
+    if chosen_in_studio and str(Path(chosen_in_studio).resolve()) != str(
+        Path(st.session_state.get("active_project_root") or "/nonexistent").resolve()
+    ):
+        from spacemap_gui.tabs.tab0_project import save_project_callback
+        save_project_callback()
+        if load_project_callback(chosen_in_studio):
+            st.rerun()
+
     projects = load_projects_index()
     
     project_names = ["-- No Project Loaded --", "-- Create New Project --"]
@@ -873,7 +902,10 @@ render_workflow_guidance(active_tab)
 # One run-log switch per tab, in the same place on every page. Every action the
 # page runs is recorded (time, CPU, RAM, GPU, settings changed) while it is on.
 from spacemap_gui import run_log
+from spacemap_gui.viewer.ui import render_viewer_launcher
+
 run_log.render_switch(active_tab)
+render_viewer_launcher(active_tab, studio_area=studio_column, viewer_area=viewer_column)
 
 # Run the page
 with run_log.page_run(active_tab):

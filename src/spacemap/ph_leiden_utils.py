@@ -99,8 +99,9 @@ def apply_flexible_normalization(df, marker_cols, group_cols, suffix,
     df_proc = df[cols_to_process].copy()
 
     if not any([apply_z1, apply_z2, apply_cdf, apply_nlog]):
-        print("No normalization steps selected. Returning empty DataFrame.")
-        return pd.DataFrame(index=df.index)
+        # No transformation still needs a usable analysis matrix (including when
+        # the caller explicitly applied inverse arcsinh before this function).
+        return df[marker_cols].astype(float).rename(columns={m: m + suffix for m in marker_cols})
 
     new_col_names = [col + suffix for col in marker_cols]
 

@@ -819,6 +819,7 @@ def apply_z1_positivity(
     method_tag: str = "resolve",
     cutoff: float = DEFAULT_Z1_CUTOFF,
     cofactor: float = 5.0,
+    input_space: str = "raw",
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Call a marker positive where its Z1 score is above ``cutoff``.
 
@@ -827,6 +828,8 @@ def apply_z1_positivity(
     within each batch; values above ``cutoff`` count as positive. Z2, CDF and
     NLog are not applied because each rescales the score and would change what
     the cutoff means. The Z1 scores are returned as the tie-break scores.
+    With ``input_space='arcsinh'``, use the supplied values directly before Z1;
+    this avoids applying arcsinh twice to corrected measurements.
 
     This is a relative rule: markers carried by a large share of cells, or with a
     few extremely bright cells, tend to be under-called. Prefer image-based
@@ -837,7 +840,9 @@ def apply_z1_positivity(
     """
     markers_present = [marker for marker in markers if marker in df_main.columns]
     raw = df_main[markers_present].apply(pd.to_numeric, errors="coerce")
-    transformed = np.arcsinh(raw / float(cofactor))
+    if input_space not in {"raw", "arcsinh"}:
+        raise ValueError("Choose raw or already-arcsinh measurements.")
+    transformed = raw if input_space == "arcsinh" else np.arcsinh(raw / float(cofactor))
     group_cols = [batch_col] if batch_col and batch_col in df_main.columns else []
     norm_input = pd.concat([transformed, df_main[group_cols]], axis=1) if group_cols else transformed
     scores = apply_flexible_normalization(

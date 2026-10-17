@@ -12,6 +12,7 @@ import streamlit as st
 
 
 from spacemap.userpaths import state_dir
+from spacemap_gui.studio.settings import locked_save, locked_sync
 
 # ``current_dir`` is the installed package directory.  It is read-only in a
 # normal installation and is used here only to scan the source tree for widget
@@ -336,6 +337,9 @@ def get_default_bc_config() -> dict:
         'max_correction_distance': 10.0,
     }
 
+_HYDRATION_LOGGED: set = set()
+
+
 def log_persistence(msg: str):
     """Project-file messages (shown when SPACEMAP_APP_LOGS=1)."""
     from spacemap_gui import terminal
@@ -561,6 +565,9 @@ def load_project_config(project_root: str) -> dict:
     Checks for <project_name>.json first, then falls back to experiment.json.
     """
     project_root_path = Path(project_root)
+    if project_root_path.is_dir():
+        from spacemap.sharing import repair_in_background
+        repair_in_background(project_root_path)  # this user's files in a shared project: group read and write
     project_name = project_root_path.name
     path = project_root_path / f"{project_name}.json"
     if not path.exists():
@@ -991,8 +998,9 @@ def _warn_if_config_oversized(config: dict, path: Path) -> None:
     )
 
 
-def save_project_config(project_root: str, config: dict) -> None:
-    """Save the project config as <project_name>.json to the project root directory."""
+@locked_save
+def save_project_config(project_root: str, config: dict, *, raise_errors: bool = False) -> None:
+    """Save the project config atomically. Interactive callers can request write failures instead of log-only reporting."""
     project_root_path = Path(project_root)
     project_name = project_root_path.name
     path = project_root_path / f"{project_name}.json"
@@ -1048,6 +1056,8 @@ def save_project_config(project_root: str, config: dict) -> None:
                 st.error(message)
             except Exception:
                 pass
+            if raise_errors:
+                raise ValueError(message)
             return
         
         # One restore point per session rather than a full copy on every save.
@@ -1066,6 +1076,8 @@ def save_project_config(project_root: str, config: dict) -> None:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(json_str)
             os.replace(tmp_name, path)
+            from spacemap.sharing import share
+            share(path)  # mkstemp files are private: give the project's group access back
         except Exception:
             try:
                 os.unlink(tmp_name)
@@ -1074,6 +1086,8 @@ def save_project_config(project_root: str, config: dict) -> None:
             raise
     except Exception as e:
         log_persistence(f"Error saving project config: {e}")
+        if raise_errors:
+            raise
 
 def save_active_project_state(tab_name: str = None) -> None:
     """Saves the active project's state including all tab configurations to the project JSON file."""
@@ -1130,7 +1144,7 @@ def get_tab_affected_from_key(key: str) -> str:
         elif key in ["annot_input_dirs", "annot_image_dir", "annot_output_dir", "zone_input_dir", "zone_output_dir", "cell_seg_dir", "cell_zone_dir", "cell_out_dir", "vis_csv_dir", "vis_img_dir",
                      "annot_ta_input_dir", "annot_ta_output_dir", "annot_ta_pool_input_dir", "annot_ta_pool_output_dir"]:
             return "Annotation"
-        elif key in ["bc_input_dir", "bc_output_dir"]:
+        elif key in ["bc_images_dir", "bc_input_dir", "bc_output_dir"]:
             return "Batch Correction"
         elif key in ["scimap_bc_dir", "global_pheno_dir", "phenotyping_output_dir", "viz_roi_dir", "viz_seg_dir"]:
             return "Phenotyping"
@@ -1352,7 +1366,9 @@ def get_all_system_defaults(project_root_str: str) -> dict:
         "tab4_tile_size": 2048,
         "tab4_tile_overlap": 0.1,
         "tab4_cellpose_internal_tile_size": 224,
-        "tab4_cellpose_batch_size": 1,
+        "tab4_cellpose_batch_size": 8,
+        "tab4_cellpose_batch_auto": True,
+        "tab4_gpu_device": 0,
         "tab4_adaptive_gpu_memory": True,
         "tab4_min_cellpose_internal_tile_size": 128,
         "tab4_min_tissue_fraction": 0.002,
@@ -2029,6 +2045,7 @@ def is_logging_switch(key) -> bool:
     return isinstance(key, str) and key.endswith(("_create_log", "_process_log_enabled"))
 
 
+@locked_sync
 def sync_project_state() -> None:
     """Centralized State Sync Manager to keep st.session_state aligned with the active project's config.
     Ensures that loaded project settings override defaults and are restored when Streamlit deletes them.
@@ -2041,6 +2058,14 @@ def sync_project_state() -> None:
     project_root = st.session_state.get("active_project_root")
     if not project_root:
         return
+    # Studio writes these same keys. Pull external changes before comparing
+    # widgets, preserving any local value the user has already changed.
+    if not st.session_state.get('_project_just_hydrated', False):
+        from spacemap_gui.studio.settings import pull_into_classic
+        try:
+            pull_into_classic(project_root, config, st.session_state)
+        except (OSError, ValueError):
+            pass  # normal project loading reports unreadable settings
         
     from spacemap_gui.tabs.tab0_project import DIRECTORY_KEYS
     
@@ -2140,7 +2165,11 @@ def sync_project_state() -> None:
                 st.session_state[k] = True
 
         st.session_state["_project_just_hydrated"] = False
-        log_persistence("Forced initial configuration state sync (hydration) and bypassed change detection.")
+        # Once per project: every browser tab that reconnects loads the project again, and the same line four times
+        # in the terminal only looked like a fault.
+        if str(project_root) not in _HYDRATION_LOGGED:
+            _HYDRATION_LOGGED.add(str(project_root))
+            log_persistence("Project settings loaded into the page (later tabs load them silently).")
         if pruned_transient_keys or threshold_mapping_migrated:
             config["updated_at"] = datetime.now().isoformat()
             save_project_config(project_root, config)
@@ -2490,7 +2519,8 @@ def hydrate_project_state(config: dict, project_root: str) -> None:
                    "global_content_font_size", "global_tab_align", "global_cmap", 
                    "global_thumb_scale", "global_theme_mode", "active_project", 
                    "active_project_root", "active_project_name", "_spacemap_loaded_top_tabs",
-                   "_force_sidebar_proj_sync", "_global_sidebar_proj"]:
+                   "_force_sidebar_proj_sync", "_global_sidebar_proj",
+                   "_viewer_session"]:  # the open Studio window stays linked to this page
             # Note: the global_pheno/spatial/visualization dir+file keys used to be
             # preserved here. That is exactly what made a newly loaded project open
             # on the previous project's unified CSV, so they are now cleared and

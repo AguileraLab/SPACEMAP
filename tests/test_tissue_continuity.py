@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
-from shapely.geometry import MultiPolygon, Polygon, box, mapping
+from shapely.geometry import MultiPolygon, Point, Polygon, box, mapping
 
 SRC = Path(__file__).resolve().parents[1] / "src" / "spacemap"
 
@@ -140,6 +140,28 @@ def test_find_necks_reports_every_neck_in_a_chain():
     assert len(necks) == 2
     for neck in necks:
         assert neck["bridge_width_um"] == pytest.approx(50 * MPP, abs=4.0)
+
+
+def test_raster_reports_equal_width_necks_as_independent_cuts():
+    from shapely.ops import unary_union
+    chain = unary_union([box(10, 40, 115, 320), box(145, 40, 250, 320), box(280, 40, 385, 320),
+                         box(110, 140, 150, 160), box(245, 220, 285, 240)])
+    necks, original = continuity.find_necks_raster(chain, 1., max_width_um=30., min_lobe_area_mm2=.001)
+    assert len(necks) == 2 and original == [chain]
+    cuts = [n['cut_geometry'] for n in necks]
+    assert not cuts[0].intersects(cuts[1])
+    for neck in necks:
+        assert len(continuity.split_pieces(chain.difference(neck['cut_geometry']))) == 2
+        assert neck['marker'].distance(Point(neck['x'], neck['y'])) < 1
+    assert len(continuity.split_pieces(chain.difference(unary_union(cuts)))) == 3
+
+
+def test_raster_keeps_parallel_strands_of_the_same_neck_together():
+    from shapely.ops import unary_union
+    ring = unary_union([box(0, 0, 3000, 300), box(0, 900, 3000, 1200),
+                        box(0, 300, 120, 900), box(2880, 300, 3000, 900)])
+    necks, _ = continuity.find_necks_raster(ring, MPP, max_width_um=100.)
+    assert len(necks) == 1 and necks[0]['n_strands'] == 2 and necks[0]['separated']
 
 
 def test_find_necks_detects_sections_held_together_by_two_strands():

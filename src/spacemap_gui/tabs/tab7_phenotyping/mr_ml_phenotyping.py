@@ -458,8 +458,7 @@ def render_mr_ml(project_root: Path, global_input_path: str | None) -> None:
     if full_input_path and os.path.exists(full_input_path):
         st.caption(f"Active File: {os.path.basename(full_input_path)}")
         try:
-            df_head = pd.read_csv(full_input_path, nrows=5)
-            available_columns = list(df_head.columns)
+            available_columns = _dataio.columns(full_input_path)
         except Exception:
             available_columns = []
 
@@ -471,7 +470,7 @@ def render_mr_ml(project_root: Path, global_input_path: str | None) -> None:
     all_marker_candidates = []
     if full_input_path and os.path.exists(full_input_path):
         try:
-            df_head = pd.read_csv(full_input_path, nrows=1)
+            df_head = pd.DataFrame(columns=_dataio.columns(full_input_path))
             all_marker_candidates = get_marker_list(df_head)
         except Exception:
             all_marker_candidates = []
@@ -581,12 +580,15 @@ def render_mr_ml(project_root: Path, global_input_path: str | None) -> None:
         and not _looks_like_annotation_metadata(column)
     ]
     reference_candidates = _ordered_reference_columns(available_columns)
+    reference_candidates += [column for column in phenotyping_candidates
+                             if column not in reference_candidates
+                             and not column.endswith(("_confidence", "_score"))]
     if phenotyping_candidates:
         st.caption(f"Detected phenotype columns: {', '.join(phenotyping_candidates)}")
     if available_columns and not reference_candidates:
         st.warning(
-            "No manual-reference label columns were detected in the selected CSV. "
-            "Select the enriched/merged table containing phenotype_ref1a and phenotype_ref1b."
+            "No phenotype label columns were detected in the selected table. "
+            "Choose a table containing your reference labels, such as phenotype_ref1."
         )
 
     output_dir = str(project_root / "outputs/phenotyping/ML_MR")
@@ -677,8 +679,9 @@ def render_mr_ml(project_root: Path, global_input_path: str | None) -> None:
                 value=st.session_state["mrml_config"].get("confidence_col", "ml_mr_confidence"),
                 key="mrml_confidence_col",
                 help=(
-                    "Column that stores the winning phenotype's fraction of the accumulated model-plus-method support. "
-                    "It is useful for ranking uncertainty but is not a calibrated probability."
+                    "Model support from 0 to 1; additional methods contribute votes when selected. "
+                    "In reference-only mode, retained reference labels have blank scores. "
+                    "This ranks uncertainty; it is not a calibrated probability."
                 ),
             )
             st.markdown("**Refined Phenotype Output**")
@@ -780,7 +783,8 @@ def render_mr_ml(project_root: Path, global_input_path: str | None) -> None:
                 help=get_filter_value_help_text(),
             )
 
-        st.markdown("**Phenotyping Methods (phenotype_*)**")
+        st.markdown("**Additional phenotyping methods (optional)**")
+        st.caption("Leave empty to learn from one reference column and predict the remaining cells. Known reference labels are kept; their scores are blank.")
         method_defaults = st.session_state["mrml_config"]["phenotyping_methods"]
         _mrml_options = [
             column
@@ -790,8 +794,6 @@ def render_mr_ml(project_root: Path, global_input_path: str | None) -> None:
             and not column.startswith("phenotype_ml_")
             and column not in {ground_truth_col, validation_ground_truth_col, output_phenotype_col}
         ]
-        if not method_defaults and _mrml_options:
-            method_defaults = _mrml_options
         _mrml_safe_defaults = [m for m in method_defaults if m in _mrml_options]
         phenotyping_methods = st.multiselect(
             "Methods to integrate",
@@ -881,12 +883,17 @@ def render_mr_ml(project_root: Path, global_input_path: str | None) -> None:
         )
 
         st.markdown("**Feature Configuration**")
-        morph_cols = st.text_input(
-            "Morphology Columns (comma-separated)",
-            value=", ".join(st.session_state["mrml_config"]["morphology_cols"]),
-            key="mrml_morph_cols",
+        morphology_options = [column for column in available_columns
+                              if column not in confirmed_markers
+                              and column not in {"cell_id", "label", "batch_id", ground_truth_col, validation_ground_truth_col}
+                              and not column.startswith("phenotype_")]
+        morph_cols = st.multiselect(
+            "Morphology and other numeric measurements",
+            options=morphology_options,
+            default=[column for column in st.session_state["mrml_config"]["morphology_cols"] if column in morphology_options],
+            key="mrml_morphology_selection",
             help=(
-                "Optional numeric morphology features appended to the marker features. Missing column names are ignored. With z-normalization enabled, supported morphology features are normalized using the same batch column."
+                "Optional numeric measurements such as area and eccentricity, used alongside markers. Selected features must be numeric. Cells missing these measurements are left without predictions."
             ),
         )
         comp_cols = st.text_input(
@@ -909,7 +916,7 @@ def render_mr_ml(project_root: Path, global_input_path: str | None) -> None:
         )
         w_morph = w2.number_input(
             "Morphology Weight",
-            value=float(feature_weights.get("morphology", 0.0)),
+            value=float(feature_weights.get("morphology", 1.0)) if st.session_state["mrml_config"]["morphology_cols"] else 1.0,
             step=0.1,
             key="mrml_w_morph",
             help="Feature-block multiplier. Set to `0` to exclude morphology; positive values should not be interpreted as learned importance.",
@@ -921,6 +928,8 @@ def render_mr_ml(project_root: Path, global_input_path: str | None) -> None:
             key="mrml_w_comp",
             help="Feature-block multiplier. Set to `0` to exclude compartments; positive values should not be interpreted as learned importance.",
         )
+        if morph_cols and w_morph == 0:
+            st.caption("Morphology weight is 0: increase it to include the selected measurements.")
 
         st.markdown("**Model Parameters**")
         t1, t2, t3 = st.columns(3)
@@ -1022,7 +1031,7 @@ def render_mr_ml(project_root: Path, global_input_path: str | None) -> None:
                     "filter_val": filter_val,
                     "phenotyping_methods": phenotyping_methods,
                     "exclude_phenotypes": exclude_phenotypes,
-                    "morphology_cols": [c.strip() for c in morph_cols.split(",") if c.strip()],
+                    "morphology_cols": morph_cols,
                     "compartment_cols": [c.strip() for c in comp_cols.split(",") if c.strip()],
                     "feature_weights": {"markers": w_markers, "morphology": w_morph, "compartments": w_comp},
                     "test_size": test_size,
@@ -1065,9 +1074,6 @@ def render_mr_ml(project_root: Path, global_input_path: str | None) -> None:
             return
 
         cfg = st.session_state["mrml_config"]
-        if not cfg.get("phenotyping_methods"):
-            st.error("Select at least one automated phenotyping method to integrate.")
-            return
         _log_console(f"ML method: {cfg.get('ml_method', 'random_forest')}")
         _log_console(f"Training reference: {cfg.get('ground_truth_col', 'N/A')}")
         _log_console(f"Validation reference: {cfg.get('validation_ground_truth_col') or 'internal split'}")
@@ -1157,7 +1163,7 @@ def render_mr_ml(project_root: Path, global_input_path: str | None) -> None:
         def _usable_reference_mask_frame(frame: pd.DataFrame, column: str) -> pd.Series:
             values = frame[column].astype("string").str.strip()
             return frame[column].notna() & ~values.str.lower().isin(
-                {"", "unclassified", "unknown", "nan", "none"}
+                {"", "unclassified", "unassigned", "unknown", "nan", "none"}
                 | excluded_normalized
             )
 

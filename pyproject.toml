@@ -1,7 +1,7 @@
 [project]
 name = "spacemap-ai"
-version = "0.3.0"
-description = "SPACEMAP: a spatial multiplex imaging pipeline with an optional local-first AI assistant"
+version = "0.4.0"
+description = "SPACEMAP Studio: an interactive spatial multiplex imaging pipeline with optional AI assistance"
 readme = "README.md"
 requires-python = ">=3.10,<3.11"
 license = { file = "LICENSE" }
@@ -86,7 +86,8 @@ dependencies = [
     "seaborn>=0.12.0",
     "plotly>=5.15.0",
     # GUI
-    "streamlit>=1.52.1",
+    # 1.58 adds st.App, which serves the image viewer's routes on the GUI's own port.
+    "streamlit>=1.58",
     # 0.10 and later are rewrites that fail to import with current Streamlit and
     # that Tab 3's canvas patch (ui_utils.patch_canvas_image_to_url) does not fit.
     "streamlit-drawable-canvas>=0.9.3,<0.10",

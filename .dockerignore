@@ -15,6 +15,16 @@ assistant_data
 docker-projects
 test_codes
 *.log
+.env
+.env.*
+.streamlit/secrets.toml
+.aws
+.ssh
+.codex
+.agents
+*.pem
+*.key
+release-artifacts
 
 **/node_modules
 project

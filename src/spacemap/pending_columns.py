@@ -158,16 +158,18 @@ def save(
     *anchor_values* are the table's cell IDs in table order; they are what lets a
     pending column be re-applied if the table is rewritten before it is written.
     """
-    source = Path(table_path).expanduser()
-    if not source.is_file():
-        raise PendingColumnsError(f"{source} does not exist.")
-    if has_stale(source):
-        raise PendingColumnsError(
-            "Earlier saved changes for this table no longer match it (the CSV was rewritten). "
-            "Re-apply them by cell ID or discard them before saving new ones."
-        )
-    return _store(source, columns, anchor_column=anchor_column, anchor_values=anchor_values,
-                  source_note=source_note)
+    from . import labels
+    with labels.write_lock(table_path):
+        source = Path(table_path).expanduser()
+        if not source.is_file():
+            raise PendingColumnsError(f"{source} does not exist.")
+        if has_stale(source):
+            raise PendingColumnsError(
+                "Earlier saved changes for this table no longer match it (the CSV was rewritten). "
+                "Re-apply them by cell ID or discard them before saving new ones."
+            )
+        return _store(source, columns, anchor_column=anchor_column, anchor_values=anchor_values,
+                      source_note=source_note)
 
 
 def _store(
@@ -310,6 +312,15 @@ def discard(table_path: str | Path, columns: Sequence[str] | None = None) -> int
 
 def commit(table_path: str | Path, *, progress: Callable[[str], None] | None = None,
            rebuild_fast_copy: bool = True) -> dict[str, Any]:
+    """Write saved changes without racing a viewer label save."""
+    from . import labels
+
+    with labels.write_lock(table_path):
+        return _commit(table_path, progress=progress, rebuild_fast_copy=rebuild_fast_copy)
+
+
+def _commit(table_path: str | Path, *, progress: Callable[[str], None] | None = None,
+            rebuild_fast_copy: bool = True) -> dict[str, Any]:
     """Write pending columns and pending labels into the CSV in one pass.
 
     The CSV is replaced atomically, so an interrupted write leaves the old CSV
@@ -345,10 +356,14 @@ def commit(table_path: str | Path, *, progress: Callable[[str], None] | None = N
         say(f"Adding {report['labels']} saved label(s) in {', '.join(label_columns)}")
         frame = labels.apply_to(frame, source, columns=label_columns)
 
-    say("Writing the CSV (the slow part)...")
+    parquet = dataio.is_parquet_table(source)  # a table Studio saved: it stays Parquet
+    say("Writing the table..." if parquet else "Writing the CSV (the slow part)...")
     temporary = source.with_name(f".{source.name}.{os.getpid()}.tmp")
     try:
-        frame.to_csv(temporary, index=False)
+        if parquet:
+            frame.to_parquet(temporary, index=False)
+        else:
+            frame.to_csv(temporary, index=False)
         os.replace(temporary, source)
     except Exception as exc:
         Path(temporary).unlink(missing_ok=True)

@@ -719,6 +719,7 @@ def render_scimap(project_root: Path, global_input_path: str | None) -> None:
         )
         st.session_state["scimap_config"] = {
             "threshold_mode": _default_mode,
+            "threshold_percentile": cached_params.get("threshold_percentile",95), "threshold_manual": cached_params.get("threshold_manual",0),
             "threshold_statistic": notebook_config.get("threshold_statistic", "median"),
             "gate_value": notebook_config.get("gate_value", 0.5),
             "batch_col": cached_params.get("batch_col", notebook_config.get("batch_col", "batch_id")),
@@ -733,7 +734,9 @@ def render_scimap(project_root: Path, global_input_path: str | None) -> None:
             cfg_col1, cfg_col2 = st.columns([1, 1])
             with cfg_col1:
                 _scimap_mode_choices = ["None (No Thresholds)"] + THRESHOLD_MODE_CHOICES
+                from spacemap.thresholding_engine import METHOD_ALIASES
                 current_mode = st.session_state["scimap_config"].get("threshold_mode", "Predefined (CSV)")
+                current_mode = METHOD_ALIASES.get(current_mode,current_mode)
                 _mode_idx = _scimap_mode_choices.index(current_mode) if current_mode in _scimap_mode_choices else 1
                 threshold_mode = st.selectbox(
                     "Threshold Method",
@@ -751,11 +754,14 @@ def render_scimap(project_root: Path, global_input_path: str | None) -> None:
                         "**Triangle**: works well for skewed one-sided histograms.\n\n"
                         "**Li**: minimum cross-entropy iterative threshold.\n\n"
                         "**Yen**: maximum entropy threshold.\n\n"
-                        "**Mean**: uses the mean of positive values.\n\n"
+                        "**Mean**: uses the shared ImageJ intensity histogram mean.\n\n"
                         "**IsoData**: Ridler-Calvard iterative threshold.\n\n"
                         "**Minimum**: smooths toward a bimodal histogram and picks the valley."
                     ),
                 )
+                threshold_percentile = st.number_input("Percentile", min_value=0.0, max_value=100.0,
+                    value=float(st.session_state["scimap_config"].get("threshold_percentile",95)),key="scimap_threshold_percentile")
+                threshold_manual = st.number_input("Manual cutoff",value=float(st.session_state["scimap_config"].get("threshold_manual",0)),key="scimap_threshold_manual")
                 threshold_stat = st.selectbox(
                     "Threshold Statistic (Predefined CSV only)",
                     ["median", "mean", "min"],
@@ -812,6 +818,7 @@ def render_scimap(project_root: Path, global_input_path: str | None) -> None:
                 st.session_state["scimap_config"].update(
                     {
                         "threshold_mode": threshold_mode,
+                        "threshold_percentile": threshold_percentile, "threshold_manual": threshold_manual,
                         "threshold_statistic": threshold_stat,
                         "gate_value": gate_value,
                         "log1p": log1p,
@@ -820,6 +827,7 @@ def render_scimap(project_root: Path, global_input_path: str | None) -> None:
                     }
                 )
                 params_to_save = {
+                    "threshold_percentile": threshold_percentile, "threshold_manual": threshold_manual,
                     "batch_col": st.session_state["scimap_config"]["batch_col"],
                     "cell_id_col": st.session_state["scimap_config"]["cell_id_col"],
                     "output_col": st.session_state["scimap_config"]["output_col"],
@@ -1097,6 +1105,7 @@ def render_scimap(project_root: Path, global_input_path: str | None) -> None:
                     markers=selected_markers,
                     method_name=_mode_key,
                     batch_col=batch_col if batch_col in df_tmp.columns else None,
+                    params={"percentile":st.session_state["scimap_config"].get("threshold_percentile",95), "manual":st.session_state["scimap_config"].get("threshold_manual",0)},
                 )
                 if not auto_table.empty:
                     st.session_state["scimap_threshold_table_draft"] = auto_table
@@ -1472,8 +1481,8 @@ def render_scimap(project_root: Path, global_input_path: str | None) -> None:
                                 _log_console(f"Batch {batch_id}: Computing {run_mode} on-the-fly")
                                 for m in markers_present:
                                     if m in batch_df.columns:
-                                        val = auto_func(batch_df[m].values)
-                                        if val > 0:
+                                        val = auto_func(batch_df[m].values, params={"percentile":cfg.get("threshold_percentile",95),"manual":cfg.get("threshold_manual",0)})
+                                        if np.isfinite(val):
                                             thresholds[m] = val
                                 _log_console(f"Batch {batch_id}: Auto-computed {len(thresholds)} thresholds")
 

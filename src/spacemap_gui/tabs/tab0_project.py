@@ -45,7 +45,7 @@ DIRECTORY_KEYS = [
     # Cell Annotation & Visualization
     "cell_seg_dir", "cell_zone_dir", "cell_out_dir", "vis_csv_dir", "vis_img_dir",
     # Batch Correction
-    "bc_input_dir", "bc_output_dir",
+    "bc_images_dir", "bc_input_dir", "bc_output_dir",
     # Phenotyping
     "scimap_bc_dir", "global_pheno_dir", "phenotyping_output_dir", "viz_roi_dir", "viz_seg_dir",
     # Spatial Analysis
@@ -212,7 +212,8 @@ def unload_project_callback():
     for key in list(st.session_state.keys()):
         if key in ["global_accent_color", "global_border_radius", "global_tab_font_size", 
                    "global_content_font_size", "global_tab_align", "global_cmap", 
-                   "global_thumb_scale", "global_theme_mode", "_force_sidebar_proj_sync"]:
+                   "global_thumb_scale", "global_theme_mode", "_force_sidebar_proj_sync",
+                   "_viewer_session"]:  # the open Studio window stays linked to this page
             continue
         del st.session_state[key]
 
@@ -1109,7 +1110,7 @@ def render():
                     "Unified CSV Filename (Shared across Phenotyping, Spatial, Visualization)", 
                     value=st.session_state.get("proj_unified_csv_filename", ""), 
                     key="proj_unified_csv_filename",
-                    help="Filename of the unified CSV, e.g., 'INNATE.csv'. This will be automatically selected in Tabs 7, 8, and 9."
+                    help="Name of the combined cell table, for example cells.csv. Used by phenotyping, spatial analysis and figures."
                 )
                 if unified_csv:
                     st.session_state["global_pheno_file"] = unified_csv

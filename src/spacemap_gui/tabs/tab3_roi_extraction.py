@@ -496,6 +496,8 @@ def render_single_image(project_root):
             else:
                 geojson_path = None
                 geojson_matches_image = False
+
+            _render_roi_viewer_button(file_path, geojson_dir_path, geojson_path if geojson_matches_image else None)
                 
             st.markdown("### Parameters")
             mpp_val = st.number_input(
@@ -579,6 +581,7 @@ def render_single_image(project_root):
 
             # Channel Table
             with st.expander("Edit Channels & Visibility", expanded=True):
+                _render_viewer_marker_import(file_path, channels)
                 # Header
                 c_exp, c_show, c_name, c_hex, c_color, c_dye = st.columns([0.7, 0.7, 3, 2, 1, 1.5])
                 c_exp.markdown("**Export**")
@@ -1618,6 +1621,80 @@ def _friendly_shape_type(obj: dict[str, Any]) -> str:
     if raw == "rect":
         return "Rectangle"
     return str(raw).capitalize() if raw else "?"
+
+
+def _roi_file_for(file_path: Path, geojson_dir_path: Path, matching: Path | None) -> Path:
+    """The ROI GeoJSON Extract ROIs reads for this image: the matching file, or the standard name."""
+    if matching is not None:
+        return Path(matching)
+    stem = normalize_image_stem(file_path)
+    if stem.endswith('_merged'):
+        stem = stem[:-7]
+    return Path(geojson_dir_path) / f"{stem}_roi_bounding_boxes_coords.geojson"
+
+
+def _render_roi_viewer_button(file_path: Path, geojson_dir_path: Path, matching: Path | None) -> None:
+    """Draw and name ROIs on the full-resolution image; they are saved straight into the ROI file."""
+    from spacemap.viewer import shapes
+    from spacemap.viewer.sources import image_info, is_viewable
+    from spacemap_gui.viewer import ui as viewer_ui
+
+    if not is_viewable(file_path):
+        return
+    target = _roi_file_for(file_path, geojson_dir_path, matching)
+    try:
+        count = len(shapes.load(target))
+    except Exception:
+        count = 0
+    left, right = st.columns([1, 2])
+    right.caption(
+        f"{count} ROI(s) in `{target.name}`. In the viewer, draw rectangles, polygons or freehand shapes on the "
+        "full-resolution image and name them; they are saved into this file as you draw, and **Extract ROIs** "
+        "uses them. A new file appears in the list above after your next click on this page."
+    )
+    if left.button("Draw ROIs in the image viewer", key="tab3_viewer_draw_btn",
+                   help="Opens the image at full resolution with its ROIs. Each ROI's name becomes the name of "
+                        "the extracted image."):
+        info = image_info(file_path)
+        channels = [{"index": i, "color": st.session_state.get(f"roi_color_{i}"),
+                     "visible": bool(st.session_state.get('roi_visible', {}).get(i, False))}
+                    for i in range(len(info.channel_names)) if st.session_state.get(f"roi_color_{i}")]
+        layers = [viewer_ui.image_layer(str(file_path), channels=channels or viewer_ui.default_channels(info.channel_names))]
+        he = viewer_ui.he_overlay(str(file_path), info.channel_names)
+        if he:
+            layers.append(he)
+        sources = [(f"{p.parent.name} / {p.name}", str(p)) for p in sorted(Path(geojson_dir_path).glob("*.geojson"))
+                   if p.resolve() != target.resolve()][:60]
+        layers.append(viewer_ui.shapes_layer(target, str(file_path), name="ROIs", layer_id="rois", sources=sources,
+                                             classes=[{"name": "ROI", "color": "#ffd600"}], default_class="ROI"))
+        log_tab3(f"Opened the image viewer to draw ROIs into {target.name}")
+        viewer_ui.open_viewer(f"Draw ROIs on {Path(file_path).name}", layers)
+
+
+def _render_viewer_marker_import(file_path: Path, channels: list) -> None:
+    """Take marker names and colours set in the image viewer into the table below."""
+    from spacemap.viewer import display
+    from spacemap_gui.viewer import ui as viewer_ui
+
+    settings_path = viewer_ui.display_settings_path(str(file_path))
+    if settings_path is None or not settings_path.is_file():
+        return
+    saved = {c["index"]: c for c in display.load(settings_path)["channels"]}
+    if not st.button("Use names and colours from the image viewer", key="tab3_viewer_markers_btn",
+                     help="Markers renamed or recoloured in the image viewer get those names and colours here, "
+                          "and so in the extracted ROI images."):
+        return
+    changed = 0
+    for i, name in enumerate(channels):
+        entry = saved.get(i)
+        if not entry or entry["name"] != name:
+            continue
+        st.session_state[f"roi_name_{i}"] = entry["label"]
+        st.session_state[f"roi_color_{i}"] = entry["color"]
+        st.session_state[f"roi_cp_{i}"] = entry["color"]
+        changed += 1
+    log_tab3(f"Took names and colours of {changed} marker(s) from the image viewer")
+    st.success(f"Took names and colours of {changed} marker(s) from the image viewer.")
 
 
 def _unset_colour(saved, image_colour) -> bool:

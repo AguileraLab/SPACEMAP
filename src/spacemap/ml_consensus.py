@@ -29,6 +29,8 @@ Design goals:
 from __future__ import annotations
 
 import os
+import json
+import time
 import warnings
 from pathlib import Path
 from dataclasses import dataclass
@@ -52,6 +54,7 @@ from sklearn.metrics import (
     f1_score,
     precision_recall_fscore_support,
 )
+from spacemap.consensus_execution import GPUForest, operation_progress
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -199,6 +202,11 @@ class ConsensusConfig:
     analysis_filter_value: object = None  # Exact value selected by string representation
     drop_invalid_marker_rows: bool = True  # Exclude rows with missing/infinite selected markers
     rescue_unreachable_classes: bool = True  # Admit (min_consensus-1) plurality cells for phenotypes that never reach consensus, which would otherwise be unpredictable
+    cpu_workers: int = -1  # Classic/notebook default: sklearn's allocation; Studio resolves its own budget
+    execution_backend: str = "cpu"  # Explicit native cuML opt-in; no hidden accelerator
+    gpu_bins: int = 256
+    log_to_stdout: bool = True  # Studio's progress callback already writes the terminal log
+    progress_interval: Optional[float] = None  # Optional heartbeat; Studio and Classic report stage boundaries only
 
 
 # =============================================================================
@@ -299,6 +307,7 @@ def augment_unreachable_classes(
     training_mask: np.ndarray,
     min_consensus: int,
     notify=None,
+    eligible_mask=None,
 ) -> Tuple[np.ndarray, pd.Series, Dict[str, int]]:
     """Admit plurality-labelled cells for phenotypes that never reach consensus.
 
@@ -326,6 +335,8 @@ def augment_unreachable_classes(
 
     # Only near-misses qualify, and only for otherwise-absent phenotypes.
     near_miss = (counts >= (min_consensus - 1)) & plurality.notna() & ~mask
+    if eligible_mask is not None:
+        near_miss &= np.asarray(eligible_mask, dtype=bool)
     candidates = plurality.where(near_miss)
     missing = [
         str(label)
@@ -533,7 +544,8 @@ def _balanced_fit_kwargs(model, y_encoded):
     return {}
 
 
-def _create_classifier(ml_method: str, n_estimators: int, random_state: int):
+def _create_classifier(ml_method: str, n_estimators: int, random_state: int,
+                       *, cpu_workers=-1, execution_backend="cpu", gpu_bins=256):
     """Create a classifier instance based on the selected ML method.
 
     Parameters
@@ -550,6 +562,12 @@ def _create_classifier(ml_method: str, n_estimators: int, random_state: int):
     sklearn estimator
         A fitted-ready classifier instance.
     """
+    if execution_backend == "gpu":
+        if ml_method != "random_forest":
+            raise ValueError("GPU execution is available for Random Forest only.")
+        return GPUForest(n_estimators, random_state, gpu_bins)
+    if execution_backend != "cpu":
+        raise ValueError("Resolve the execution backend before creating a classifier.")
     if ml_method == "gradient_boosting":
         return GradientBoostingClassifier(
             n_estimators=min(n_estimators, 500),  # GB is slower; cap at 500
@@ -571,7 +589,7 @@ def _create_classifier(ml_method: str, n_estimators: int, random_state: int):
         return RandomForestClassifier(
             n_estimators=n_estimators,
             random_state=random_state,
-            n_jobs=-1,
+            n_jobs=cpu_workers,
             class_weight="balanced",
         )
 
@@ -587,6 +605,7 @@ def train_and_validate(
     n_estimators: int,
     random_state: int,
     ml_method: str = "random_forest",
+    *, cpu_workers=-1, execution_backend="cpu", gpu_bins=256, notify=None, progress_interval=None,
 ) -> Tuple:
     """Train a classifier with train/validation split and return model & validation metrics.
 
@@ -607,11 +626,16 @@ def train_and_validate(
     X_val_scaled = scaler.transform(X_val)
 
     method_display = ML_METHOD_OPTIONS.get(ml_method, ml_method)
-    print(f"  Training classifier: {method_display}")
-    model = _create_classifier(ml_method, n_estimators, random_state)
-    model.fit(X_train_scaled, y_train, **_balanced_fit_kwargs(model, y_train))
+    model = _create_classifier(ml_method, n_estimators, random_state, cpu_workers=cpu_workers,
+                               execution_backend=execution_backend, gpu_bins=gpu_bins)
+    description = f"Validation fit: {len(X_train):,} cells · {method_display}"
+    if ml_method != "svm":
+        description += f" · {model.n_estimators:,} trees"
+    with operation_progress(notify, description, interval=progress_interval):
+        model.fit(X_train_scaled, y_train, **_balanced_fit_kwargs(model, y_train))
 
-    y_val_pred = model.predict(X_val_scaled)
+    with operation_progress(notify, f"Validating {len(X_val):,} held-out cells", interval=progress_interval):
+        y_val_pred = model.predict(X_val_scaled)
     val_accuracy = accuracy_score(y_val, y_val_pred)
 
     report = classification_report(
@@ -644,12 +668,18 @@ def train_final_model(
     n_estimators: int,
     random_state: int,
     ml_method: str = "random_forest",
+    *, cpu_workers=-1, execution_backend="cpu", gpu_bins=256, notify=None, progress_interval=None,
 ):
     """Train final model on all consensus samples (fit scaler already used)."""
     y_encoded = label_encoder.transform(y_all)
     X_scaled = scaler.transform(X_all)  # Use the already-fitted scaler, do not refit
-    model = _create_classifier(ml_method, n_estimators, random_state)
-    model.fit(X_scaled, y_encoded, **_balanced_fit_kwargs(model, y_encoded))
+    model = _create_classifier(ml_method, n_estimators, random_state, cpu_workers=cpu_workers,
+                               execution_backend=execution_backend, gpu_bins=gpu_bins)
+    description = f"Final fit: {len(X_all):,} cells · {ML_METHOD_OPTIONS.get(ml_method, ml_method)}"
+    if ml_method != "svm":
+        description += f" · {model.n_estimators:,} trees"
+    with operation_progress(notify, description, interval=progress_interval):
+        model.fit(X_scaled, y_encoded, **_balanced_fit_kwargs(model, y_encoded))
     return model
 
 
@@ -666,9 +696,12 @@ def predict_non_consensus(
     if X_non_consensus.empty:
         return np.array([], dtype=object), np.array([], dtype=float)
     X_scaled = scaler.transform(X_non_consensus)
-    pred_encoded = model.predict(X_scaled)
-    pred_labels = label_encoder.inverse_transform(pred_encoded)
     pred_proba = model.predict_proba(X_scaled)
+    # RF.predict already calls predict_proba. One traversal supplies both
+    # outputs. Keep SVM's independent decision function / probability semantics.
+    pred_encoded = (model.classes_.take(pred_proba.argmax(axis=1))
+                    if isinstance(model, (RandomForestClassifier, GPUForest)) else model.predict(X_scaled))
+    pred_labels = label_encoder.inverse_transform(pred_encoded)
     max_conf = pred_proba.max(axis=1)
     return pred_labels, max_conf
 
@@ -915,7 +948,8 @@ def run_ml_consensus_analysis(
     def _notify(msg: str) -> None:
         """Print to terminal AND optionally to UI callback."""
         stamped = f"[{_ts()}] {msg}"
-        print(stamped, flush=True)
+        if config.log_to_stdout:
+            print(stamped, flush=True)
         if progress_callback:
             try:
                 progress_callback(stamped)
@@ -927,6 +961,12 @@ def run_ml_consensus_analysis(
     _notify("=" * 70)
 
     os.makedirs(config.output_dir, exist_ok=True)
+    execution = {"backend": config.execution_backend, "cpu_workers": config.cpu_workers,
+                 "gpu_bins": config.gpu_bins, "trees": config.n_estimators,
+                 "random_state": config.random_state, "stage_seconds": {}}
+    def record_stage(name, started):
+        execution["stage_seconds"][name] = round(time.monotonic() - started, 3)
+        (config.output_dir / "execution.json").write_text(json.dumps(execution, indent=2))
 
     # Load data (skip if caller already provided a DataFrame)
     if preloaded_df is not None:
@@ -1125,11 +1165,13 @@ def run_ml_consensus_analysis(
             training_consensus_mask,
             config.min_consensus_methods,
             notify=_notify,
+            eligible_mask=~external_validation_mask,
         )
     else:
         y_consensus = df_cons.loc[training_consensus_mask, "consensus_phenotype"].astype(str)
 
     X_consensus = feature_df.loc[training_consensus_mask]
+    n_training_consensus = int(training_consensus_mask.sum())
     X_non_consensus = feature_df.loc[non_consensus_mask]
     if y_consensus.nunique() < 2:
         _notify("[ERROR] Permitted consensus training cells contain fewer than two phenotype classes.")
@@ -1147,6 +1189,11 @@ def run_ml_consensus_analysis(
     ml_method = config.ml_method
     method_display = ML_METHOD_OPTIONS.get(ml_method, ml_method)
     _notify(f"  ML method: {method_display}")
+    _notify(f"  Execution: {config.execution_backend.upper()} · CPU workers {config.cpu_workers}")
+    execution.update(training_cells=len(X_consensus), features=len(feature_cols),
+                     validation_reference=config.validation_ground_truth_column)
+    model_options = dict(cpu_workers=config.cpu_workers, execution_backend=config.execution_backend,
+                         gpu_bins=config.gpu_bins, notify=_notify, progress_interval=config.progress_interval)
     if config.validation_ground_truth_column:
         label_encoder = LabelEncoder()
         label_encoder.fit(y_consensus)
@@ -1158,24 +1205,30 @@ def run_ml_consensus_analysis(
             f"'{config.validation_ground_truth_column}'."
         )
     else:
+        started = time.monotonic()
         try:
-            _, metrics, y_val, y_val_pred, label_encoder, _ = train_and_validate(
+            validation_model, metrics, y_val, y_val_pred, label_encoder, validation_scaler = train_and_validate(
                 X_consensus,
                 y_consensus,
                 config.test_size,
                 config.n_estimators,
                 config.random_state,
                 ml_method=ml_method,
+                **model_options,
             )
         except ValueError as exc:
             _notify(f"[ERROR] Exploratory consensus split failed: {exc}")
             return False
+        # Release the validation forest before the second fit, including GPU memory.
+        del validation_model, validation_scaler
+        record_stage("validation", started)
         _notify(f"[OK] Exploratory pseudo-label validation accuracy: {metrics['validation_accuracy']:.4f}")
 
     # Train final on all consensus
     _notify("\nStep 4/8: Training final model on all consensus cells...")
     scaler = StandardScaler()
     scaler.fit(X_consensus)
+    started = time.monotonic()
     final_model = train_final_model(
         X_consensus,
         y_consensus,
@@ -1184,12 +1237,18 @@ def run_ml_consensus_analysis(
         config.n_estimators,
         config.random_state,
         ml_method=ml_method,
+        **model_options,
     )
+    record_stage("final_fit", started)
     _notify("[OK] Final model trained")
 
     # Predict non-consensus
     _notify(f"\nStep 5/8: Predicting {X_non_consensus.shape[0]:,} non-consensus cells...")
-    pred_labels, pred_conf = predict_non_consensus(final_model, scaler, X_non_consensus, label_encoder)
+    started = time.monotonic()
+    with operation_progress(_notify, f"Predicting {len(X_non_consensus):,} cells", interval=config.progress_interval):
+        pred_labels, pred_conf = predict_non_consensus(final_model, scaler, X_non_consensus, label_encoder)
+    record_stage("prediction", started)
+    del final_model  # Finished with the forest; release memory before table copies and plots.
     _notify(f"[OK] Predicted {pred_labels.size:,} non-consensus cells")
 
     # Build outputs

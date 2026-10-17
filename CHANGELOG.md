@@ -11,9 +11,210 @@ and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Studio release (0.4.0)
+
+- Make Studio the primary documented workflow, with a persistent image viewer,
+  coordinated analysis panels, marker tiles, editable data tables and figures.
+- Add configurable CPU/GPU execution where supported, background job timers,
+  informative progress, process termination and protection against concurrent
+  writes to the same project across machines.
+- Extend manual-reference and consensus phenotyping, model reuse, neighbourhood
+  review, consistent colours and exploratory TLS candidate detection/editing.
+- Preserve the published academic research license, Python 3.10 compatibility,
+  native-library installation fixes and optional AI dependencies.
+- Include a workflow illustration, Studio guide, release validation notes and
+  broader checks for machine-specific paths and missing packaged viewer assets.
+
+- Add a resizable **Marker tiles** drawer with selected/all marker views, native
+  zoom presets, cursor tracking, pinned cell inspection, and a floating/docked
+  layout. Tiles follow the image colours and ranges, including Cell Top markers.
+  Save panel preferences with the image view; load only visible cards.
+- Add **Ask AI** to the cell suggestion card: send measured features, model and
+  dataset phenotype context, and labelled marker crops for advisory review.
+  Text-only models receive measurements with a clear image-support notice.
+- Recover MR-ML controls when the image session finishes loading after the panel;
+  retain entered settings during layer refreshes and explain checked-only training.
+
+- Allow MR-ML to train from a single reference column, retain existing reference
+  labels and predict remaining cells using markers plus optional morphology.
+  Add named prediction, numeric score and low-confidence filtered columns in
+  Studio; save results in Parquet and write/export them to CSV from Jobs or
+  Classic. Existing ensemble MR-ML remains available.
+- Add **Top markers / Number** to Cells and maps, using the selected cell-marker
+  transformations. Ctrl-click selects multiple cells for averaged marker display,
+  combined prediction scores and label counts, with explicit group assignment.
+
+- Exclude annotation history directories and cached snapshots from viewer layer
+  discovery and the project GeoJSON picker. Old directory entries now return a
+  clear error instead of crashing tile requests; saved History stays intact.
+
+- Add a native **100%** viewer zoom button and percentage presets; remove the
+  approximate magnification section. Improve image detail with
+  lossless native-resolution tiles, finer pyramid selection and crisp enlarged
+  pixels. Optional smoothing is saved per image; overview navigation keeps
+  compressed tiles without colour subsampling. Full-resolution figure exports
+  also request lossless image tiles.
+- Fix thin lines between opaque PNG image tiles at fractional zoom by explicitly
+  declaring their opacity; preserve transparency in registration checkerboards
+  and annotation overlays.
+
+- Fix bulk polygon labels disappearing while the list refreshes. **Result label**
+  names the next marker detection; **Apply label** labels checked existing polygons,
+  with automatic saving and Undo.
+- Add **Subtract annotations**: create an editable layer such as
+  `Stroma = Tissue − Tumor − Epithelia` from multiple saved layers or labels.
+  Preserve holes, source polygons, History and the equation's JSON provenance;
+  reuse the result in Classification and Export.
+
+- Align Marker regions with the shared Work within/Scale and polygon review layout;
+  remove its stray null placeholder and preserve separate named result layers.
+- Reopen generated regions and classifications as editable layers. Reuse their named
+  classes directly; save subclassifications into child layers without overwriting parents.
+- Add checked-layer GeoJSON export with names, colours, source revisions and History.
+  Record derived-layer relationships in project JSON for later model development.
+
+- Studio Tissue detection now saves directly, and reviewed artifact subtraction
+  updates the selected working annotation with Undo and History. Both Artifact
+  tabs retain Work within, shared with Classification.
+- Classification adds explicit resolution and channel/feature selection, compact
+  naming controls, reversible cluster merges, linked heatmap ordering/colours,
+  and reviewable AI suggestions using the parent annotation and full profiles.
+  Review settings and provenance are saved per image in project JSON files.
+- The launcher automatically selects another port when one is occupied. A running
+  Studio serves a frontend matching its backend, preventing mixed-version controls.
+
 Interface review for publication: every setting saved with the project,
 one layout for all Phenotyping methods, one terminal format, faster reads in
-Tabs 7 and 9, and a Z1 option for Resolve. Grouped by tab.
+Tabs 7 and 9, and a Z1 option for Resolve. A built-in image viewer. Grouped
+by tab.
+
+### SPACEMAP Studio
+
+- Add a persistent **Save polygons** button at the bottom of Tissue, with a
+  save confirmation. Show an amber T for unsaved previews, waiting edits or
+  failed saves; restore green after saving. Keep background saving in place.
+- Preview necks from the current Tissue layer, including unsaved edits, with
+  checks for changed images or saved polygons. Do not restore discarded pieces
+  from an old review when rerunning Pieces; use History to restore them explicitly.
+- Click the mouse wheel over the image to fit it to the viewer.
+- Extend Shift/Alt brushing to the drawing tools and temporary tissue previews.
+  Add adjustable Split width and Merge gap, keeping exact saved outlines and Undo.
+- Move Pieces into Tissue with an optional neck-review panel, a width slider,
+  Classic's two-side size limits, and per-neck approve/reject. Link preview
+  visibility to Tissue and keep explanations in help tips. Align piece names
+  beside their checkboxes in both polygon lists.
+
+- Allow multi-delete of Tissue preview polygons from either polygon list or
+  with Delete; keep Undo and add **Save polygons** to save the reviewed result
+  without running detection again. Preserve full outline detail when saving.
+- Save Annotation settings automatically and finish saving before switching
+  stages or steps. Keep newer edits made while an earlier save is in progress.
+- Show Tissue **Smallest** in µm², like **Fill holes**, and enforce it on final
+  polygons at every scale. Convert old pixel thresholds to their physical area.
+- Prevent delayed Segmentation and Annotation replies from restoring controls
+  or previews over a different step or image.
+- Preserve detailed tissue outlines in previews and editable layers; a drawing
+  point limit no longer turns complex boundaries into coarse triangles.
+- Add **Fill holes** in Tissue settings: fill enclosed holes smaller than a
+  chosen area in µm². Zero keeps all holes. Preview and saved detection agree.
+- Keep image controls first in Layers, fold other layers into groups, and add
+  All/Shown list filters. Group saved Outputs separately. Fix marker alignment
+  when Segmentation's N/M buttons, Dye and Exposure are shown together.
+- Make Annotation tissue and artifacts editable with a brush, polygon
+  checkboxes, select-all, Delete selected, Undo and saved History. Detect
+  artifacts first, review them, then subtract them from tissue. Rerunning
+  tissue detection asks before replacing the current layer.
+- Fix tissue previews reporting zero pieces when the detected outline contains
+  a collection of polygons. Keep holes and count connected pieces correctly.
+- Explain interrupted polygon saves and failed loads, retain waiting edits,
+  and add Reload saved and Retry save controls in both polygon panels.
+- Stop duplicate Tissue, Artifacts and Marker regions layers accumulating when
+  images reopen. List temporary Tissue previews in the same layer, marked as
+  unsaved. Show each polygon file's location and allow clearing saved polygons
+  with Undo and History available.
+- Add a viewer-centred workspace with all ten analysis steps, disk-based work
+  lists and links to classic SPACEMAP. Images load first; hidden annotations
+  load only when requested.
+- Add checked viewer/assistant actions, name matching, Undo and command logs.
+  Common requests work without a model; local AI supports other wording and
+  labelled image descriptions.
+- Place Live RESOLVE beside the image, share classic options, edit phenotype
+  panels and run all ROIs in a background job with progress, Stop and logs.
+- Add exact marker-rule selections, click/drawing refinement, sampled marker
+  comparisons, reference assignment with guarded Undo and a project rule library.
+- Add saved reference-model training/comparison and classic MR-ML background
+  jobs. New prediction columns can be displayed without reopening the image.
+- Restore blue marker bars with ordered transformation choices, editable
+  phenotype menus, background label saving, review flags and fast saved-model
+  suggestions in the clicked-cell summary.
+
+### Image viewer (new)
+
+See [docs/viewer.md](docs/viewer.md).
+
+- **Open image viewer** on every page opens raw QPTIFF scans, registered
+  images and ROIs at full resolution, zooming through the pyramid levels
+  stored in the files. Markers show with their real names; each has its own
+  colour and display range.
+- Tab results are drawn on top, each with its own opacity:
+  - cell outlines or filled cells from Tab 5, coloured by any column
+    (phenotypes, neighbourhoods, marker intensities, distances), in the Tab 9
+    phenotype colours, with a legend that hides a class when you click it;
+  - tissue annotations in their class colours;
+  - the registered H&E in true colour.
+- Click a cell to see its labels and highest markers. **Save image** saves
+  the screen as a PNG with a scale bar. **Save full resolution** saves the
+  same area at full image resolution for figures (up to 8,192 px on the long
+  side; larger areas are saved at the largest resolution that fits).
+- **Label cells (Manual Reference):** click cells or drag a box to name them
+  into `phenotype_ref1` (or any column), with undo. Labels are grouped and saved in the background,
+  as Tab 7's Manual Reference saves them. Tabs 7, 8 and 9 list them under
+  "Saved but not yet written into the CSV". A new label column appears in
+  every tab's column lists straight away, before it is written into the CSV.
+- Each tab opens the viewer on its own results: Tabs 7 and 9 colour cells by
+  the newest phenotype column, and Tab 8 by the neighbourhood column.
+- **Drawing:** rectangle, polygon and freehand tools draw shapes on the
+  image. Shapes can be named, coloured, imported from the project's GeoJSON
+  files or from a file (QuPath exports), downloaded and undone. They are
+  saved as GeoJSON as you draw.
+- **Working beside SPACEMAP:** **Separate window** opens the viewer in a
+  window of its own that follows the images opened from the tabs and
+  refreshes when a tab writes new columns. **Full screen**, **Minimize** and
+  **Restore image viewer** are added, and each image's view is remembered.
+- **Faster and sturdier:** an image opens in under a second the first time
+  (it was 8-9 s on PDAC and INNATE ROIs) and at once afterwards. A new ROI's
+  cell outlines are prepared in the background while the image already
+  shows. Viewer links, and an open separate window, keep working after
+  SPACEMAP restarts.
+- **Marker sets:** save ticked markers with their colours, ranges and names
+  under a name ("T cells", "B cells") and switch between them with one click,
+  on any image of the project.
+- The separate window can open any of the project's images itself; changing a
+  marker or its range no longer zooms out or flashes the image (the new
+  version is loaded underneath and swapped in when ready).
+- **Density maps** of chosen phenotypes (or of all cells, or the local
+  average of a column), made as in Tab 9, in one colour or a colour map.
+  **One map per group** overlays several groups to show proximity and
+  overlap. Tab 8 triad instances can be mapped the same way.
+- **Layer order** (arrows on every layer) and **other GeoJSON files** (from
+  your computer or anywhere in the project) as extra layers.
+- **Cell card:** top markers ranked by Z1 (compared with the ROI's cells),
+  Z2 (within the cell), Arcsinh or Raw, as RESOLVE scores them.
+- **Fixed:** the cells of some ROIs did not show. A Tab 3 ROI-boundary file
+  (`data/annotations/new/<sample>.geojson`) had been taken for the cell
+  segmentation. Only Tab 5's folders are searched now, and a file must hold
+  numbered cells.
+- **Marker histograms:** click a marker for its histogram (whole image or
+  inside a drawn shape) and drag its display range, as in QuPath's Brightness
+  & Contrast. Marker colours, ranges and new names are saved with the
+  project (`outputs/viewer/display/`), where other steps can read them.
+- `run_interface.sh` and the `spacemap` command now start
+  `src/spacemap_gui/server.py`. It serves the interface and the viewer's image
+  data on one port, so nothing extra has to be forwarded on a cluster.
+  Streamlit 1.58 or newer is required (the lock file already pins 1.58.0).
+- `import spacemap` loads its modules only when first used. It no longer
+  loads PyTorch, Cellpose and SCIMAP at start-up, so SPACEMAP starts faster:
+  the import took 58 s on a cold node and now takes 1-5 s.
 
 ### Installation and release packaging
 
@@ -135,6 +336,10 @@ Tabs 7 and 9, and a Z1 option for Resolve. Grouped by tab.
   so a long batch no longer accumulates them in memory.
 
 - CODEX/H&E filename prefix and suffix used for pairing are now saved.
+- Each pair has **View CODEX**, **View H&E** and **View registered result**
+  buttons. They open the full-resolution scans in the image viewer, next to
+  the thumbnails. The registered result is shown with the H&E over the CODEX
+  so the alignment can be checked at any zoom.
 
 ### Tab 2 — Background Subtraction
 
@@ -146,6 +351,12 @@ Tabs 7 and 9, and a Z1 option for Resolve. Grouped by tab.
 
 ### Tab 3 — ROI Extraction
 
+- **Draw ROIs in the image viewer** draws, names and edits ROIs on the
+  full-resolution image. They are saved straight into the ROI file that
+  **Extract ROIs** reads, and each ROI's name becomes its output name.
+- **Use names and colours from the image viewer** copies markers renamed or
+  recoloured in the viewer into the channel table, and so into the extracted
+  images.
 - **Each ROI crop keeps all of its parent image's metadata**: exposure times,
   excitation/emission wavelengths and every acquisition note (per channel and for
   the slide), plus which image and box it was cut from. A marker renamed or

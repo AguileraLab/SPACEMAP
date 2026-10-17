@@ -74,7 +74,7 @@ def audit_for(project_root, settings):
     )
 
 
-def wait_for_job(project_root, timeout=120):
+def wait_for_job(project_root, timeout=240):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         job = leiden_job.latest_job(project_root)

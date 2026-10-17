@@ -1,5 +1,5 @@
 cff-version: 1.2.0
-title: "SPACEMAP: a spatial multiplex imaging analysis pipeline"
+title: "SPACEMAP Studio: a spatial multiplex imaging analysis pipeline"
 message: >-
   If you use SPACEMAP in your research, please cite the paper listed under
   preferred-citation.
@@ -42,8 +42,8 @@ keywords:
   - phenotyping
   - bioimage analysis
 license-url: "https://github.com/AguileraLab/SPACEMAP/blob/main/LICENSE"
-version: 0.3.0
-date-released: "2026-09-19"
+version: 0.4.0
+# Add date-released when the Studio release is published.
 
 # The publication describing the method. GitHub's "Cite this repository"
 # button and most reference managers prefer this over the software entry.

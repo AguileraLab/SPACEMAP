@@ -52,6 +52,14 @@ def test_advisory_prompt_does_not_invite_tools_or_jobs() -> None:
     assert "PROTECTED GENERAL JOB FORMAT" not in prompt
 
 
+def test_studio_can_request_evidence_without_the_classic_job_protocol():
+    prompt = build_system_prompt(InstructionProfile(), allow_action_plan=False, studio_tools=True)
+    assert "Do not emit a job" not in prompt
+    assert "registered Studio" in prompt
+    assert "PROTECTED GENERAL JOB FORMAT" not in prompt
+    assert CORE_SAFETY_POLICY in prompt
+
+
 def test_instruction_profile_is_saved_with_version_history(monkeypatch) -> None:
     # Use a temporary folder beneath assistant_data so the real user profile is untouched.
     local_dir = instruction_module.ASSISTANT_DATA_DIR / "test_instruction_storage"

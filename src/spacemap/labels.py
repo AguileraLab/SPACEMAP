@@ -28,17 +28,56 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
+from contextlib import contextmanager
+from functools import wraps
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
 import numpy as np
 import pandas as pd
+from spacemap.sharing import open_lock
 
 logger = logging.getLogger(__name__)
 
 SIDECAR_SUFFIX = ".labels.parquet"
 _FINGERPRINT_KEY = b"spacemap_table"
+_LOCKS = {}
+_LOCKS_GUARD = threading.Lock()
+_HELD = threading.local()
+
+
+@contextmanager
+def write_lock(table_path):
+    """Serialize append/commit across threads and app processes; allow nesting."""
+    import fcntl
+
+    key = str(Path(table_path).resolve())
+    with _LOCKS_GUARD:
+        lock = _LOCKS.setdefault(key, threading.RLock())
+    with lock:
+        held = getattr(_HELD, "tables", set())
+        if key in held:
+            yield
+            return
+        target = sidecar_path(table_path).with_suffix(".lock")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with open_lock(target) as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+            _HELD.tables = held | {key}
+            try:
+                yield
+            finally:
+                _HELD.tables = held
+
+
+def _locked(function):
+    @wraps(function)
+    def call(table_path, *args, **kwargs):
+        with write_lock(table_path):
+            return function(table_path, *args, **kwargs)
+    return call
 
 
 class LabelStoreError(RuntimeError):
@@ -101,6 +140,7 @@ def load(table_path: str | Path) -> pd.DataFrame:
     return frame.reset_index(drop=True)
 
 
+@_locked
 def append(table_path: str | Path, updates: Iterable[dict[str, Any]]) -> int:
     """Record label assignments.  Returns how many were stored.
 
@@ -205,6 +245,7 @@ def apply_to(
     return frame
 
 
+@_locked
 def clear(table_path: str | Path) -> bool:
     """Discard pending labels.  Returns False when there were none."""
     target = sidecar_path(table_path)
@@ -214,6 +255,29 @@ def clear(table_path: str | Path) -> bool:
     return True
 
 
+@_locked
+def clear_columns(table_path: str | Path, columns: Sequence[str]) -> None:
+    """Remove only these columns' overrides after replacing their full results."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    target = sidecar_path(table_path)
+    if not target.is_file():
+        return
+    table = pq.read_table(target)
+    keep = ~table.column("column").to_pandas().isin(columns)
+    if keep.all():
+        return
+    remaining = table.filter(pa.array(keep))  # preserve the recorded table fingerprint
+    temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+    try:
+        pq.write_table(remaining, temporary, compression="snappy")
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+@_locked
 def commit(
     table_path: str | Path,
     *,

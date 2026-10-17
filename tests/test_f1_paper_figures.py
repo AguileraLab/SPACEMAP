@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from io import BytesIO
 from pathlib import Path
 
@@ -16,11 +15,9 @@ from spacemap_gui.tabs.tab9_visualization.f1_paper_figures import (
     PAPER_PANEL_SPECS,
     build_generic_panel_tables,
     build_generic_paper_figure,
-    build_paper_figure,
     default_common_settings,
     default_panel_settings,
     generic_panel_availability,
-    missing_panel_tables,
     save_paper_figure,
     _method_default,
     _phenotype_default_color,
@@ -40,29 +37,7 @@ from spacemap_gui.tabs.tab9_visualization.f1_strict_runner import (
 )
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-
-# These tests reproduce manuscript figure panels from reference result tables.
-# Those tables are study output rather than application source, so they are not
-# distributed with the repository. Point SPACEMAP_REFERENCE_RESULTS at them to
-# run these checks; without it they skip.
-REFERENCE_RESULTS = Path(
-    os.environ.get(
-        "SPACEMAP_REFERENCE_RESULTS",
-        PROJECT_ROOT / "test_codes" / "Fig3_code_results" / "results_v2",
-    )
-)
-
-requires_reference_results = pytest.mark.skipif(
-    not REFERENCE_RESULTS.is_dir(),
-    reason=(
-        "reference result tables are not present; set SPACEMAP_REFERENCE_RESULTS "
-        "to the results_v2 folder to run the figure reproduction checks"
-    ),
-)
-
-
-def test_option2_defaults_recover_reference_code_visual_preset() -> None:
+def test_option2_defaults_preserve_plot_sizes_and_readable_canvas() -> None:
     common = default_common_settings()
     expected_dimensions = {
         "main_workflow": (14.2, 4.8),
@@ -83,8 +58,9 @@ def test_option2_defaults_recover_reference_code_visual_preset() -> None:
         assert (settings["width"], settings["height"]) == dimensions
 
 
-def test_option2_png_svg_exports_have_an_opaque_white_canvas(tmp_path: Path) -> None:
-    figure = build_paper_figure("main_workflow", tmp_path)
+def test_option2_png_svg_exports_have_an_opaque_white_canvas(tmp_path: Path, generic_frame_and_settings) -> None:
+    frame, common = generic_frame_and_settings
+    figure = build_generic_paper_figure("main_workflow", frame, common)
     try:
         assert to_hex(figure.get_facecolor()) == "#ffffff"
         assert all(to_hex(axis.get_facecolor()) == "#ffffff" for axis in figure.axes)
@@ -106,12 +82,12 @@ def test_option2_png_svg_exports_have_an_opaque_white_canvas(tmp_path: Path) -> 
     assert "#ffffff" in svg_path.read_text(encoding="utf-8").lower()
 
 
-@requires_reference_results
-def test_custom_dark_canvas_automatically_uses_readable_foreground() -> None:
-    figure = build_paper_figure(
+def test_custom_dark_canvas_automatically_uses_readable_foreground(generic_frame_and_settings) -> None:
+    frame, common = generic_frame_and_settings
+    figure = build_generic_paper_figure(
         "main_workflow",
-        REFERENCE_RESULTS,
-        common={"background_color": "#000000"},
+        frame,
+        common={**common, "background_color": "#000000"},
     )
     try:
         figure.canvas.draw()
@@ -248,38 +224,6 @@ def test_option2_exposes_complete_main_and_supplementary_panel_set() -> None:
     }.issubset(panel_ids)
 
 
-@requires_reference_results
-def test_panel_source_can_point_to_results_root_or_source_data() -> None:
-    source_data = REFERENCE_RESULTS / "source_data"
-
-    assert missing_panel_tables("main_ref2_metrics", REFERENCE_RESULTS) == []
-    assert missing_panel_tables("main_ref2_metrics", source_data) == []
-
-
-@requires_reference_results
-@pytest.mark.parametrize(
-    "panel_id",
-    [
-        "main_workflow",
-        "main_ref2_metrics",
-        "main_per_phenotype_f1",
-        "main_spatial",
-        "supp_human",
-        "supp_radar",
-        "supp_pairwise",
-    ],
-)
-def test_representative_paper_panels_render_from_reference_tables(
-    panel_id: str,
-) -> None:
-    figure = build_paper_figure(panel_id, REFERENCE_RESULTS)
-    try:
-        figure.canvas.draw()
-        assert figure.axes
-    finally:
-        plt.close(figure)
-
-
 def test_pairwise_panel_uses_percent_scale_by_default() -> None:
     settings = default_panel_settings(PANEL_BY_ID["supp_pairwise"])
 
@@ -287,13 +231,13 @@ def test_pairwise_panel_uses_percent_scale_by_default() -> None:
     assert settings["heatmap_vmax"] == 100.0
 
 
-@requires_reference_results
-def test_custom_method_and_colorbar_labels_reach_heatmap() -> None:
-    common = {"method_labels": {"Leiden": "Custom Leiden"}}
+def test_custom_method_and_colorbar_labels_reach_heatmap(generic_frame_and_settings) -> None:
+    frame, common = generic_frame_and_settings
+    common = {**common, "method_labels": {**common["method_labels"], "algorithm_red": "Custom model"}}
     panel = {"colorbar_label": "Custom F1 scale"}
-    figure = build_paper_figure(
+    figure = build_generic_paper_figure(
         "supp_ref1_f1",
-        REFERENCE_RESULTS,
+        frame,
         common=common,
         panel=panel,
     )
@@ -304,14 +248,15 @@ def test_custom_method_and_colorbar_labels_reach_heatmap() -> None:
     finally:
         plt.close(figure)
 
-    assert "Custom Leiden" in column_labels
+    assert "Custom model" in column_labels
     assert "Custom F1 scale" in colorbar_labels
 
 
 def test_saved_panels_have_unique_option2_png_svg_and_settings_names(
-    tmp_path: Path,
+    tmp_path: Path, generic_frame_and_settings,
 ) -> None:
-    figure = build_paper_figure("main_workflow", tmp_path)
+    frame, common = generic_frame_and_settings
+    figure = build_generic_paper_figure("main_workflow", frame, common)
     try:
         first_paths, first_preview = save_paper_figure(
             figure,

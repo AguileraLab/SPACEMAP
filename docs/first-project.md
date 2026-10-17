@@ -38,10 +38,20 @@ Default inputs include `data/codex`, `data/he`, `data/boundaries` and
 `data/annotations`. Tab 0 can map existing folders instead. A new project does
 not contain example images or pretrained custom model weights.
 
-Enter the correct **micrometres per pixel (MPP)**. The manuscript analyses used
-**0.5083 µm/pixel for INNATE** and **0.3775 µm/pixel for the Schürch/Nolan
-images**. These are study-specific calibrations. Other images, including the
-matching H&E, may use different values.
+Check **micrometres per pixel (MPP)** against the image metadata or acquisition
+record. Studio can read supported image metadata; supply a manual value when
+it is missing. Check each image type separately, including H&E. Do not copy
+another project's calibration: it changes measured areas and distances.
+
+## Open Studio
+
+Click **SPACEMAP Studio** after loading the project. The image stays visible
+while you move through the workflow. Use **This image** for an initial check,
+then **Selected** to process the checked images. Inspect background work in
+**Jobs**. The [Studio guide](studio-guide.md) explains the viewer and controls.
+
+The Classic tabs below remain available through **Open Tab** or **Classic
+SPACEMAP**; they use the same project settings.
 
 ## Follow the stages
 

@@ -15,6 +15,7 @@ import subprocess
 import sys
 import time
 import uuid
+from spacemap.sharing import open_lock
 
 
 def write_json(path, value):
@@ -83,7 +84,7 @@ def start_job(project_root, settings, audit=None):
 
     root = _job_root(project_root)
     root.mkdir(parents=True, exist_ok=True)
-    with (root / ".launch.lock").open("a") as lock:
+    with open_lock(root / ".launch.lock") as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
         active = latest_job(project_root)
         if active and active["status"] in {"starting", "running"}:

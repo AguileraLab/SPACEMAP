@@ -427,6 +427,7 @@ def find_necks(
             "x": float(centre.x),
             "y": float(centre.y),
             "marker": _strand_marker(strands, centre, width_um, microns_per_pixel),
+            "cut_geometry": current.difference(shapely.union_all(parts)) if len(parts) >= 2 else None,
             "separated": bool(len(parts) >= 2),
             "searched_to_um": float(max_width_um),
         })
@@ -671,15 +672,23 @@ def find_necks_raster(
         strand_count, strand_labels, _, _ = cv2.connectedComponentsWithStats(
             residue.astype(np.uint8), connectivity=8)
         dilate = _disc(1)
-        joining = []
+        groups = {}
         for index in range(1, strand_count):
             strand = strand_labels == index
             probe = cv2.dilate(strand.astype(np.uint8), dilate) > 0
             touched = {value for value in np.unique(labels[probe]) if value in keep}
             if len(touched) >= 2:
-                joining.append(strand)
+                groups.setdefault(tuple(sorted(touched)), []).append(strand)
 
-        rows, columns = np.nonzero(residue if joining else current)
+        # Bridges of equal width can open simultaneously between three or more
+        # lobes. They are separate suggestions, not one cut spanning the whole
+        # piece. Keep parallel strands joining the same lobes together (a ring
+        # needs both cut), then search the remainder for the other bridges.
+        joining = next(iter(groups.values()), [])
+        if not joining:
+            continue
+        joining_mask = np.logical_or.reduce(joining)
+        rows, columns = np.nonzero(joining_mask)
         centre_row, centre_col = float(rows.mean()), float(columns.mean())
 
         # Each strand is cut where it runs closest to the constriction, never
@@ -706,6 +715,8 @@ def find_necks_raster(
         if len(side_areas) < 2:
             side_areas.append(0.0)
 
+        footprint_polygons = _mask_to_polygons(footprint, origin, scale)
+        cut_geometry = unary_union(footprint_polygons).buffer(scale).simplify(scale * 0.5)
         necks.append({
             "bridge_width_um": float(width_um),
             "n_strands": int(len(joining)),
@@ -713,12 +724,13 @@ def find_necks_raster(
             "smaller_side_fraction": float(min(side_areas) / max(sum(side_areas), 1e-9)),
             "x": float(origin[0] + centre_col * scale),
             "y": float(origin[1] + centre_row * scale),
-            "marker": unary_union(_mask_to_polygons(footprint, origin, scale))
+            "marker": unary_union(footprint_polygons)
             or Point(origin[0] + centre_col * scale, origin[1] + centre_row * scale).buffer(radius * scale),
+            "cut_geometry": cut_geometry,
             "separated": bool(separated),
             "searched_to_um": float(max_width_um),
         })
-        cut_masks.append(_mask_to_polygons(footprint, origin, scale))
+        cut_masks.append(footprint_polygons)
         if separated:
             for index in range(1, part_count):
                 pending.append(part_labels == index)
