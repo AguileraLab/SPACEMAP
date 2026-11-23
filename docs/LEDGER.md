@@ -11,13 +11,14 @@ not edit it by hand -- run the script after committing changes. The
 Local machine paths, account identifiers and site-specific cluster names are
 redacted in this public rendering. The original Git history is unchanged.
 
-**52 changes** by **1 contributor**, touching **913 files**. Latest: `59f4ffa` on 2026-11-23.
+**53 changes** by **1 contributor**, touching **913 files**. Latest: `65599f0` on 2026-11-23.
 
 
 ## 2026-11
 
 | Date | Change | Who | Why | Files | Lines |
 | --- | --- | --- | --- | --- | --- |
+| 2026-11-23 | `65599f0` fix: respect optional AI dependencies in tests | Bassel Dawod | let base and Flow CI run without optional AI packages. | 1 | +15/-0 |
 | 2026-11-23 | `59f4ffa` feat: update SPACEMAP Studio to 0.5.0 | Bassel Dawod | add collaborative review, gland and niche analysis, expanded spatial tools, and reliability fixes. | 379 | +44662/-2424 |
 
 ## 2026-10
@@ -84,6 +85,12 @@ redacted in this public rendering. The original Git history is unchanged.
 ---
 
 ## Files changed per commit
+
+<details><summary><code>65599f0</code> fix: respect optional AI dependencies in tests</summary>
+
+- `tests/test_environment.py`
+
+</details>
 
 <details><summary><code>59f4ffa</code> feat: update SPACEMAP Studio to 0.5.0</summary>
 
