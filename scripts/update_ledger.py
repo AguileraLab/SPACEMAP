@@ -170,6 +170,7 @@ def _public_text(value: str) -> str:
         "[local directory]", value,
     )
     value = re.sub(r"s[0-9]{6}", "[account]", value, flags=re.IGNORECASE)
+    value = re.sub(r"\b[A-Za-z]+_all(?:_[0-9]+)?\b", "[study project]", value)
     return re.sub(r"\b[A-Za-z]+hpc\b", "the cluster", value, flags=re.IGNORECASE)
 
 

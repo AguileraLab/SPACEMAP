@@ -73,3 +73,30 @@ def test_failed_annotation_read_can_be_retried(tmp_path):
     assert not annotations._LOADING
     write_annotation(path)
     assert annotations.load_annotations(path).legend()[0]["count"] == 1
+
+
+def test_legend_does_not_open_the_image(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from spacemap_gui.viewer import api
+
+    path = tmp_path / "tissue.geojson"
+    write_annotation(path)
+    layer = {"path": str(path), "image": str(tmp_path / "unavailable.ome.tiff")}
+    monkeypatch.setattr(api.registry, "resolve_object", lambda token, kind: layer)
+
+    def unavailable(*args):
+        raise AssertionError("Legend metadata must not wait for image opening")
+
+    monkeypatch.setattr(api, "image_info", unavailable)
+    result = api.annotation_legend(SimpleNamespace(path_params={"token": "registered"}))
+    assert result.status_code == 200
+    assert json.loads(result.body)["items"][0]["value"] == "tissue"
+
+
+def test_legend_still_requires_a_registered_annotation(monkeypatch):
+    from types import SimpleNamespace
+    from spacemap_gui.viewer import api
+
+    monkeypatch.setattr(api.registry, "resolve_object", lambda token, kind: None)
+    result = api.annotation_legend(SimpleNamespace(path_params={"token": "unknown"}))
+    assert result.status_code == 404

@@ -1,4 +1,4 @@
-"""Browser-check Studio's Cells and maps in Layers: rows for outlines, each colour and the density maps.
+"""Browser-check Studio's Cells in Layers: rows for outlines, each colour and the density maps.
 
 Usage: PYTHONPATH=src:tests python tests/viewer_cell_rows_browser.py
 """
@@ -21,9 +21,9 @@ setTimeout(async()=>{
   const group=document.querySelector('[data-layer-group=cells]');
   if(!group.open)group.querySelector('summary').click();
   const field=label=>block()?.querySelector('[aria-label="'+label+'"]');
-  await until(()=>field('Cell data')&&field('Draw cells as')&&field('Colour the cells by'));
+  await until(()=>document.querySelector('[data-shared-cell-data] [aria-label="Cell data"]')&&field('Draw cells as')&&field('Colour the cells by'));
   assert(!block().querySelector('[data-cell-row]'),'One settings form per cell layer: Data, Show, Colour by, Filter');
-  if(!cells.visible){block().querySelector(':scope > summary input[type=checkbox]').click();await until(()=>cells.visible);}
+  if(!cells.visible){document.querySelector('[aria-label="Show cell outlines"]').click();await until(()=>cells.visible);}
   await until(()=>field('Colour the cells by').querySelectorAll('optgroup').length===2);
   const groupsOf=label=>Array.from(field('Colour the cells by').querySelectorAll('optgroup')).find(g=>g.label===label);
   assert(Array.from(groupsOf('Groups').children).some(o=>o.value==='phenotype_training')&&Array.from(groupsOf('Values').children).some(o=>o.value==='M0'),
@@ -41,7 +41,7 @@ setTimeout(async()=>{
   await until(()=>cells.mode==='fill');
   assert(true,'Show sets outlines, filled or both');
   change(field('Colour the cells by'),'phenotype_training');
-  await until(()=>cells.color_by==='phenotype_training'&&!cells.range&&block().querySelector('.cell-legend .legend .item'));
+  await until(()=>cells.color_by==='phenotype_training'&&!cells.range&&block().querySelector('.cell-group-list .item'));
   assert(true,'A group column shows its groups in the legend');
   // Filter: keep group A only.
   change(field('Add a filter'),'phenotype_training');
@@ -56,12 +56,12 @@ setTimeout(async()=>{
   block().querySelector('[aria-label="Filter from"]').value='100';block().querySelector('[aria-label="Filter to"]').value='150';
   Array.from(block().querySelectorAll('.cell-filter-editor button')).find(b=>b.textContent==='Apply').click();
   await until(()=>(cells.filters||[]).length===2&&/\d+ of 40 cells shown/.test(block().textContent));
-  assert(/[0-9] of 40 cells shown/.test(block().textContent),'Filters add up: '+block().querySelector('.cell-filters').textContent);
+  assert(/[0-9] of 40 cells shown/.test(block().textContent),'Filters add up: '+block().querySelector('.cell-view-status').textContent);
   block().querySelector('[aria-label="Remove filter M0"]').click();
   await until(()=>(cells.filters||[]).length===1);
-  block().querySelector(':scope > summary input[type=checkbox]').click();
+  document.querySelector('[aria-label="Show cell outlines"]').click();
   await until(()=>!cells.visible);
-  block().querySelector(':scope > summary input[type=checkbox]').click();
+  document.querySelector('[aria-label="Show cell outlines"]').click();
   await until(()=>cells.visible&&cells.color_by==='phenotype_training'&&cells.filters.length===1);
   assert(true,'The block tick hides and shows the layer as it was');
   await addLayerToView({id:'density-check',type:'density',name:'A density',token:cells.token,image_token:cells.image_token,tables:cells.tables,

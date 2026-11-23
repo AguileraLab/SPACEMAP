@@ -2,7 +2,9 @@
  * The viewer's parts share their names and load in order (see index.html). */
 "use strict";
 
-if (STANDALONE) {
+if (STANDALONE && new URLSearchParams(location.search).get('review')) {
+  startReviewer(new URLSearchParams(location.search).get('review'));
+} else if (STANDALONE) {
   document.body.classList.add("standalone");
   followSession();
 } else {

@@ -100,7 +100,7 @@ def _discs(xy, radius):
     return shapely.union_all(chunks)
 
 
-def detect_region(xy, phenotypes, chosen, microns, tissue=None):
+def detect_region(xy, phenotypes, chosen, microns, tissue=None, report=None):
     """Return candidate polygons (pixel coordinates) and measured cells.
 
     Disc overlap supplies the distance-limited connectivity: two centres more
@@ -110,6 +110,8 @@ def detect_region(xy, phenotypes, chosen, microns, tissue=None):
     Tissue from annotations wins; without it, a union of all cells' discs is an
     explicitly approximate tissue support for the same clean-line distance rule.
     """
+    from spacemap.cell_spatial_annotation import _point_region_pairs
+    tell = report or (lambda message: None)
     points = shapely.points(xy)
     b = np.isin(phenotypes, chosen["b_labels"])
     t = np.isin(phenotypes, chosen["t_labels"])
@@ -123,11 +125,13 @@ def detect_region(xy, phenotypes, chosen, microns, tissue=None):
     # gap of a qualifying B core; do not propagate through long T-cell chains.
     # The final outline defines connectivity, avoiding disagreeing IDs when a
     # tissue hole splits a putative aggregate.
+    tell('Preparing tissue support')
     support = tissue if tissue is not None else _discs(xy, radius)
+    tell('Connecting B-cell cores')
     cores = _parts(_discs(xy[b], radius).intersection(support))
     if not cores:
         return [], result
-    core_hits = shapely.STRtree(cores).query(points[b], predicate="intersects")
+    core_hits = _point_region_pairs(points[b], cores)
     core_counts = np.bincount(core_hits[1], minlength=len(cores))
     seed_rows = np.unique(core_hits[0][core_counts[core_hits[1]] >= chosen["min_b"]])
     if not len(seed_rows):
@@ -135,17 +139,19 @@ def detect_region(xy, phenotypes, chosen, microns, tissue=None):
     seed = xy[b][seed_rows]
     from scipy.spatial import cKDTree
     near = cKDTree(seed).query(xy[t], k=1)[0] <= 2 * radius
+    tell('Drawing candidate boundaries')
     aggregate = _discs(np.concatenate([seed, xy[t][near]]), radius).intersection(support)
     trim = float(chosen.get("edge_trim", 0)) / microns
     if trim:
         aggregate = aggregate.buffer(-trim)
     parts = sorted(_parts(aggregate), key=lambda g: (g.bounds[1], g.bounds[0], -g.area))
-    return measure_regions(xy, phenotypes, chosen, microns, parts, support)
+    return measure_regions(xy, phenotypes, chosen, microns, parts, support, report=report)
 
 
-def measure_regions(xy, phenotypes, chosen, microns, parts, support, *, manual=False):
+def measure_regions(xy, phenotypes, chosen, microns, parts, support, *, manual=False, report=None):
     """The same containment, area and signed-distance calculation after detection or editing."""
-    from spacemap.cell_spatial_annotation import _nearest_visible_distance, _region_hits
+    from spacemap.cell_spatial_annotation import _nearest_visible_distance, _region_hits, _point_region_pairs
+    tell = report or (lambda message: None)
 
     points = shapely.points(xy)
     b, t = np.isin(phenotypes, chosen["b_labels"]), np.isin(phenotypes, chosen["t_labels"])
@@ -153,7 +159,8 @@ def measure_regions(xy, phenotypes, chosen, microns, parts, support, *, manual=F
               "_distance": np.full(len(xy), np.nan)}
     if not parts:
         return [], result
-    hits = shapely.STRtree(parts).query(points, predicate="intersects")
+    tell('Counting cells inside candidates')
+    hits = _point_region_pairs(points, parts)
     counts = np.bincount(hits[1], minlength=len(parts))
     bs = np.bincount(hits[1], weights=b[hits[0]], minlength=len(parts))
     ts = np.bincount(hits[1], weights=t[hits[0]], minlength=len(parts))
@@ -176,6 +183,8 @@ def measure_regions(xy, phenotypes, chosen, microns, parts, support, *, manual=F
         result["_size"][positions] = [regions[i]["area_um2"] for i in owners]
         cache = {}
         for start in range(0, len(points), 8192):
+            if start % (8192 * 8) == 0:
+                tell(f'Measuring boundary distances: {start:,}/{len(points):,} cells')
             positions, distance = _nearest_visible_distance(
                 points[start:start + 8192], regions, support, 0.0, len(regions), probe_cache=cache)
             result["_distance"][start + positions] = distance * microns
@@ -189,20 +198,26 @@ def _eligible(series):
 
 
 def calibration(root, images, image_entries=()):
-    """MPP per image: loaded/project image metadata, then project calibration.
+    """MPP per image: assigned image metadata, then project calibration.
 
     Entries come from Studio's trusted image catalogue, never client paths.
     Never borrow the open image's MPP for a different ROI in the cohort.
     """
     from spacemap.viewer.sources import image_info
-    from . import segmentation, tagging
+    from . import segmentation, tagging, spatial_sources
     from .settings import read_config
 
     config = read_config(root)
     candidates = {}
-    def add(sample, path):
+    assigned = spatial_sources.image_entries(root)
+    assigned_samples = {tagging._sample_key(entry['sample']) for entry in assigned}
+    def add(sample, path, *, assigned_path=False):
         if sample and path:
-            candidates.setdefault(tagging._sample_key(sample), []).append(Path(path))
+            key = tagging._sample_key(sample)
+            if assigned_path or key not in assigned_samples:
+                candidates.setdefault(key, []).append(Path(path))
+    for entry in assigned:
+        add(entry['sample'], entry['path'], assigned_path=True)
     for entry in image_entries or []:
         add(entry.get("sample") or entry.get("name") or entry.get("path"), entry.get("path"))
     directory = segmentation.step_folders(root, config, config.get("directory_mappings") or {})["images"]
@@ -329,12 +344,16 @@ def run(settings, folder, report):
             source = sources[image]
             if fingerprint(Path(source["path"])) != source["revision"]:
                 raise ValueError("Tissue annotations changed. Start again with the current annotations.")
-            polygons = load_annotation_polygons(source["path"]).get(settings["tissue_label"].lower(), [])
+            polygons = load_annotation_polygons(source["path"], labels=[settings['tissue_label']]).get(settings["tissue_label"].lower(), [])
             if polygons:
                 tissue = shapely.union_all(polygons)
         if tissue is None:
             warnings.append(f"{image}: tissue gaps inferred from cells; no linked tissue polygon.")
         else:
+            report(f'{image}: locating cells in tissue…')
+            # Preparing once builds the polygon index reused by every centroid;
+            # unprepared point-in-polygon work scales with all boundary vertices.
+            shapely.prepare(tissue)
             image_rows = image_rows[shapely.intersects(tissue, shapely.points(image_rows[["x_centroid", "y_centroid"]].to_numpy(float)))]
         grouped = image_rows.groupby(chosen["roi_col"], sort=True) if chosen["roi_col"] else [("image", image_rows)]
         for region, part in grouped:
@@ -351,9 +370,11 @@ def run(settings, folder, report):
                     support = support.intersection(tissue)
                 edited = shapely.union_all(tls_review.polygons(review["features"])).intersection(support)
                 pieces = sorted(_parts(edited), key=lambda g: (g.bounds[1], g.bounds[0], -g.area))
-                found, result = measure_regions(xy, phenotypes, chosen, microns, pieces, support, manual=True)
+                found, result = measure_regions(xy, phenotypes, chosen, microns, pieces, support, manual=True,
+                    report=lambda message: report(f'{image} · region {region}: {message}'))
             else:
-                found, result = detect_region(xy, phenotypes, chosen, microns, tissue)
+                found, result = detect_region(xy, phenotypes, chosen, microns, tissue,
+                    report=lambda message: report(f'{image} · region {region}: {message}'))
             for suffix in SUFFIXES:
                 tags[chosen["output_col"] + suffix][part.index.to_numpy()] = result[suffix]
             if not review:

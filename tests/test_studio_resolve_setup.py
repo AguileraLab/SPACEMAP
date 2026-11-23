@@ -50,6 +50,21 @@ def test_save_roundtrip_classic_files_and_whole_table_run(workspace):
         setup.save(root, table, {**saved, 'rules':'B=[CD20]'})
 
 
+def test_raw_single_image_needs_no_roi_or_batch_correction(workspace):
+    root, table, frame = workspace
+    frame = frame.iloc[:40].drop(columns=['batch_id', 'cell_id']).copy()
+    frame['label'] = range(1, 41)
+    frame.to_parquet(table, index=False)
+    request = body(root, table)
+    request['thresholds'] = [{'batch_id':'cells','CD3e':30.,'CD20':30.}]
+    saved = setup.save(root, table, request)
+    config = setup.job_settings(root, table, {'column':'phenotype_test','settings_revision':saved['revision']})
+    assert config['roi_column'] == '' and config['cell_id_col'] == 'label'
+    result = tasks.resolve_all(config, root, lambda *args:None)
+    assert result['rois'] == 1
+    assert dataio.load(table, columns=['phenotype_test']).phenotype_test.tolist() == ['T']*20 + ['B']*20
+
+
 @pytest.mark.parametrize('mode', setup.MODES[1:])
 def test_each_positivity_path_equals_classic(workspace, mode):
     from spacemap_gui.tabs.tab7_phenotyping.common import compute_auto_thresholds, _THRESHOLD_MODE_TO_KEY

@@ -9,6 +9,7 @@ import re
 import tarfile
 import zipfile
 from pathlib import Path, PurePosixPath
+from urllib.parse import urlsplit
 
 
 def check_wheel(path: Path) -> None:
@@ -29,14 +30,14 @@ def check_wheel(path: Path) -> None:
             raise ValueError("Packaged marker defaults are empty")
         html = archive.read(widget + "index.html").decode()
         for asset in re.findall(r'(?:src|href)="([^"]+)"', html):
-            if asset.startswith(("http:", "https:", "/")) or widget + asset.removeprefix("./") not in names:
+            if asset.startswith(("http:", "https:", "/")) or widget + urlsplit(asset).path.removeprefix("./") not in names:
                 raise ValueError(f"Missing or external widget asset: {asset}")
         if not any(name.startswith(widget + "assets/plotly.min-") for name in names):
             raise ValueError("The heatmap's local Plotly library is missing")
         viewer = "spacemap_gui/viewer/frontend/"
         viewer_html = archive.read(viewer + "index.html").decode()
         for asset in re.findall(r'(?:src|href)="([^"]+)"', viewer_html):
-            if asset.startswith(("http:", "https:", "/")) or viewer + asset not in names:
+            if asset.startswith(("http:", "https:", "/")) or viewer + urlsplit(asset).path.removeprefix("./") not in names:
                 raise ValueError(f"Missing or external Studio asset: {asset}")
         entries = next(name for name in names if name.endswith(".dist-info/entry_points.txt"))
         if "spacemap = spacemap_gui.launch:main" not in archive.read(entries).decode():

@@ -1,7 +1,11 @@
-"""Name suggestions for clusters, from the user's reference cells and from their markers.
+"""Cluster names from saved Manual reference models or labelled reference cells.
 
-For a finished clustering (its column of groups) and a reference column the
-user labelled (``phenotype_ref...``):
+Saved-model mode predicts sampled cells using the shared feature panel and the
+model's preprocessing, adapting from retained training examples when needed.
+Model votes, manual counts and saved validation remain separate evidence.
+
+Reference-cell mode combines the following for a finished clustering and a
+reference column the user labelled (``phenotype_ref...``):
 
 * **Reference cells in each cluster**: how many reference cells of each label
   fall in it, as a share of all that label's reference cells ("62% of the
@@ -28,7 +32,7 @@ import pandas as pd
 def owns_output(root, table, cluster_job_id, output):
     """A successful name save for this exact run owns its phenotype output."""
     from . import jobs
-    for job in jobs.recent(root, limit=300):
+    for job in jobs.history(root):
         result = job.get("result") or {}
         if job.get("status") != "done":
             continue
@@ -54,7 +58,7 @@ def owns_output(root, table, cluster_job_id, output):
 def saved_names(root, table, clusters_column, *, cluster_job_id=None):
     """The latest successful full name mapping, including older jobs' request files."""
     from . import jobs
-    for job in jobs.recent(root, limit=300):
+    for job in jobs.history(root):
         result = job.get("result") or {}
         if (job.get("status") == "done" and result.get("clusters") and result.get("table") == str(table)
                 and result.get("column") == clusters_column):
@@ -77,6 +81,110 @@ PER_LABEL = 2000  # reference cells per label the model learns from
 TRUST = 10  # reference cells at which their share counts half
 _CACHE = OrderedDict()
 _LOCK = threading.Lock()
+
+
+def _feature_panel(meta, table, features=None, suffix="_corr"):
+    """Keep the model's measurement columns, limited to markers in this run."""
+    from . import reference_models
+    from .markers import base_of
+    present = reference_models._present(meta, table)
+    if features is None:
+        return present
+    selected = {base_of(name, suffix) for name in features}
+    return [name for name in present if base_of(name, suffix) in selected]
+
+
+def suggestion_sources(root, table, features=None, suffix="_corr"):
+    """List compatible saved reference models using metadata, never load weights."""
+    from . import reference_models, reference_setup
+
+    configured = reference_setup.options(root, table)
+    local = reference_models.available(table)
+    models = []
+    seen = set()
+    def entry(item, identifier, key=""):
+        present = _feature_panel(item, table, features, suffix)
+        missing = [name for name in item.get("markers", []) if name not in present]
+        compatible = bool(present) and (not missing or bool(item.get("adaptable") and item.get("allow_missing", True)))
+        return {"id": identifier, "key": key, "name": item.get("name") or item.get("column", ""),
+                "column": item.get("column", ""), "method": item.get("method", ""), "trained": item.get("trained", ""),
+                "features": present, "total_features": len(item.get("markers", [])), "missing": missing,
+                "compatible": compatible}
+    for item in local:
+        identifier = item["model_id"]
+        models.append(entry(item, identifier))
+        seen.add(identifier)
+    for item in configured["models"]:
+        if item["id"] not in seen:
+            models.append(entry(item, item["id"], item["key"]))
+    active = configured.get("base_model_id") or ""
+    return {"reference_columns": reference_columns(table), "models": models,
+            "active_model": reference_models.current_model_id(active) if active else ""}
+
+
+def suggest_model(table, clusters_column, model_id, reference_column="", *, features=None, suffix="_corr", cached_only=False):
+    """Sample each cluster with the saved model, retaining its fitted preprocessing.
+
+    The cache can be read during AI prompt preparation without reading cell rows
+    or deserializing a model. Scores describe model votes, not naming accuracy.
+    """
+    from spacemap import dataio
+    from spacemap.viewer.cells import _edits_token
+    from spacemap.viewer.sources import fingerprint
+    from . import reference_models, subphenotype_guidance
+
+    identifier = reference_models.current_model_id(model_id)
+    meta = reference_models.metadata(identifier)
+    available = dataio.columns(table)
+    if clusters_column not in available:
+        raise ValueError("This clustering column is no longer available. Run clustering again.")
+    if reference_column and reference_column not in reference_columns(table):
+        raise ValueError("Choose an available manual-reference column.")
+    reference_column = reference_column or (meta.get("column") if meta.get("column") in reference_columns(table) else "")
+    present = _feature_panel(meta, table, features, suffix)
+    if not present:
+        raise ValueError("No model features match this clustering. Choose another model.")
+    path = reference_models.model_path(identifier)
+    key = ("saved_model", str(path), fingerprint(path), fingerprint(path.with_suffix('.json')),
+           str(table), fingerprint(table), _edits_token(str(table)), clusters_column, reference_column, tuple(present))
+    with _LOCK:
+        if key in _CACHE:
+            return _CACHE[key]
+    if cached_only:
+        return None
+    groups = dataio.load(table, columns=[clusters_column])[clusters_column]
+    if not groups.notna().any():
+        raise ValueError("This clustering has no cells to name.")
+    found = subphenotype_guidance.build(table, groups, {"model_id": identifier, "reference_column": reference_column,
+                                                      "model_features": present}, lambda *_: None)
+    found["model"] = {"id": identifier, "name": meta.get("name") or meta.get("method", "Model"),
+                      "method": meta.get("method"), "column": meta.get("column"), "trained": meta.get("trained"),
+                      "validation_held_out": bool(meta.get("validation_held_out"))}
+    with _LOCK:
+        _CACHE[key] = found
+        while len(_CACHE) > 8:
+            _CACHE.popitem(last=False)
+    return found
+
+
+def evidence(hints, clusters=None):
+    """Bounded, source-labelled evidence shared with the assistant."""
+    known = hints["clusters"]
+    chosen = list(dict.fromkeys(clusters or known))[:80]
+    selected = {name: known[name] for name in chosen if name in known}
+    labels = {s["label"] for info in selected.values() for s in info.get("suggestions", [])}
+    validation = hints.get("validation")
+    if validation:
+        validation = {**validation, "phenotypes": [p for p in validation.get("phenotypes", []) if p["phenotype"] in labels]}
+    return {"column": hints.get("reference_column", ""), "model": hints.get("model"),
+            "features": hints.get("features", []), "missing_features": hints.get("missing", []),
+            "validation": validation,
+            "coverage": f"{len(selected)} of {len(known)} clusters; request other IDs with cluster_reference when needed.",
+            "score_meaning": "Mean model probability on sampled cells; not independent accuracy." if hints.get("model_id") else
+                             "Reference-cell and marker-neighbour evidence; not independent accuracy.",
+            "per_cluster": {cluster: {"suggested": info.get("suggestions", []),
+                "reference_cells": info.get("top", []), "sampled": info.get("model_sampled"), "scored": info.get("model_scored")}
+                for cluster, info in selected.items()}}
 
 
 def reference_columns(table):

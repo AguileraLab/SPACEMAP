@@ -27,20 +27,23 @@ class StagedTables:
         write(frame, temporary)
         self.pending.append((temporary, target))
 
-    def publish(self, report):
+    def publish(self, report, *, backup_directory=None):
         if not self.pending:
             return []
         report("Saving tagged tables…", .99)
         protect = getattr(report, "protect_output", None)
         if protect:
             protect()
+        if backup_directory:
+            backup_directory = Path(backup_directory)
+            backup_directory.mkdir(parents=True, exist_ok=False)
         backups, published = {}, []
         try:
             # Same filesystem: links retain complete old files without copying
             # gigabytes or removing them from view before replacement.
             for number, (_, target) in enumerate(self.pending):
                 if target.exists():
-                    backup = self.directory / f"previous-{number}"
+                    backup = (backup_directory / target.name) if backup_directory else self.directory / f"previous-{number}"
                     os.link(target, backup)
                     backups[target] = backup
             for temporary, target in self.pending:
@@ -49,7 +52,9 @@ class StagedTables:
         except BaseException:
             for target in reversed(published):
                 if target in backups:
-                    os.replace(backups[target], target)
+                    restore = self.directory / f"restore-{len(published)}-{target.name}"
+                    os.link(backups[target], restore)
+                    os.replace(restore, target)
                 else:
                     target.unlink(missing_ok=True)
             raise

@@ -55,7 +55,11 @@ setTimeout(async()=>{try{
  const click=(x,y)=>s.viewer.raiseEvent('canvas-click',{quick:true,position:s.viewer.viewport.pixelFromPoint(img().item.imageToViewportCoordinates(x,y)),originalEvent:{}});
  const activate=id=>{s.layers.filter(l=>l.type!=='image').forEach(l=>setVisible(l,l.id===id));buildPanel();};
  s.layerGroups.annotations=true;buildPanel();
- assert(options().parentElement.dataset.layerGroup==='annotations'&&options().previousElementSibling.tagName==='SUMMARY','One compact Top markers / Number row sits directly under Annotations');
+ assert(options().parentElement.tagName==='SUMMARY'&&options().closest('[data-layer-group]').dataset.layerGroup==='annotations','Top markers shares the Annotations header');
+ document.querySelector('[data-layer-group=annotations] > summary').click();
+ assert(!options().getClientRects().length,'Top markers is hidden while Annotations is folded');
+ document.querySelector('[data-layer-group=annotations] > summary').click();
+ assert(!!options().getClientRects().length,'Expanding Annotations reveals Top markers');
  assert(!on().checked&&count().value==='3'&&count().disabled,'Top markers defaults off, with Number 3');
  s.drawInto='drawing';activate('artifact');
  const toolbar=()=>document.querySelector('#drawtools');

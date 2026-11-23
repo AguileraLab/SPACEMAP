@@ -27,9 +27,9 @@ def test_settings_follow_tab5_and_are_checked(tmp_path):
 def test_nuclear_marker_stands_in_when_no_border_marker_is_chosen():
     names = ["DAPI", "CD44", "CD31"]
     blank = dict(segmentation.DEFAULTS)
-    assert segmentation.channels(names, blank) == ("DAPI", ["DAPI"])
+    assert segmentation.channels(names, blank) == (["DAPI"], ["DAPI"])
     chosen = {**blank, "tab4_last_membrane_names": ["CD44", "Missing"]}
-    assert segmentation.channels(names, chosen) == ("DAPI", ["CD44"])
+    assert segmentation.channels(names, chosen) == (["DAPI"], ["CD44"])
 
 
 def test_outlines_are_polygons_in_image_pixels():
@@ -281,10 +281,12 @@ def test_the_job_prepares_each_area_and_skips_one_it_cannot(tmp_path, monkeypatc
     area = root / "area.geojson"
     area.write_text("{}")
     seen = {}
-    monkeypatch.setattr(segmentation, "area_path", lambda r, c, m, name, pending: pending if Path(pending).is_file() else (_ for _ in ()).throw(ValueError("gone")))
     monkeypatch.setattr(segmentation, "run", lambda items, values, report: seen.setdefault("items", items) and [{"image": i["image"], "cells": 1} for i in items])
     result = tasks.segment_images({"root": str(root), "values": {}, "images": [
         {"image": str(images[0]), "area": {"name": "tissue", "pending": str(area)}},
-        {"image": str(images[1]), "area": {"name": "tissue", "pending": str(root / "missing.geojson")}}]}, None, lambda *a: None)
-    assert [i["area"] for i in seen["items"]] == [{"name": "tissue", "path": str(area)}]
-    assert result["skipped"] == [{"image": "b.ome.tiff", "error": "gone"}] and result["count"] == 1
+        {"image": str(images[1]), "area": {"name": "tissue", "pending": str(root / "missing.geojson")}}]}, root / 'job', lambda *a: None)
+    snapshot = root / 'job/segmentation_areas/a.ome.geojson'
+    assert [i["area"] for i in seen["items"]] == [{"name": "tissue", "path": str(snapshot)}]
+    assert snapshot.read_bytes() == area.read_bytes()
+    assert result['skipped'][0]['image'] == 'b.ome.tiff' and 'missing.geojson' in result['skipped'][0]['error']
+    assert result["count"] == 1

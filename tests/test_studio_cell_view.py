@@ -64,3 +64,17 @@ def test_saved_numeric_scores_have_value_controls(tmp_path):
                          anchor_column="cell_id", anchor_values=[101, 102])
     kinds = cell_view.column_kinds(table)
     assert kinds["phenotype"] == "group" and kinds["prediction_score"] == "value"
+
+
+def test_cell_colour_controls_follow_saved_values_in_numeric_columns(tmp_path):
+    from spacemap import labels
+
+    table = _table(tmp_path / 'cells.parquet', [1, 2], [10, 20],
+                   {'phenotype_ref1': [np.nan, np.nan], 'score': [1., 2.]})
+    assert cell_view.column_kinds(table)['phenotype_ref1'] == 'value'
+    labels.append(table, [{'row': 0, 'column': 'phenotype_ref1', 'value': 'Treg'},
+                          {'row': 1, 'column': 'score', 'value': '2.5'}])
+    kinds = cell_view.column_kinds(table)
+    assert kinds['phenotype_ref1'] == 'group' and kinds['score'] == 'value'
+    lookup, shown, total = cell_view.keep(table, 'roi', [{'col': 'phenotype_ref1', 'values': ['Treg']}])
+    assert shown == 1 and total == 2 and lookup[1] and not lookup[2]

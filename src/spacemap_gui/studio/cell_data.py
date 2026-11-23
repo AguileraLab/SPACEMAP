@@ -224,7 +224,8 @@ def build(root, config, mappings, image, source, choice, cache, segmentation=Non
     from spacemap.viewer.catalog import sample_of
 
     roi = sample_of(sample)
-    identity = sha256(json.dumps({"source": str(Path(source).resolve()), **choice}, sort_keys=True).encode()).hexdigest()[:12]
+    binding = str(Path(segmentation).resolve()) if show == "cells" and segmentation else ""
+    identity = sha256(json.dumps({"source": str(Path(source).resolve()), **choice, "segmentation": binding}, sort_keys=True).encode()).hexdigest()[:12]
     folder = _folder(root, image)
     folder.mkdir(parents=True, exist_ok=True)
     stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", Path(shown_name(source)).stem)[:60]
@@ -273,7 +274,7 @@ def build(root, config, mappings, image, source, choice, cache, segmentation=Non
     for column in frame.columns[frame.dtypes == object]:
         frame[column] = frame[column].astype("string")
     frame.to_parquet(table, index=False)
-    record = {"id": identity, "name": shown_name(source), "source": str(Path(source).resolve()), "choice": choice, "show": show,
+    record = {"id": identity, "name": shown_name(source), "source": str(Path(source).resolve()), "choice": choice, "show": show, "segmentation": binding,
               "table": str(table), "geojson": str(geojson) if geojson else "", "rows": rows_total, "kept": int(keep.sum()),
               "matched": matched, "within": within_name, "within_key": choice.get("within") or ""}
     _save(root, image, [item for item in records(root, image) if item.get("id") != identity] + [record])
@@ -286,16 +287,8 @@ def remove(root, image, identity):
     if not gone:
         raise ValueError("That data layer is not on this image any more.")
     _save(root, image, [item for item in found if item.get("id") != identity])
-    from spacemap.viewer import cells as viewer_cells
-
-    building = {str(Path(thread.name)) for thread in viewer_cells._BUILDING.values() if thread.is_alive()}
-    for item in gone:  # what was built for it (the source table is never touched)
-        for path in (item.get("table"), item.get("geojson")):
-            if not path or not Path(path).is_file():
-                continue
-            if path == item.get("geojson") and any(Path(path).stem in name for name in building):
-                continue  # its outlines are still being drawn: the file goes with the next clean-up
-            Path(path).unlink()
+    # Removing a view is not file cleanup. Other open views or saved maps may
+    # still refer to these generated tables/outlines, as well as the source CSV.
 
 
 def describe(record):

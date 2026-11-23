@@ -5,8 +5,10 @@ from viewer_threshold_browser import main
 
 
 def setup(root):
+    import shutil
     import numpy as np
     import tifffile
+    from spacemap_gui.studio.phenotyping_inputs import save_folders
     table = root / "cells.csv"
     frame = pd.read_csv(table)
     frame["phenotype_ml_consensus"] = ["B", "CD4"] * 20
@@ -19,6 +21,13 @@ def setup(root):
     tifffile.imwrite(root / "roi2.ome.tiff", np.zeros((2, 400, 400), dtype=np.uint16),
                      metadata={"axes": "CYX", "PhysicalSizeX": .6, "PhysicalSizeY": .6,
                                "Channel": {"Name": ["M0", "M1"]}})
+    # The shared harness also has a background-corrected copy of roi. Spatial
+    # deliberately refuses ambiguous same-sample images, so assign one folder.
+    image_folder = root / "images"
+    image_folder.mkdir()
+    for name in ("roi", "roi2"):
+        shutil.copyfile(root / f"{name}.ome.tiff", image_folder / f"{name}.ome.tiff")
+    save_folders(root, {"images": str(image_folder)})
     for name in ("roi", "roi2"):
         outlines = root / f"outputs/segmentation/{name}.ome_cell_boundaries.geojson"
         outlines.parent.mkdir(parents=True, exist_ok=True)
@@ -84,6 +93,10 @@ setTimeout(async()=>{try{
  assert(getComputedStyle(input('Show TLS in roi')).cursor==='pointer','TLS count badges use the pointer cursor');
  assert(input('TLS edge trim')?.value==='0','Automatic edge trim defaults to the original boundary');
  await until(()=>button(tools(),'Review'));
+ input('Select all TLS candidates in this image').click();button(tools(),'Flag for review').click();
+ await until(async()=>(await(await fetch(base+'/review')).json()).items.filter(i=>i.kind==='tls').length===2);
+ const flagged=(await(await fetch(base+'/review')).json()).items.filter(i=>i.kind==='tls');
+ assert(flagged.every(i=>i.target.count===20)&&new Set(flagged.map(i=>i.target.ids[0])).size===2,'TLS review distinguishes identical local IDs in separate tissue pieces');
  const review=button(tools(),'Review');
  const header=review.closest('table').querySelector('tr').textContent;
  assert(header.includes('Area')&&header.includes('B/T per mm²'),'Review table labels area and density units');

@@ -5,9 +5,13 @@ Each cell gets columns from the annotation it sits in: 0/1 membership of each cl
 edge flag, all inside the cell's own tissue piece. Cell tables are either one CSV per ROI or one
 combined CSV with a column naming the ROI. Every table is matched to its annotation GeoJSON by
 name, or to a file chosen by hand. Settings are Tab 5's ``seg_tag_*`` keys, so classic Tab 5's
-"Cell tagging" page shows and uses the same choices. Tagged tables are new CSVs (the input tables
-are never changed), as classic tagging writes them: batch correction reads them from there.
+"Cell tagging" page shows and uses the same choices. Outputs are separate by default.
+Studio can explicitly update selected annotation fields in an existing merged table,
+retaining other cells, measurements and results, together with a matching saved copy.
 """
+
+from . import project_files
+
 
 from functools import lru_cache
 from pathlib import Path
@@ -62,6 +66,8 @@ DEFAULTS[FOLLOW_KEY] = True
 NAMES_KEY, UNITS_KEY, BED_COLUMN_KEY, USE_EXPORT_KEY = ("seg_tag_column_names", "seg_tag_units", "seg_tag_bed_column",
                                                         "seg_tag_use_annotation_export")
 SOURCE_KEY = "seg_tag_annotation_source"
+UPDATE_KEY = "seg_tag_update_merged"
+DEFAULTS[UPDATE_KEY] = False
 SOURCES = ("", "export", "imported", "folder")
 FOLDER_KEYS = {key for key, _ in FOLDERS.values()}
 TEXT_LIMIT = 128
@@ -96,7 +102,7 @@ def _csvs(folder):
     folder = Path(folder)
     if not folder.is_dir():
         return []
-    return sorted(p.name for p in folder.iterdir() if p.is_file() and p.suffix.lower() in TABLE_SUFFIXES
+    return sorted(p.name for p in folder.iterdir() if p.is_file() and not project_files.excluded(p) and p.suffix.lower() in TABLE_SUFFIXES
                   and not p.name.startswith(".") and not p.name.lower().endswith(".csv.parquet"))
 
 
@@ -107,11 +113,20 @@ def _columns(path):
 
 
 def _batch_values(path, column):
-    from spacemap import dataio
-
     if not column or not Path(path).is_file():
         return []
-    return sorted(map(str, dataio.load(str(path), columns=[column], apply_labels=False)[column].dropna().astype(str).unique()))
+    info = Path(path).stat()
+    return list(_cached_batch_values(str(path), column, info.st_mtime_ns, info.st_size))
+
+
+@lru_cache(maxsize=64)
+def _cached_batch_values(path, column, modified, size):
+    from spacemap import dataio
+
+    if Path(path).suffix.lower() == '.csv':
+        import pandas as pd
+        return tuple(sorted(pd.read_csv(path, usecols=[column], dtype={column: str})[column].dropna().unique()))
+    return tuple(sorted(map(str, dataio.load(str(path), columns=[column], apply_labels=False)[column].dropna().astype(str).unique())))
 
 
 def read_table(path):
@@ -218,6 +233,10 @@ def sources(root, state):
         pairs = [(name, tab5.sample_id_from_csv(name, state[tab5.CSV_SUFFIX_KEY])) for name in tables]
     classes = []
     exports, images = _exports_and_images(root)
+    from . import segmentation
+    from .settings import read_config
+    config = read_config(root)
+    image_folder = segmentation.step_folders(root, config, config.get('directory_mappings') or {})['images']
     for source, sample in pairs:
         chosen = matches.get(source) or matches.get(sample)
         path, exported = annotation_path(state, sample, chosen, exports)
@@ -228,7 +247,8 @@ def sources(root, state):
                               "chosen": chosen or "", "classes": names, "exported": exported,
                               "origin": "export" if exported else "imported" if path in imported else "folder" if path else "",
                               "imported": [["imported:" + Path(p).name, _shown_name(p)] for p in imported],
-                              "image": images.get(_sample_key(sample))})
+                              "image": images.get(_sample_key(sample)),
+                              "image_path": str(image_folder / images[_sample_key(sample)]) if _sample_key(sample) in images else None})
     found["classes"] = classes
     found["geojson_files"] = sorted(p.name for p in Path(geojson_dir).glob("*.geojson")) if Path(geojson_dir).is_dir() else []
     x, y = _coordinates(found["columns"], state)
@@ -399,7 +419,7 @@ def check(changes):
         elif key == "seg_tag_cpu_workers":
             if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 256:
                 raise ValueError("CPU cores must be a whole number from 0 (Auto) to 256.")
-        elif key in {tab5.GEOJSON_OVERRIDE_KEY, tab5.EDGE_ENABLED_KEY, tab5.CLEAN_PATH_KEY, tab5.OVERWRITE_COLUMNS_KEY, tab5.USE_GPU_KEY,
+        elif key in {UPDATE_KEY, tab5.GEOJSON_OVERRIDE_KEY, tab5.EDGE_ENABLED_KEY, tab5.CLEAN_PATH_KEY, tab5.OVERWRITE_COLUMNS_KEY, tab5.USE_GPU_KEY,
                      USE_EXPORT_KEY}:
             if not isinstance(value, bool):
                 raise ValueError("Choose on or off.")
@@ -480,9 +500,27 @@ def save(root, changes, expected):
         return values(root, read_config(root))
 
 
+def updating(state):
+    return state.get(tab5.MODE_KEY) == tab5.MODE_MERGED and bool(state.get(UPDATE_KEY))
+
+
+def output_directory(state):
+    return Path(state[tab5.MERGED_DIR_KEY] if updating(state) else state[tab5.OUTPUT_DIR_KEY])
+
+
 def outputs(state, found):
     """Which tables are already tagged: source -> tagged file name (when it exists)."""
-    folder = Path(state[tab5.OUTPUT_DIR_KEY])
+    folder = output_directory(state)
+    if updating(state):
+        import json
+        from .tagging_update import manifest_path
+        name = found.get('table') or ''
+        receipt = manifest_path(folder / name)
+        try:
+            images = json.loads(receipt.read_text()).get('images', []) if name and receipt.is_file() else []
+        except (OSError, ValueError):
+            images = []
+        return {row['source']: name for row in found['rows'] if row['source'] in images and (folder / name).is_file()}
     suffix = state[tab5.OUTPUT_SUFFIX_KEY]
     if found["mode"] == tab5.MODE_MERGED:
         name = f"{Path(found.get('table') or '').stem}{suffix}{_extension(found.get('table'))}" if found.get("table") else ""
@@ -495,12 +533,64 @@ def outputs(state, found):
     return done
 
 
+def output_versions(state, found, tagged=None):
+    """Cheap stamps of published outputs; staging files never count as ready."""
+    ready = outputs(state, found) if tagged is None else tagged
+    result = {}
+    for source, name in ready.items():
+        path = output_directory(state) / name
+        try:
+            stamp = path.stat()
+        except OSError:
+            continue
+        result[source] = f"{path.resolve()}|{stamp.st_mtime_ns}|{stamp.st_size}"
+    return result
+
+
+def link_output(root, token, published=(), version=None):
+    """Attach this image's saved tags to its existing cell layer, without reopening the image."""
+    from spacemap import dataio
+    from spacemap_gui.viewer import registry
+    from . import cell_links
+    from .settings import read_config
+
+    layer = registry.resolve_object(token, 'cells')
+    if not layer or not layer.get('image'):
+        raise ValueError('Open an image with cells first.')
+    state = values(root, read_config(root))
+    found = sources(root, state)
+    row = next((row for row in found['rows'] if row.get('image') == Path(layer['image']).name), None)
+    if not row:
+        # Original and background-corrected images share a segmentation ROI.
+        # The list can name either copy; verify cell identity below before linking.
+        sample = _sample_key(layer.get('roi') or Path(layer['image']).name)
+        candidates = [item for item in found['rows'] if _sample_key(item.get('sample', '')) == sample]
+        row = candidates[0] if len(candidates) == 1 else None
+    if not row:
+        return {'linked': False}
+    ready = outputs(state, found)
+    name = ready.get('*') or ready.get(row['source'])
+    if not name:
+        return {'linked': False}
+    path = output_directory(state) / name
+    if published and path.resolve() not in {Path(item).resolve() for item in published}:
+        return {'linked': False}
+    stamp = output_versions(state, found, ready).get('*' if '*' in ready else row['source'])
+    if version == stamp:
+        return {'linked': False, 'unchanged': True}
+    result = cell_links.bind(root, path, token, prefix='tagged_', expected_image=layer['image'])
+    return {**result, 'version':stamp, 'name':'Cell tagging results', 'file':str(path.resolve()),
+            'columns':dataio.columns(str(path)) if result.get('linked') else []}
+
+
 def run(settings, folder, report):
-    """Tag the listed tables (a job): each with its own annotation, columns named and converted as chosen. The input
-    tables are never changed; tagged tables are new CSVs in the output folder."""
+    """Tag listed images, saving separate outputs or explicitly updating a merged table."""
     from .tagging_outputs import StagedTables
 
     state = settings["state"]
+    if updating(state):
+        from .tagging_update import run as update_merged
+        return update_merged(settings, folder, report)
     found = settings["found"]
     x, y = found["coordinates"]["x"], found["coordinates"]["y"]
     if not x or not y:

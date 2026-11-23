@@ -26,6 +26,8 @@ applied to the wrong cells, and nothing is dropped without the user choosing to.
 
 from __future__ import annotations
 
+from spacemap.sharing import share, shared_directory
+
 import json
 import logging
 import os
@@ -92,11 +94,12 @@ def _write_parquet(frame: pd.DataFrame, target: Path, meta: Mapping[str, Any]) -
     import pyarrow as pa
     import pyarrow.parquet as pq
 
-    target.parent.mkdir(parents=True, exist_ok=True)
+    shared_directory(target.parent)
     table = pa.Table.from_pandas(frame, preserve_index=False)
     table = table.replace_schema_metadata({_META_KEY: json.dumps(dict(meta), default=str).encode("utf-8")})
     temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
     pq.write_table(table, temporary, compression="snappy")
+    share(temporary)
     os.replace(temporary, target)
 
 
@@ -364,6 +367,7 @@ def _commit(table_path: str | Path, *, progress: Callable[[str], None] | None = 
             frame.to_parquet(temporary, index=False)
         else:
             frame.to_csv(temporary, index=False)
+        share(temporary)
         os.replace(temporary, source)
     except Exception as exc:
         Path(temporary).unlink(missing_ok=True)
@@ -410,6 +414,7 @@ def _write_status(table_path: Path, **fields: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(".tmp")
     temporary.write_text(json.dumps(fields, default=str), encoding="utf-8")
+    share(temporary)
     os.replace(temporary, path)
 
 

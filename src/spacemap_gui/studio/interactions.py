@@ -72,7 +72,12 @@ def run(settings, folder, report):
     chosen = settings["values"]
     available = dataio.columns(settings["table"])
     grouping = [chosen[name] for name in ("batch_col", "roi_col") if chosen[name] and chosen[name] in available]
-    report("Reading the combined table…", 0.05)
+    from spacemap import table_collection
+    from . import spatial_sources
+    if table_collection.is_collection(settings['table']):
+        grouping.append('batch_id')
+        table_collection.validate(settings['table'], [chosen['phenotype_col'], *grouping], settings.get('images'))
+    report("Reading cell tables…", 0.05)
     images = settings.get("images") or []
     frame = dataio.load(
         settings["table"],
@@ -83,6 +88,8 @@ def run(settings, folder, report):
         frame = frame[frame[settings["image_col"]].astype(str).isin(images)]
         if frame.empty:
             raise ValueError("None of the chosen images is in the combined table.")
+    chosen = spatial_sources.isolate_images(frame, chosen, settings['table'])
+    grouping = [chosen[k] for k in ('batch_col', 'roi_col') if chosen.get(k) in frame]
     radius_px = float(chosen["radius_um"]) / float(chosen["pixel_um"])
     report(f"Counting neighbours within {chosen['radius_um']:g} µm and {int(chosen['n_permutations'])} shuffles…", 0.2)
     z, p, long, meta = _compute_interaction_stats(

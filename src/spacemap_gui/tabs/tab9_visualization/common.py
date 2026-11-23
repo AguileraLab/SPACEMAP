@@ -15,12 +15,13 @@ import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 from matplotlib.ticker import PercentFormatter
 import numpy as np
+
+from spacemap.agreement import safe_cohen_kappa
 import pandas as pd
 import seaborn as sns
 import streamlit as st
 from sklearn.metrics import (
     accuracy_score,
-    cohen_kappa_score,
     confusion_matrix,
     matthews_corrcoef,
     precision_recall_fscore_support,
@@ -975,7 +976,7 @@ def compute_method_metrics(df: pd.DataFrame, gt_col: str, methods: list[str]) ->
                 "precision_weighted": precision_w,
                 "recall_weighted": recall_w,
                 "f1_weighted": f1_w,
-                "cohen_kappa": cohen_kappa_score(y_true, y_pred),
+                "cohen_kappa": safe_cohen_kappa(y_true, y_pred),
                 "matthews_corr": matthews_corrcoef(y_true, y_pred),
                 "confusion_matrix": confusion_matrix(y_true, y_pred, labels=labels),
                 "labels": labels,

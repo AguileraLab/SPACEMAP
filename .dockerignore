@@ -43,3 +43,10 @@ package_cache
 
 # Local backup checkouts are not release inputs.
 SPACEMAP_stage_*/
+
+# Local research results and internal development records.
+analysis/
+docs/validation/
+docs/codex/
+skills/
+AGENTS.md

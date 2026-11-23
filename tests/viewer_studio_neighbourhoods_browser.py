@@ -92,7 +92,8 @@ setTimeout(async()=>{
   await until(()=>nameOf('CN 0')==='Tissue' && nameOf('CN 1')==='Tissue' && colourOf('CN 0')===colourOf('CN 1'));
   assert(nameOf('CN 0')==='Tissue' && nameOf('CN 1')==='Tissue' && colourOf('CN 0')===colourOf('CN 1'),'Picked neighbourhoods are named together and share a colour');
   button(tools(),'Show on the image').click();
-  await until(()=>state.layers.some(layer=>layer.color_by==='neighborhood_cn' && layer.id.startsWith('result-')));
+  await until(()=>cells.color_by==='neighborhood_cn');
+  assert(state.layers.filter(layer=>layer.type==='cells').length===1,'Showing neighbourhoods reuses the cell layer');
   tools().querySelectorAll('[aria-label^="Name of CN"]').forEach((input,index)=>{input.value=index?'Lower':'Upper';});
   button(tools(),'Save names').click();
   for(let i=0;i<600;i++){const found=(await jobs()).find(job=>job.kind==='name_clusters');if(found && /done|failed/.test(found.status))break;await delay(100);}

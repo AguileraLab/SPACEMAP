@@ -21,11 +21,12 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
+
+from spacemap.agreement import safe_cohen_kappa
 import pandas as pd
 import seaborn as sns
 from sklearn.metrics import (
     accuracy_score,
-    cohen_kappa_score,
     confusion_matrix,
     matthews_corrcoef,
     precision_recall_fscore_support,
@@ -123,7 +124,7 @@ def validate_individual_methods(df: pd.DataFrame, methods: list[str]) -> list[di
             "precision_weighted": precision_w,
             "recall_weighted": recall_w,
             "f1_weighted": f1_w,
-            "cohen_kappa": cohen_kappa_score(y_true, y_pred),
+            "cohen_kappa": safe_cohen_kappa(y_true, y_pred),
             "matthews_corr": matthews_corrcoef(y_true, y_pred),
             "confusion_matrix": confusion_matrix(y_true, y_pred, labels=labels),
             "labels": labels,
@@ -209,7 +210,7 @@ def calculate_consensus_performance(df_consensus: pd.DataFrame) -> dict | None:
         "precision_weighted": precision_w,
         "recall_weighted": recall_w,
         "f1_weighted": f1_w,
-        "cohen_kappa": cohen_kappa_score(y_true, y_pred),
+        "cohen_kappa": safe_cohen_kappa(y_true, y_pred),
         "matthews_corr": matthews_corrcoef(y_true, y_pred),
         "confusion_matrix": confusion_matrix(y_true, y_pred, labels=labels),
         "labels": labels,

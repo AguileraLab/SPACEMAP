@@ -277,6 +277,7 @@ def _model_reference(part, version):
 
 
 def _versions(root, part):
+    from . import project_files
     versions = _read(folder(root, part) / 'versions.json', [])
     if part == 'debris':
         versions = [*versions, *[{**v, 'id': 'blur:' + v['id'], 'source_part': 'blur'}
@@ -284,7 +285,8 @@ def _versions(root, part):
     for version in versions:
         if "image_names" not in version:  # models made before their image names were kept: read them from the examples
             version["image_names"] = _image_names(root, version, version.get("source_part") or part)
-    return sorted(versions, key=lambda v: v['created'])
+    return sorted((v for v in versions if not project_files.excluded(
+        folder(root, v.get('source_part') or part) / (v['id'].split(':')[-1] + '.joblib'), root)), key=lambda v: v['created'])
 
 
 _NAMES = {}
@@ -839,12 +841,15 @@ def train(settings, report):
 
 def model(root, part, version):
     import joblib
+    from . import project_files
     part, version = _model_reference(part, version)
     versions = _read(folder(root, part) / "versions.json", [])
     record = next((v for v in versions if v["id"] == version and not v.get('deleted_at')), None)
     if record is None:
         raise ValueError("Choose a saved model version.")
     path = folder(root, part) / (record["id"] + ".joblib")
+    if project_files.excluded(path, root):
+        raise ValueError('This model was removed from this project. Import it again to use it.')
     key = str(path.resolve())
     with _lock:
         if key not in _cache:

@@ -81,6 +81,8 @@ def test_the_plan_offers_slides_as_the_unit(project):
     root, config = project
     plan = correction.plan(root, {}, config)
     assert plan["tables"] == 4 and plan["markers"] == MARKERS and plan["unit"] == "slide"
+    from spacemap_gui.tabs.tab6_batch_correction import _pick_batch_marker_defaults
+    assert _pick_batch_marker_defaults(['A', 'B', 'area', 'tissue'], {'tissue_col': 'None'}, phenotyping_markers=[]) == ['A', 'B']
     units = {item["name"]: item["units"] for item in plan["units"]}
     assert units["ROI"] == 4 and units["slide"] == 2 and plan["covariate_options"] == ["timepoint"]
 
@@ -161,8 +163,21 @@ def test_the_settings_are_shared_with_classic(project):
     assert stored["bc_config"]["batch_unit_col"] == "slide" and stored["bc_selected_markers"] == ["A", "B"]
     with pytest.raises(ValueError):
         correction.save(root, {"som_grid_dim": 500})
-    with pytest.raises(ValueError):
-        correction.save(root, {"tissue_col": "x"})
+    filters = {"tissue_col": "tissue", "tissue_val": "inside", "area_col": "area", "area_min_pct": 2, "area_max_pct": 98,
+               "outlier_low": 1, "outlier_high": 99, "add_corrected_indicator": True, "corrected_indicator_col": "was_corrected",
+               "enable_post_qc": True, "filter_overcorrected": True, "qc_percentile_threshold": 97,
+               "filter_distance": True, "max_correction_distance": 9, "output_name": "my_study", "export_csv": True}
+    correction.save(root, filters)
+    stored = json.loads(config_path(root).read_text())
+    assert all(stored['tab_configurations']['tab6_batch_correction']['bc_config'][k] == v for k, v in filters.items())
+    shown = correction.plan(root, {}, stored)['settings']
+    assert all(shown[k] == v for k, v in filters.items())
+    before = config_path(root).read_bytes()
+    for invalid in ({"area_min_pct": 99}, {"outlier_high": 1}, {"tissue_val": float('nan')}, {"outlier_low": -1},
+                    {"export_csv": "yes"}, {"output_name": "../elsewhere"}, {"output_name": "my/file"}, {"max_correction_distance": float('inf')}):
+        with pytest.raises(ValueError):
+            correction.save(root, invalid)
+        assert config_path(root).read_bytes() == before
 
 
 def test_only_the_ticked_tables_are_corrected_and_the_page_shows_them_corrected(project):
@@ -282,3 +297,43 @@ def test_clinical_columns_cannot_replace_marker_values(project):
     samples.link(root, {}, 'slide,A\nS1,65\nS2,54\n', 'slide', 'slide', {'A': ''}, apply=True)
     with pytest.raises(ValueError, match='Rename these Samples columns'):
         correction.run(job(root, config), root / 'job', lambda *args: None)
+
+
+def test_named_output_csv_and_indicator_preserve_excluded_cells(project):
+    from pathlib import Path
+    from spacemap_gui.studio import saved
+
+    root, config = project
+    for table in (root / 'outputs/segmentation').glob('*.csv'):
+        frame = pd.read_csv(table)
+        frame['tissue'] = frame.label % 2
+        frame.to_csv(table, index=False)
+    changes = dict(output_name='reviewed_study', export_csv=True, tissue_col='tissue', tissue_val=1,
+                   area_col='None', outlier_low=0, outlier_high=100, add_corrected_indicator=True,
+                   corrected_indicator_col='included')
+    # Keep the known tissue subset of every image, leaving excluded rows intact.
+    found = correction.run(job(root, config, **changes), root / 'job', lambda *args: None)
+    output = Path(found['output'])
+    assert output.name.startswith('reviewed_study_') and output.suffix == '.parquet'
+    parquet = pd.read_parquet(output)
+    csv = pd.read_csv(found['csv_output'])
+    assert output.with_suffix('.csv') == Path(found['csv_output'])
+    pd.testing.assert_frame_equal(parquet, csv, check_dtype=False)
+    assert len(parquet) == 2400 and parquet.included.sum() == 1200
+    assert parquet.loc[parquet.tissue == 0, 'A_corr'].isna().all()
+    assert parquet.loc[parquet.tissue == 1, 'A_corr'].notna().all()
+    manifest = json.loads(output.with_suffix('.json').read_text())
+    assert all(manifest['config'][key] == value for key, value in changes.items())
+    assert manifest['csv_output'] == found['csv_output']
+    assert all(row['status'] == 'saved' for row in correction.plan(root, {}, config)['rows'])
+    inventory = saved.state({'root': str(root), 'mappings': {}})['tables']
+    assert any(row['id'] == str(output) and row['csv'] == output.with_suffix('.csv').name for row in inventory)
+    old = output.read_bytes()
+    second = correction.save_table(parquet, output.parent, 'reviewed_study')
+    assert second != output and output.read_bytes() == old
+
+
+def test_indicator_cannot_replace_input_measurements(project):
+    root, config = project
+    with pytest.raises(ValueError, match='must not replace'):
+        correction.run(job(root, config, add_corrected_indicator=True, corrected_indicator_col='A'), root / 'job', lambda *args: None)

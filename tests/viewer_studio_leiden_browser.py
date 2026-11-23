@@ -20,10 +20,10 @@ setTimeout(async()=>{
   picker.value='leiden';picker.dispatchEvent(new Event('change'));
   const tools=()=>document.querySelector('#studio-tools');
   await until(()=>tools().querySelector('[aria-label="Resolution"]') && tools().querySelector('[aria-label="Leiden marker M0"]'));
-  await until(()=>tools().querySelector('[aria-label="Phenotyping combined table"]'));
+  await until(()=>tools().querySelector('[aria-label="Phenotyping cell table"]'));
   assert(tools().querySelector('.studio-step-body > .studio-sec .studio-sec-h').textContent.includes('Folders and tables'), 'Phenotyping folders and the selected table are at the top');
   assert(tools().querySelectorAll('tr[data-roi]').length===1 && tools().querySelector('[aria-label="Phenotyping Cell ID column"]').value==='cell_id', 'The combined table supplies ROI rows and cell identity');
-  assert(tools().querySelector('[aria-label="Phenotyping ROI column"]').value==='batch_id' && tools().querySelector('[aria-label="Phenotyping Slide column"]').value==='slide', 'ROI and physical slide columns have explicit roles');
+  assert(tools().querySelector('[aria-label="Phenotyping Image column"]').value==='batch_id' && tools().querySelector('[aria-label="Phenotyping Slide column"]').value==='slide', 'Image and physical slide columns have explicit roles');
   await until(()=>tools().querySelector('[aria-label="Normalise within"]')?.options.length===4);
   const normalizationOptions=Array.from(tools().querySelector('[aria-label="Normalise within"]').options).map(o=>o.textContent);
   assert(normalizationOptions.includes('Each slide (slide)') && normalizationOptions.includes('Each value of slide_id') && new Set(normalizationOptions).size===normalizationOptions.length, 'Slide and slide_id never share a misleading label');
@@ -42,9 +42,8 @@ setTimeout(async()=>{
   const jobs=async()=>(await (await fetch('/spacemap-viewer/api/studio/browser-check/jobs')).json()).jobs;
   const run=(await jobs()).find(job=>job.kind==='leiden');
   assert(run.status==='done' && run.result.column==='phenotype_leiden_check_clusters','Leiden runs as a job and saves the clusters: '+run.message);
-  await until(()=>Array.from(tools().querySelector('[aria-label="ROI result status"]').options).some(o=>o.value===run.result.column));
-  const resultStatus=tools().querySelector('[aria-label="ROI result status"]');resultStatus.value=run.result.column;resultStatus.dispatchEvent(new Event('change'));
-  assert(tools().querySelector('tr[data-roi] .chip.ok')?.textContent.includes('Processed'), 'Finished Leiden results appear as green processed indicators in the ROI list');
+  await until(()=>tools().querySelector('tr[data-roi] [data-phenotyping-method="leiden"]')?.classList.contains('done'));
+  assert(tools().querySelector('tr[data-roi] [data-phenotyping-method="leiden"]').title.includes(run.result.column), 'Finished Leiden results appear as green processed indicators in the ROI list');
   const saved=await (await fetch('/spacemap-viewer/api/studio/browser-check/leiden_settings')).json();
   assert(saved.values.markers.length===2 && saved.values.resolution===1 && saved.values.use_gpu===false,'Run saved the settings into Tab 7\'s Leiden file first');
   const summary=()=>document.querySelector('[aria-label="Heatmap summary"]');
@@ -87,8 +86,10 @@ setTimeout(async()=>{
   assert(publicationRequest.source==='run'&&publicationRequest.job_id===run.id&&!publicationRequest.image_token&&!publicationRequest.selected_cells&&publicationRequest.options.cluster_x&&!publicationRequest.options.cluster_y,'Publication figure uses the full run, with independent X/Y controls and no image or selected-cell restriction');
   window.fetch=realFigureFetch;
   // Suggestions from the reference column (A and B in the test table) reach the list and the heatmap.
-  await until(()=>/\d+ reference cells, 2 labels/.test(tools().textContent) && heat().querySelector('.note'));
-  assert(tools().querySelectorAll('.studio-hints .studio-suggestion').length>0 && /Reference cells: /.test(tools().textContent),'Each cluster gets name suggestions and its reference cells');
+  await until(()=>tools().querySelector('[aria-label="Cluster naming model"]')?.options.length);
+  button(tools().querySelector('.studio-cluster-suggestions'),'Suggest names').click();
+  await until(()=>/\d+ labelled cells/.test(tools().textContent) && heat().querySelector('.note'));
+  assert(tools().querySelectorAll('.studio-hints .studio-suggestion').length>0 && tools().querySelector('.studio-hints .help').getAttribute('data-tip').includes('Manual labels:'),'Each cluster gets a compact name suggestion with reference evidence in help');
   const narrow=heat().getBoundingClientRect().width;
   button(document.querySelector('#studio-figures'),'Large view').click();
   await until(()=>document.querySelector('#stage .studio-figure-large .studio-heatmap') && document.querySelector('#stage .studio-figure-large .studio-heatmap').getBoundingClientRect().width>narrow+40);
@@ -122,6 +123,7 @@ setTimeout(async()=>{
   const together=figures.querySelector('[aria-label="Name the picked clusters"]');together.value='Mixed';
   button(figures,'Name 2').click();
   await until(()=>tools().querySelector('[aria-label="Phenotype of Cluster 1"]').value==='Mixed' && tools().querySelector('[aria-label="Phenotype of Cluster 2"]').value==='Mixed');
+  await until(()=>/Mixed \(1\)/.test(heat().textContent) && tools().querySelector('[aria-label="Colour of Cluster 1"]').value===tools().querySelector('[aria-label="Colour of Cluster 2"]').value);
   assert(/Mixed \(1\)/.test(heat().textContent) && tools().querySelector('[aria-label="Colour of Cluster 1"]').value===tools().querySelector('[aria-label="Colour of Cluster 2"]').value,
     'Picked clusters are named together and share a colour');
   button(document.querySelector('#studio-figures'),'Show all').click();
@@ -149,8 +151,8 @@ setTimeout(async()=>{
   assert(true,'Its top markers are turned on on the image');
   line.click();await until(()=>cells.hidden.size===0 && !tools().querySelector('.studio-where'));
   button(tools(),'Show on the image').click();
-  await until(()=>state.layers.some(layer=>layer.color_by==='phenotype_leiden_check_clusters' && layer.id.startsWith('result-')));
-  assert(true,'The clusters can also be added as their own layer');
+  await until(()=>cells.color_by==='phenotype_leiden_check_clusters');
+  assert(state.layers.filter(layer=>layer.type==='cells').length===1,'Showing clusters reuses the cell layer');
   tools().querySelectorAll('[aria-label^="Phenotype of Cluster"]').forEach((input,index)=>{input.value=index%2?'Tumor':'T cell';input.dispatchEvent(new Event('change'));});
   const swatch=tools().querySelector('[aria-label="Colour of Cluster 0"]');swatch.value='#123456';swatch.dispatchEvent(new Event('input'));
   button(tools(),'Save names').click();
@@ -186,9 +188,11 @@ setTimeout(async()=>{
   window.fetch=async(url,options)=>String(url).endsWith('/chat')&&options&&options.method==='POST'?(sentCluster=JSON.parse(options.body),new Response(JSON.stringify({text:'{"say"'})+'\n'+JSON.stringify({done:{conversation:'check',
     say:'Cluster 0: M0 high; Cluster 1: M1 high.',action:{name:'name_clusters',args:{job_id:run.id,names:{'Cluster 0':'Alpha','Cluster 1':'Beta'}}},runs_now:false,source:'model',remember:[]}})+'\n',
     {status:200,headers:{'Content-Type':'application/x-ndjson'}})):realFetch(url,options);
-  tools().querySelector('[aria-label="Ask AI about Cluster 0"]').click();
+  row('Cluster 0').dispatchEvent(new MouseEvent('click',{bubbles:true}));
+  tools().querySelector('[aria-label="Ask AI about clusters"]').click();
   await until(()=>document.querySelector('[aria-label="Name of Cluster 1"]'));
   assert(sentCluster.page.explorer.job_id===run.id && sentCluster.page.explorer.picked.join()==='Cluster 0' && sentCluster.text.includes('full marker profiles'), 'Ask AI sends the selected run, cluster, reference column and comparison request');
+  await until(()=>tools().querySelector('[aria-label="Phenotype of Cluster 0"]').value==='Alpha' && heat().textContent.includes('Alpha'));
   assert(tools().querySelector('[aria-label="Phenotype of Cluster 0"]').value==='Alpha' && heat().textContent.includes('Alpha'), 'The AI response fills the left name boxes and heatmap before saving');
   window.fetch=realFetch;
   document.querySelector('[aria-label="Name of Cluster 1"]').value='Beta cells';

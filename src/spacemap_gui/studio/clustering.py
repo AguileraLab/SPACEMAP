@@ -178,7 +178,7 @@ def run(settings, folder, report):
     from spacemap import dataio
     from spacemap_workflows import som_pipeline, vortex_pipeline
 
-    from .leiden import _Log
+    from .leiden import _Log, input_columns
 
     from .leiden import where
     from .tasks import save_result, validate_table
@@ -188,12 +188,11 @@ def run(settings, folder, report):
     anchor = settings.get("cell_id_col", "cell_id")
     available = dataio.columns(table)
     roi = settings.get("roi_col") or "batch_id"
-    wanted = [anchor, *config["markers"]]
-    for name in (config.get("batch_id_col"), config.get("filter_col") if config.get("enable_filter") else None, roi):
-        if name and name in available and name not in wanted:
-            wanted.append(name)
-    report("Reading the combined table…", 0.02)
+    wanted = input_columns(available, anchor, config["markers"], config, roi, report)
+    report("Reading Cell data…", 0.02)
     frame = dataio.load(table, columns=wanted)
+    from . import phenotyping_images
+    frame = phenotyping_images.subset(frame, settings)
     method = settings.get("method", "som")
     group = METHODS[method]["group"]
     grid = k = None

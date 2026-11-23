@@ -13,6 +13,9 @@ the annotations it has; a name it lacks is skipped. The source files are never c
 The names given by hand are also kept for the whole project with their colours, so every image offers them.
 """
 
+from . import project_files
+
+
 from copy import deepcopy
 from hashlib import sha256
 import json
@@ -47,18 +50,19 @@ def name_of(feature, kind, layer_name):
 
 def files(root, config, image, output):
     """The image's annotation files: (path, kind, layer name, source, read only)."""
-    from . import annotation, annotation_inputs, annotation_layers, artifact_learning as learning
+    from . import annotation, annotation_inputs, annotation_links, annotation_layers, artifact_learning as learning
 
     sample = annotation.sample_id(image)
     found, seen = [], set()
     outputs = (Path(root) / "outputs").resolve()
+    linked = {row['path'] for row in annotation_links.records(root, image)}
 
     def add(path, kind, name, source="", readonly=False):
         path = Path(path)
         key = str(path.resolve())
-        if path.is_file() and key not in seen:
+        if path.is_file() and key not in seen and not project_files.excluded(path, root):
             seen.add(key)
-            outside = kind == "imported" or kind == "file" and outputs not in path.resolve().parents
+            outside = key in linked or kind == "imported" or kind == "file" and outputs not in path.resolve().parents
             found.append({"path": key, "kind": kind, "layer": name, "source": source, "readonly": readonly,
                           "origin": "imported" if outside else "local"})
 
@@ -601,7 +605,7 @@ def _tokens(text):
     return re.findall(r"[a-z]+|\d+", str(text).lower())
 
 
-def match_image(images, filename):
+def match_image(images, filename, *, fuzzy=True):
     """The image a GeoJSON file belongs to. First by name: the image's name, read as words and numbers, appears whole
     in the file's name (P11_roi_1 in "P11-ROI1 old.geojson", never in P11_roi_10's file); the longest wins. Else the
     one image whose name is clearly the closest (fuzzy); else None, to be assigned by hand."""
@@ -619,6 +623,8 @@ def match_image(images, filename):
         best = max(item[0] for item in found)
         tied = [image for size, image in found if size == best]
         return tied[0] if len(tied) == 1 else None
+    if not fuzzy:
+        return None
     joined = "".join(words)
     scores = sorted(((difflib.SequenceMatcher(None, joined, "".join(_tokens(annotation.sample_id(Path(i).name)))).ratio(), i) for i in images),
                     key=lambda item: -item[0])
@@ -631,7 +637,7 @@ def _annotation_images(root, config):
     from . import annotation
 
     folder = annotation.all_folders(root, config.get("directory_mappings") or {})["images"]
-    return sorted(p for p in folder.iterdir() if p.is_file() and p.name.lower().endswith(annotation.IMAGE_EXTENSIONS)) if folder.is_dir() else []
+    return sorted(p for p in folder.iterdir() if p.is_file() and not project_files.excluded(p, root) and p.name.lower().endswith(annotation.IMAGE_EXTENSIONS)) if folder.is_dir() else []
 
 
 def _stem(name):
@@ -642,23 +648,17 @@ def _stem(name):
 def imports(root, config):
     """Every GeoJSON brought into the project for the Annotation step's images: Studio's imported copies (removable)
     and project files found by an image's name outside the outputs (taken off the image, the file kept)."""
-    from . import annotation
-
-    output = annotation.all_folders(root, config.get("directory_mappings") or {})["output"]
-    rows = []
-    for image in _annotation_images(root, config):
-        for entry in files(root, config, str(image), output):
-            if entry["origin"] != "imported":
-                continue
-            rows.append({"image": image.name, "path": entry["path"], "file": entry["source"], "kind": entry["kind"],
-                         "names": sorted({name for name, _, _ in _scan(entry)}), "polygons": sum(parts for _, _, parts in _scan(entry))})
-    return rows
+    from . import inventory
+    return [{'image': Path(row['image']).name if row['image'] else '', 'path': row['path'], 'file': row['name'],
+             'kind': row['annotation_kind'], 'link_id': row.get('link_id'),
+             'names': sorted(c['name'] for c in row.get('classes', [])), 'polygons': row.get('count', 0)}
+            for row in inventory.listing(root, config, 'tab4', 'imports')['items']]
 
 
 def remove_imports(root, config, items):
     """Take imported files off their images: Studio's copies leave the project (kept in outputs/studio/deleted); a
     project file found by name is only taken off the image's list. Returns how many were removed."""
-    from . import annotation
+    from . import annotation, annotation_links
 
     if not isinstance(items, list) or not items or len(items) > 5000:
         raise ValueError("Tick the imported files to remove.")
@@ -666,6 +666,12 @@ def remove_imports(root, config, items):
     images = {p.name: p for p in _annotation_images(root, config)}
     removed = 0
     for item in items:
+        references = [r for r in annotation_links.records(root) if r['id'] == item.get('link_id') or
+                      (not item.get('link_id') and r['path'] == item.get('path') and (Path(r['image']).name if r['image'] else '') == item.get('image'))]
+        if references:
+            annotation_links.remove(root, {r['id'] for r in references})
+            removed += len(references)
+            continue
         image = images.get(str((item or {}).get("image", "")))
         if image is None:
             continue
@@ -681,37 +687,16 @@ def remove_imports(root, config, items):
 
 
 def import_directory(root, config, folder, report=lambda *a: None):
-    """Every GeoJSON in *folder* imported for the image it names (as several files dropped at once). A file already
-    imported for its image (same name) is skipped. An earlier export can be imported (old annotations to reuse)."""
-    from . import annotation_inputs as inputs
-
-    folder = Path(str(folder or "").replace("${PROJECT_ROOT}", str(root))).expanduser()
-    if not folder.is_absolute():
-        folder = Path(root) / folder
-    if not folder.is_dir():
-        raise ValueError(f"{folder} is not a folder.")
-    found = sorted(p for p in folder.iterdir() if p.is_file() and p.suffix.lower() in (".geojson", ".json"))
-    if not found:
-        raise ValueError(f"{folder} has no GeoJSON files.")
-    images = _annotation_images(root, config)
-    done, skipped, unmatched = [], [], []
-    for number, path in enumerate(found):
-        report(f"{path.name} ({number + 1} of {len(found)})", number / len(found))
-        image = match_image(images, path.name)
-        if image is None:
-            unmatched.append(path.name)
-            continue
-        if any(p.stem.split("_", 1)[-1] == _stem(path.name) for p in inputs.imported(root, image)):
-            skipped.append(f"{path.name} (already imported for {image.name})")
-            continue
-        try:
-            data = json.loads(path.read_text())
-            features = data if isinstance(data, list) else data.get("features") if data.get("type") == "FeatureCollection" else [data]
-            inputs.import_polygons(root, image, path.name, features or [])
-            done.append({"file": path.name, "image": image.name})
-        except (ValueError, OSError, AttributeError) as error:
-            skipped.append(f"{path.name} ({error})")
-    return {"imported": done, "skipped": skipped, "unmatched": unmatched, "count": len(done), "folder": str(folder)}
+    """Register every compatible GeoJSON in a directory without copying geometry."""
+    from . import inventory, annotation_links
+    report("Listing GeoJSON files…", 0)
+    before = {row['id'] for row in annotation_links.records(root)}
+    result = inventory.import_paths(root, config, 'tab4', 'imports', [folder])
+    rows = [row for row in annotation_links.records(root) if row['id'] not in before]
+    report(f"{len(rows)} files linked", 1)
+    return {'imported': [{'file': Path(row['path']).name, 'image': Path(row['image']).name if row['image'] else ''} for row in rows],
+            'skipped': result['skipped'] + [e['name'] + ': ' + e['error'] for e in result['errors']],
+            'unmatched': result['unmatched'], 'count': len(rows), 'folder': str(folder)}
 
 
 def summary(root, config, images, output):
@@ -896,11 +881,13 @@ def hidden_files(root, image):
         return set()
 
 
-def hide_file(root, image, path):
+def hide_file(root, image, path, *, hidden=True):
     from .annotation_edits import _atomic
     from .settings import project_lock
 
     with project_lock(root):
-        hidden = hidden_files(root, image) | {str(Path(path).resolve())}
-        _atomic(_hidden_path(root, image), json.dumps(sorted(hidden), indent=2).encode())
-    return hidden
+        paths = hidden_files(root, image)
+        key = str(Path(path).resolve())
+        paths.add(key) if hidden else paths.discard(key)
+        _atomic(_hidden_path(root, image), json.dumps(sorted(paths), indent=2).encode())
+    return paths

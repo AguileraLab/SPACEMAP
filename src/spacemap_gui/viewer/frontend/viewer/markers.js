@@ -6,23 +6,29 @@
 // Named groups of markers ("T cells", "B cells") with their colours, ranges and
 // names, saved for the project and applied by marker name on any image.
 function markerSets(layer) {
-  const box = el("div", { class: "sets" });
-  const row = el("div", { class: "row wrap" }, [el("label", { class: "lbl", text: "Marker sets" })]);
-  const pick = el("select", { title: "Show a saved set: its markers with their colours, ranges and names; the others are hidden" });
+  const section = imageControlSection('sets', 'Marker sets', 'Choose a saved marker set, or save the selected markers with their colours and display levels. Sets use marker names across images.');
+  const box = section.box; box.classList.add('sets');
+  const row = el("div", { class: "row wrap marker-set-row" });
+  const pick = el("select", { 'aria-label':'Image marker set', title: "Show a saved set: its markers with their colours, ranges and names; the others are hidden" });
+  const count = el('span', {class:'muted marker-set-count', 'aria-live':'polite'});
   pick.appendChild(el("option", { value: "", text: "Choose a set..." }));
   const remove = el("button", { class: "btn small", text: "Delete", title: "Delete the chosen set" });
   remove.hidden = true;
-  const save = el("button", { class: "btn small", text: "Save ticked as set...", title: "Save the ticked markers, with their colours, ranges and names, under a name" });
-  row.append(pick, remove, save);
-  box.appendChild(row);
-  const naming = el("div", { class: "row" });
+  const save = el("button", { class: "btn small", text: "Save selected", title: "Save the selected markers, with their colours, ranges and names, under a name" });
+  row.append(pick, count, remove, save);
+  section.body.appendChild(row);
+  const naming = el("div", { class: "row wrap" });
   naming.hidden = true;
-  const name = el("input", { type: "text", placeholder: "Set name, e.g. T cells" });
+  const name = el("input", { type: "text", placeholder: "Set name", 'aria-label':'Marker set name' });
   const ok = el("button", { class: "btn small primary", text: "Save" });
   const cancel = el("button", { class: "btn small", text: "Cancel", onclick: () => { naming.hidden = true; } });
   naming.append(name, ok, cancel);
-  box.appendChild(naming);
+  section.body.appendChild(naming);
   let sets = {};
+  const updateCount = () => {
+    const selected = sets[pick.value]; count.hidden = !selected;
+    count.textContent = selected ? selected.filter(m => layer.channels.some(c => c.name === m.name)).length + '/' + selected.length + ' here' : '';
+  };
   const fill = (all) => {
     sets = all || {};
     layer.markerSets = sets;
@@ -32,14 +38,16 @@ function markerSets(layer) {
     pick.appendChild(el("option", { value: "", text: "Choose a set..." }));
     Object.keys(sets).sort((a, b) => a.localeCompare(b)).forEach((key) => {
       const present = sets[key].filter((m) => layer.channels.some((c) => c.name === m.name)).length;
-      pick.appendChild(el("option", { value: key, text: key + " (" + present + " of " + sets[key].length + " here)" }));
+      pick.appendChild(el("option", { value: key, text:key, title:present + ' of ' + sets[key].length + ' markers in this image' }));
     });
     pick.value = sets[chosen] ? chosen : (sets[layer.activeSet] ? layer.activeSet : "");
     remove.hidden = !pick.value;
+    updateCount();
   };
   getJSON("/display/" + layer.display_token + "/sets").then((r) => fill(r.sets)).catch(() => {});
   pick.addEventListener("change", () => {
     remove.hidden = !pick.value;
+    updateCount();
     if (pick.value) applySet(layer, pick.value, sets[pick.value] || []);
   });
   remove.addEventListener("click", async () => {
@@ -107,12 +115,13 @@ async function applySet(layer, setName, markers) {
 
 function channelRow(layer, channel) {
   const row = el("div", { class: "channel" + (channel.visible ? "" : " off") });
-  const check = el("input", { type: "checkbox" });
+  const check = el("input", { type: "checkbox", 'aria-label':'Show marker ' + channel.name });
   check.checked = channel.visible;
-  const color = el("input", { type: "color", value: channel.color });
+  const color = el("input", { type: "color", value: channel.color, 'aria-label':channel.name + ' colour' });
   const low = el("input", { type: "number", value: channel.low === undefined ? "" : channel.low, title: "Values at or below this are black" });
   const high = el("input", { type: "number", value: channel.high === undefined ? "" : channel.high, title: "Values at or above this are full colour" });
-  const auto = el("button", { class: "btn small", text: "Auto", title: "Set the range from the image" });
+  low.setAttribute('aria-label', channel.name + ' low'); high.setAttribute('aria-label', channel.name + ' high');
+  const auto = el("button", { class: "btn small", text: "Auto", 'aria-label':'Auto levels for ' + channel.name, title: "Set the range from the image" });
   const changed = () => { remember(layer); refreshLayer(layer); };
   check.addEventListener("change", async () => {
     channel.visible = check.checked;
@@ -135,7 +144,7 @@ function channelRow(layer, channel) {
   auto.disabled = !!layer.autoRun;
   auto.addEventListener("click", () => runMarkerAuto(layer, [channel], layer.displayAuto?.adjust || "both"));
   const shown = channel.label && channel.label !== channel.name ? channel.label + " (" + channel.name + ")" : channel.name;
-  const name = el("span", { class: "cname", text: shown, title: "Click for the histogram, and to rename " + channel.name });
+  const name = el("button", { type:'button', class: "cname", text: shown, title: "Click for the histogram, and to rename " + channel.name });
   name.addEventListener("click", () => {
     layer.histogramFor = layer.histogramFor === channel.index ? null : channel.index;
     showHistogram(layer);
@@ -152,7 +161,7 @@ function channelRow(layer, channel) {
   if (columns.exposure) extra.push(el("span", { class: "cmeta", text: meta.exposure_ms === null || meta.exposure_ms === undefined ? "–" : meta.exposure_ms + " ms", title: "Exposure (from the image file)" }));
   if (extra.length) row.classList.add("with-meta-" + extra.length);  // one or two more columns, so min, max and Auto stay
   row.append(check, color, name, ...extra, low, high, auto);
-  // Studio's Segmentation step: N and M choose the nuclear marker and the cell border (membrane) markers.
+  // Studio's Segmentation step: N and M toggle nuclear and cell-border markers.
   const roles = state.markerRoles;
   if (roles) {
     row.classList.add("with-roles");
@@ -160,10 +169,11 @@ function channelRow(layer, channel) {
       const button = el("button", { type: "button", class: "role-toggle " + role + (on ? " on" : ""), text,
         title: label + " " + channel.name, "aria-label": label + " " + channel.name, "aria-pressed": String(on) });
       button.addEventListener("click", () => roles.onChange(role, channel.name));
+      button.disabled=role==='nuclear'?on&&roles.nuclear.length===1:roles.nuclear.includes(channel.name);
       return button;
     };
-    row.insertBefore(toggle("membrane", "M", roles.membrane.includes(channel.name), "Cell border marker"), name);
-    row.insertBefore(toggle("nuclear", "N", roles.nuclear === channel.name, "Nuclear marker"), row.querySelector(".role-toggle.membrane"));
+    name.after(toggle("nuclear", "N", roles.nuclear.includes(channel.name), "Nuclear marker"),
+      toggle("membrane", "M", roles.membrane.includes(channel.name), "Cell border marker"));
   }
   const marker = linkedMarker(layer, channel);
   if (marker) {
@@ -218,8 +228,7 @@ function cellControls(layer, body) {
         layer.colormap || "viridis", (v) => { layer.colormap = v; bump(layer); })]);
     colourMap.hidden = true;  // shown once the legend says the column is numeric
     body.appendChild(colourMap);
-    legendInto(layer, body, "/cells/" + layer.token + "/legend?t=" + encodeURIComponent(layer.table) +
-      "&col=" + encodeURIComponent(layer.color_by) + "&cmap=" + encodeURIComponent(layer.colormap || "viridis"),
+    legendInto(layer, body, "/cells/" + layer.token + "/legend?" + cellColourQuery(layer),
       (kind) => { colourMap.hidden = kind !== "numeric"; });
   }
   if (layer.resolve && !state.studio) liveResolveInto(layer, body);

@@ -17,8 +17,13 @@ from spacemap.viewer.sources import fingerprint
 
 
 def source_revision(settings):
+    from spacemap import table_collection
     paths = [Path(settings["table"]), labels.sidecar_path(settings["table"])]
     paths.extend(Path(item["file"]) for item in pending_columns.pending(settings["table"]))
+    if table_collection.is_collection(settings['table']):
+        for row in table_collection.entries(settings['table']):
+            paths.extend([Path(row['path']), labels.sidecar_path(row['path'])])
+            paths.extend(Path(item['file']) for item in pending_columns.pending(row['path']))
     paths.extend(Path(settings[key]) for key in ("panel", "thresholds", "settings") if settings.get(key))
     if settings.get("result") == "tls_candidates":
         paths.extend(Path(source["path"]) for source in (settings.get("tissue_sources") or {}).values())
@@ -32,15 +37,19 @@ def overwrite_columns(settings):
     columns = settings.get("overwrite_columns") or []
     output = settings["output_col"]
     auxiliary = settings.get("auxiliary_columns") or []
-    allowed_auxiliary = {output + suffix for suffix in ("_score", "_confidence", "_consensus", "_refined")}
+    allowed_auxiliary = {output + suffix for suffix in ("_score", "_confidence", "_consensus", "_refined", "_detail")}
     allowed_auxiliary.update(settings.get(key) for key in ("confidence_column", "refined_column"))
     if settings.get("result") == "tls_candidates":
         from .tls import outputs
         allowed_auxiliary = set(outputs(output)[1:])
+    if settings.get("result") == "gland_types":
+        allowed_auxiliary = {settings["values"]["niche_col"]}
     if not isinstance(auxiliary, list) or any(not isinstance(c, str) or c not in allowed_auxiliary for c in auxiliary):
         raise ValueError("Choose valid score and refined output columns.")
     permitted = {output, settings.get("phenotype_col"), *auxiliary}
     output_pattern = r"phenotype_[A-Za-z0-9_]{1,118}"
+    if settings.get("result") == "gland_types":
+        output_pattern = r"[A-Za-z_][A-Za-z0-9_]{0,127}"
     if settings.get("result") == "tls_candidates":
         from .tls import PREFIX
         output_pattern = PREFIX.pattern
@@ -61,6 +70,9 @@ def overwrite_columns(settings):
     chosen = settings.get("values") or {}
     protected.update(chosen.get(key) for key in ("phenotype_col", "batch_col", "roi_col"))
     protected.update([settings.get("clusters_col"), settings.get("image_col")])
+    protected.update(f.get('column') for f in config.get('filters', []))
+    protected.add(config.get('reference_column'))
+    protected.add(config.get('normalization_col'))
     if (not isinstance(columns, list) or any(not isinstance(name, str) or name not in permitted
             or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,127}" if name in auxiliary else output_pattern, name) for name in columns)
             or set(columns).intersection(protected)):
@@ -70,6 +82,10 @@ def overwrite_columns(settings):
 
 def validate_table(settings):
     table = settings["table"]
+    from spacemap import table_collection
+    if table_collection.is_collection(table):
+        table_collection.validate(table, settings.get('markers') or [],
+            settings.get('images') or settings.get('selected_images'), anchors=True)
     available = dataio.columns(table)
     column = settings["output_col"]
     # Results are phenotype_ columns; neighbourhood results are neighborhood columns (Tab 8's name).
@@ -80,20 +96,27 @@ def validate_table(settings):
         from .neighbourhoods import RESULT_OUTPUT
         if not isinstance(column, str) or not RESULT_OUTPUT.fullmatch(column):
             raise ValueError("Choose a new neighborhood output column using letters, numbers and underscores.")
+    elif settings.get("result") == "gland_types":
+        from .gland_clonality import check
+        check(settings["values"])
     elif not isinstance(column, str) or not re.fullmatch(r"phenotype_[A-Za-z0-9_]{1,118}", column):
         raise ValueError("Choose a new phenotype_ output column using letters, numbers and underscores.")
     replacing = overwrite_columns(settings)
     outputs = {column, *(settings.get("auxiliary_columns") or [])}
     if settings.get("result") == "neighbourhoods" and settings.get("names_col"):
         outputs.add(settings["names_col"])
-    if (outputs & set(available)) - replacing:
+    output_available = set(available)
+    if table_collection.is_collection(table):
+        output_available = {c for row in table_collection.entries(table, settings.get('images') or settings.get('selected_images'))
+                            for c in dataio.columns(row['path'])}
+    if (outputs & output_available) - replacing:
         raise ValueError("That output column already exists. Choose a new name or tick Overwrite existing results.")
     anchor = settings.get("cell_id_col", "cell_id")
     if anchor not in available:
-        raise ValueError(f"{Path(table).name} has no {anchor} column. Choose the combined output from Batch correction at the top of Phenotyping.")
+        raise ValueError(f"{Path(table).name} has no {anchor} column. Choose a unique Cell ID in Column roles.")
     ids = dataio.load(table, columns=[anchor])[anchor]
     if ids.isna().any() or ids.astype(str).str.strip().eq("").any() or ids.astype(str).duplicated().any():
-        raise ValueError(f"{anchor} must identify each cell once: this table has missing or repeated IDs. Choose the combined output from Batch correction.")
+        raise ValueError(f"{anchor} has missing or repeated IDs. Choose IDs unique across this table.")
     if not settings.get("markers") or not set(settings["markers"]) <= set(available):
         raise ValueError("Choose markers that have saved measurements in this table.")
     return available
@@ -129,6 +152,10 @@ def _restore_on_failure(table, columns):
 
 
 def save_result(settings, columns, anchor, report):
+    from spacemap import table_collection
+    if table_collection.is_collection(settings['table']):
+        from . import spatial_sources
+        return spatial_sources.save_result(settings, columns, anchor, report)
     replacing = overwrite_columns(settings)
     report("Saving the result…" if replacing else "Saving the new result column…", 0.98)
     protect_output = getattr(report, "protect_output", None)
@@ -141,7 +168,10 @@ def save_result(settings, columns, anchor, report):
             )
         if any(column in dataio.columns(settings["table"]) and column not in replacing for column in columns):
             raise ValueError("A result column with this name appeared during the run. Earlier data was kept.")
-        with _restore_on_failure(settings["table"], columns) if replacing or settings.get("result") == "tls_candidates" else nullcontext():
+        processed_cells = len(anchor)
+        from . import phenotyping_images
+        columns, anchor = phenotyping_images.publish_columns(settings, columns, anchor)
+        with _restore_on_failure(settings["table"], columns) if replacing or settings.get("result") in ("tls_candidates", "gland_types") else nullcontext():
             pending_columns.save(
                 settings["table"],
                 columns,
@@ -155,9 +185,14 @@ def save_result(settings, columns, anchor, report):
         "table": settings["table"],
         "column": settings["output_col"],
         "columns": list(columns),
-        "cells": len(anchor),
+        "cells": processed_cells,
         "cell_id_column": settings.get("cell_id_col", "cell_id"),
     }
+
+
+def gland_types(settings, folder, report):
+    from .gland_clonality import run
+    return run(settings, folder, report)
 
 
 def resolve_scores(frame, thresholds, markers, options, roi_column):
@@ -237,8 +272,12 @@ def resolve_all(settings, folder, report):
     markers = settings["markers"]
     roi_column = settings.get("roi_column", "batch_id")
     options = settings.get("options") or {}
-    identity = dataio.load(table, columns=list(dict.fromkeys([roi_column, settings.get("cell_id_col", "cell_id"),
+    identity = dataio.load(table, columns=list(dict.fromkeys([*([roi_column] if roi_column else []), settings.get("cell_id_col", "cell_id"),
         *([options["filter_col"]] if options.get("enable_filter") else [])]))).reset_index(drop=True)
+    if not roi_column:
+        from spacemap.viewer.catalog import sample_of
+        roi_column = "__spacemap_image__"
+        identity[roi_column] = settings.get("single_image") or sample_of(table)
     anchor = identity[settings.get("cell_id_col", "cell_id")]
     if anchor.isna().any() or anchor.astype(str).duplicated().any():
         raise ValueError("Cell IDs must be present and unique before saving a result.")
@@ -314,6 +353,11 @@ def validate_mr_ml(settings):
         raise ValueError("Choose a phenotype_ name for the filtered labels column.")
     if len({column, score, refined}) != 3:
         raise ValueError("Prediction, score and filtered label columns must have different names.")
+    detail = settings.get('detail_column')
+    if detail and (detail != column + '_detail' or len(detail) > 128 or detail in {score, refined}):
+        raise ValueError('Choose distinct prediction column names, up to 121 characters.')
+    if detail and detail in available and detail not in overwrite_columns(settings):
+        raise ValueError('The detailed output column exists. Choose a new name or tick Overwrite existing results.')
     if ({score, refined} & set(available)) - overwrite_columns(settings):
         raise ValueError("An output column already exists. Choose new names or tick Overwrite existing results.")
     threshold = float(settings.get("confidence_threshold", 0.75))
@@ -363,7 +407,9 @@ def mr_ml(settings, folder, report):
             ]
         )
     )
-    frame = dataio.load(table, columns=wanted)
+    frame = dataio.load(table, columns=[name for name in wanted if name])
+    from . import phenotyping_images
+    frame = phenotyping_images.subset(frame, settings)
     anchor = frame[settings.get("cell_id_col", "cell_id")]
     if anchor.isna().any() or anchor.astype(str).duplicated().any():
         raise ValueError("Cell IDs must be present and unique.")
@@ -410,6 +456,7 @@ def mr_ml(settings, folder, report):
         refined_confidence_threshold=settings.get("confidence_threshold", 0.75),
         refined_low_confidence_label=settings.get("low_confidence_label", "Others"),
         excluded_phenotypes=settings.get("excluded_phenotypes", ["Others"]),
+        excluded_prediction_phenotypes=settings.get('excluded_prediction_phenotypes', []),
         preloaded_df=frame,
         progress_callback=progress,
         results_callback=result_frames.append,
@@ -472,6 +519,12 @@ def subphenotype(settings, folder, report):
     return run(settings, folder, report)
 
 
+def marker_figures(settings, folder, report):
+    from .marker_figures import run
+
+    return run(settings, folder, report)
+
+
 def consensus_ml(settings, folder, report):
     from .consensus import run
 
@@ -482,6 +535,11 @@ def export_table(settings, folder, report):
     from .saved import export
 
     return export(settings, folder, report)
+
+
+def write_annotations(settings, folder, report):
+    from .annotation_pending import write
+    return write(settings, folder, report)
 
 
 def vortex(settings, folder, report):
@@ -569,9 +627,20 @@ def train_reference_model(settings, folder, report):
     try:
         return train(settings, folder, report)
     except ValueError as exc:
-        if settings.get("auto_train") and ("two phenotypes" in str(exc) or "five complete examples" in str(exc)):
+        if settings.get("auto_train") and ("two phenotypes" in str(exc) or "five complete examples" in str(exc)
+                                           or "Label at least five cells" in str(exc)):
             return {"table":str(settings["table"]), "auto_train":True, "models":[], "waiting":str(exc)}
         raise
+
+
+def reference_collection(settings, folder, report):
+    from .reference_collection import run
+    return run(settings, folder, report)
+
+
+def model_review(settings, folder, report):
+    from .model_review import run
+    return run(settings, folder, report)
 
 
 def subtract_background(settings, folder, report):
@@ -721,8 +790,15 @@ def segment_images(settings, folder, report):
             name = Path(item["image"]).name
             report(f"{name}: preparing its area ({number + 1} of {len(pending)})", 0)
             try:
+                source = item['area']['pending']
+                segmentation.require_single_area(source)
+                source_path = source if isinstance(source, str) else source['path']
+                print(f"Segmentation source GeoJSON: {Path(source_path).resolve()}")
+                print(f"Selected annotation: {source.get('name', item['area']['name']) if isinstance(source, dict) else item['area']['name']}")
                 item["area"] = {"name": item["area"]["name"],
-                                "path": segmentation.area_path(root, config, settings.get("mappings") or {}, name, item["area"]["pending"])}
+                                "path": segmentation.area_path(root, config, settings.get("mappings") or {}, name, source,
+                                    destination=Path(folder) / 'segmentation_areas' / (Path(name).stem + '.geojson'))}
+                print(f"Segmentation mask GeoJSON: {Path(item['area']['path']).resolve()}")
             except (ValueError, OSError) as error:
                 skipped.append({"image": name, "error": str(error)})
                 report(f"{name}: not segmented: {error}", 0)
@@ -1186,3 +1262,8 @@ def export_classes(settings, folder, report):
         settings["image"], settings["config"], settings["output"], settings["sample"], lambda text: report(text, None), scope=settings.get("scope")
     )
     return {"sample": settings["sample"], **found}
+
+
+def phenotyping_images(settings, folder, report):
+    from .phenotyping_images import run
+    return run(settings, folder, report)

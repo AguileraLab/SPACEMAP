@@ -11,8 +11,15 @@ not edit it by hand -- run the script after committing changes. The
 Local machine paths, account identifiers and site-specific cluster names are
 redacted in this public rendering. The original Git history is unchanged.
 
-**51 changes** by **1 contributor**, touching **711 files**. Latest: `0f503be` on 2026-10-16.
+**53 changes** by **1 contributor**, touching **913 files**. Latest: `65599f0` on 2026-11-23.
 
+
+## 2026-11
+
+| Date | Change | Who | Why | Files | Lines |
+| --- | --- | --- | --- | --- | --- |
+| 2026-11-23 | `65599f0` fix: respect optional AI dependencies in tests | Bassel Dawod | let base and Flow CI run without optional AI packages. | 1 | +15/-0 |
+| 2026-11-23 | `59f4ffa` feat: update SPACEMAP Studio to 0.5.0 | Bassel Dawod | add collaborative review, gland and niche analysis, expanded spatial tools, and reliability fixes. | 379 | +44662/-2424 |
 
 ## 2026-10
 
@@ -39,7 +46,7 @@ redacted in this public rendering. The original Git history is unchanged.
 | 2026-09-27 | `20ad9a5` fix(assistant): the local model server on a cluster: one record per node, no leftovers, a free port | Bassel Dawod | the user saw "Port 8091 is already in use" and asked to stop servers left running and to have the model stop with the session. | 3 | +339/-24 |
 | 2026-09-25 | `4de20b9` feat(assistant): one AI setup page; the chosen model starts when you ask | Bassel Dawod | setting up the assistant meant going between Tab 0 (packages, model library, token), the assistant page's Model & Compute tab (provider and API key, start and stop the model, cluster), its Settings tab and Admin Access. A downloaded model still had to be "selected" in Tab 0 before Start worked, the GPU memory menu sent names the runtime rejects (only Auto worked), and nothing could be added without typing a Hugging Face repository by hand. | 9 | +867/-390 |
 | 2026-09-25 | `0f1b0c1` build: one environment for SPACEMAP, the viewer and the assistant; spacemap doctor | Bassel Dawod | the cluster environment had drifted: an old editable SPACEMAP record (V16, its path file pointing at V17) made pip print "requires deepcell / adjusttext" on every install, both OpenCV packages, scikit-image newer than palom allows, and the assistant's packages added by hand (transformers 5 then broke the model server). A fresh install could not even resolve: palom >= 2025 needs zarr >= 2.17, which scimap (Tab 7's SCIMAP method) forbids. | 8 | +492/-173 |
-| 2026-09-25 | `79c406b` fix: Tab 3 reads the last step's images; [local directory] and [local directory] are one folder | Bassel Dawod | in PDAC (and INNATE_all) Tab 3's input had become its own ROI output folder, and Tab 2's output with it, because the two were tied by a folder link. And a project opened as [local directory] but saved as [local directory] (the same folder on the cluster) showed every folder as changed, so pages saved the project and updated again by themselves. | 4 | +255/-8 |
+| 2026-09-25 | `79c406b` fix: Tab 3 reads the last step's images; [local directory] and [local directory] are one folder | Bassel Dawod | in PDAC (and [study project]) Tab 3's input had become its own ROI output folder, and Tab 2's output with it, because the two were tied by a folder link. And a project opened as [local directory] but saved as [local directory] (the same folder on the cluster) showed every folder as changed, so pages saved the project and updated again by themselves. | 4 | +255/-8 |
 | 2026-09-25 | `4922cff` fix(assistant): the local model answers; live download progress | Bassel Dawod | every question to the local model failed with "Only google/gemma-4-12B-it is installed". The runtime starts the model server under the model's Hugging Face name, but the chat sent SPACEMAP's short id, which the server refuses. The chat now sends the same name the runtime uses. | 5 | +147/-15 |
 | 2026-09-25 | `7ea0ff8` fix: keep SPACEMAP's settings out of the node-local /tmp folder | Bassel Dawod | UTSW the cluster sets XDG_DATA_HOME=/tmp/$USER for every user (for podman), and SPACEMAP put its home there. /tmp is local to one node and cleaned, so the assistant's settings and downloaded models, the viewer's state and the interface cache differed from node to node or vanished (a 24 GB model went to one node's /tmp; old folder choices came back from another node's cache). | 3 | +98/-4 |
 | 2026-09-25 | `330c0a9` fix(assistant): keep Python's own itertools.pairwise so the model server loads | Bassel Dawod | spacemap/utils.py replaced itertools.pairwise with its own function (a workaround for palom on Python 3.9). With transformers 5, loading a model imports torch's compiler, which rejects the replacement, so the assistant's model server failed at import ("substitute_in_graph expects a class"). The replacement is now made only where Python lacks pairwise; SPACEMAP requires Python 3.10+, which has it. | 2 | +36/-2 |
@@ -47,7 +54,7 @@ redacted in this public rendering. The original Git history is unchanged.
 | 2026-09-25 | `6371845` test: every page must still render (guard for changes elsewhere) | Bassel Dawod | the image viewer work must leave every SPACEMAP feature intact, and this makes a broken page fail the tests. | 2 | +153/-0 |
 | 2026-09-25 | `afd8ad2` fix(tab3): refill blank marker names and black colours from the image | Bassel Dawod | the P11 channel list showed no names and black colours. | 3 | +84/-10 |
 | 2026-09-25 | `aa5a947` fix: run log crashed on settings keyed by numbers | Bassel Dawod | clicking an image in Tab 3 of the INNATE project raised AttributeError. | 2 | +34/-3 |
-| 2026-09-25 | `c0b12ec` fix: switching to a moved project no longer loops forever | Bassel Dawod | switching from PDAC to INNATE_all_083120206 (moved from SPACEMAP_V17 to SPACEMAP_github/project) froze the interface. | 5 | +117/-6 |
+| 2026-09-25 | `c0b12ec` fix: switching to a moved project no longer loops forever | Bassel Dawod | switching from PDAC to [study project] (moved from SPACEMAP_V17 to SPACEMAP_github/project) froze the interface. | 5 | +117/-6 |
 | 2026-09-24 | `cb65845` fix: keep data out of the project file, and shrink files it already bloated | Bassel Dawod | the PDAC project file reached 44 GB and SPACEMAP hung at start-up using over 60 GB of memory; this had happened before with other results. | 4 | +491/-6 |
 | 2026-09-22 | `dcd8d79` feat: one run log per tab, and phenotype saves without rewriting the CSV | Bassel Dawod | the user found Leiden's log box off and asked for one consistently named, always-on log that records settings changes, time and compute; and asked for fast Parquet-backed saves that survive an interface crash. | 24 | +1893/-167 |
 | 2026-09-22 | `1cd78dd` fix: save every setting, unify Tab 7 layout and terminal output | Bassel Dawod | preparing SPACEMAP for publication. Users lost settings on reload, Tab 7 methods looked and read differently, terminal output could not be followed, and two notebooks silently did not run what they describe. | 67 | +1746/-1270 |
@@ -78,6 +85,396 @@ redacted in this public rendering. The original Git history is unchanged.
 ---
 
 ## Files changed per commit
+
+<details><summary><code>65599f0</code> fix: respect optional AI dependencies in tests</summary>
+
+- `tests/test_environment.py`
+
+</details>
+
+<details><summary><code>59f4ffa</code> feat: update SPACEMAP Studio to 0.5.0</summary>
+
+- `.dockerignore`
+- `.github/workflows/ci.yml`
+- `.gitignore`
+- `CHANGELOG.md`
+- `CITATION.cff`
+- `README.md`
+- `docs/LEDGER.md`
+- `docs/first-project.md`
+- `docs/handover.md`
+- `docs/installation.md`
+- `docs/phenotyping-models.md`
+- `docs/phenotyping-without-correction.md`
+- `docs/publishing-changes.md`
+- `docs/shared-installation.md`
+- `docs/studio-batch-correction-guide.md`
+- `docs/studio-cell-data.md`
+- `docs/studio-cell-tagging-guide.md`
+- `docs/studio-design.md`
+- `docs/studio-feature-screening-guide.md`
+- `docs/studio-flow-gating.md`
+- `docs/studio-flow-statistics.md`
+- `docs/studio-gland-types-guide.md`
+- `docs/studio-marker-review.md`
+- `docs/studio-model-runtime.md`
+- `docs/studio-phenotype-switches.md`
+- `docs/studio-phenotyping-startup.md`
+- `docs/studio-release-0.5.0.md`
+- `docs/studio-review-https.md`
+- `docs/studio-review-vpn.md`
+- `docs/studio-selected-retraining.md`
+- `docs/subphenotyping.md`
+- `docs/viewer.md`
+- `pyproject.toml`
+- `scripts/benchmark_flow_gating.py`
+- `scripts/check_release_artifacts.py`
+- `scripts/update_ledger.py`
+- `src/spacemap/agreement.py`
+- `src/spacemap/cell_spatial_annotation.py`
+- `src/spacemap/column_types.py`
+- `src/spacemap/comparison_utils.py`
+- `src/spacemap/dataio.py`
+- `src/spacemap/flow_frame_cache.py`
+- `src/spacemap/flow_gating.py`
+- `src/spacemap/flow_statistics.py`
+- `src/spacemap/flow_transforms.py`
+- `src/spacemap/heatmap.py`
+- `src/spacemap/labels.py`
+- `src/spacemap/marker_exploration.py`
+- `src/spacemap/marker_preprocessing.py`
+- `src/spacemap/marker_review.py`
+- `src/spacemap/ml_mr_utils.py`
+- `src/spacemap/pending_columns.py`
+- `src/spacemap/ph_subpheno_utils.py`
+- `src/spacemap/phenotype_policy.py`
+- `src/spacemap/segmentation_cellpose.py`
+- `src/spacemap/segmentation_inputs.py`
+- `src/spacemap/sharing.py`
+- `src/spacemap/table_collection.py`
+- `src/spacemap/viewer/annotations.py`
+- `src/spacemap/viewer/catalog.py`
+- `src/spacemap/viewer/cells.py`
+- `src/spacemap/viewer/consensus_model.py`
+- `src/spacemap/viewer/reference.py`
+- `src/spacemap/viewer/render.py`
+- `src/spacemap_assistant/model_client.py`
+- `src/spacemap_assistant/model_runtime.py`
+- `src/spacemap_assistant/model_service/server.py`
+- `src/spacemap_gui/components/ai_setup.py`
+- `src/spacemap_gui/pipeline_folders.py`
+- `src/spacemap_gui/studio/ai_setup.py`
+- `src/spacemap_gui/studio/annotation.py`
+- `src/spacemap_gui/studio/annotation_components.py`
+- `src/spacemap_gui/studio/annotation_edits.py`
+- `src/spacemap_gui/studio/annotation_inputs.py`
+- `src/spacemap_gui/studio/annotation_layers.py`
+- `src/spacemap_gui/studio/annotation_links.py`
+- `src/spacemap_gui/studio/annotation_names.py`
+- `src/spacemap_gui/studio/annotation_pending.py`
+- `src/spacemap_gui/studio/artifact_learning.py`
+- `src/spacemap_gui/studio/auto_reference.py`
+- `src/spacemap_gui/studio/background.py`
+- `src/spacemap_gui/studio/cell_data.py`
+- `src/spacemap_gui/studio/cell_inputs.py`
+- `src/spacemap_gui/studio/cell_links.py`
+- `src/spacemap_gui/studio/cell_view.py`
+- `src/spacemap_gui/studio/chat.py`
+- `src/spacemap_gui/studio/cluster_names.py`
+- `src/spacemap_gui/studio/clustering.py`
+- `src/spacemap_gui/studio/commands.py`
+- `src/spacemap_gui/studio/consensus.py`
+- `src/spacemap_gui/studio/correction.py`
+- `src/spacemap_gui/studio/data_editor.py`
+- `src/spacemap_gui/studio/data_view.py`
+- `src/spacemap_gui/studio/flow_cache.py`
+- `src/spacemap_gui/studio/flow_export.py`
+- `src/spacemap_gui/studio/flow_gating.py`
+- `src/spacemap_gui/studio/flow_split.py`
+- `src/spacemap_gui/studio/flow_statistics.py`
+- `src/spacemap_gui/studio/flow_transfer.py`
+- `src/spacemap_gui/studio/folders.py`
+- `src/spacemap_gui/studio/gland_clonality.py`
+- `src/spacemap_gui/studio/interactions.py`
+- `src/spacemap_gui/studio/inventory.py`
+- `src/spacemap_gui/studio/investigation.py`
+- `src/spacemap_gui/studio/jobs.py`
+- `src/spacemap_gui/studio/leiden.py`
+- `src/spacemap_gui/studio/manual_reference.py`
+- `src/spacemap_gui/studio/marker_figures.py`
+- `src/spacemap_gui/studio/marker_review.py`
+- `src/spacemap_gui/studio/model_library.py`
+- `src/spacemap_gui/studio/model_review.py`
+- `src/spacemap_gui/studio/mr_ml.py`
+- `src/spacemap_gui/studio/neighbourhoods.py`
+- `src/spacemap_gui/studio/phenotype_assessment.py`
+- `src/spacemap_gui/studio/phenotyping_images.py`
+- `src/spacemap_gui/studio/phenotyping_inputs.py`
+- `src/spacemap_gui/studio/phenotyping_overview.py`
+- `src/spacemap_gui/studio/project_files.py`
+- `src/spacemap_gui/studio/reference_collection.py`
+- `src/spacemap_gui/studio/reference_examples.py`
+- `src/spacemap_gui/studio/reference_models.py`
+- `src/spacemap_gui/studio/reference_setup.py`
+- `src/spacemap_gui/studio/reference_splits.py`
+- `src/spacemap_gui/studio/registration.py`
+- `src/spacemap_gui/studio/resolve_setup.py`
+- `src/spacemap_gui/studio/review_images.py`
+- `src/spacemap_gui/studio/review_results.py`
+- `src/spacemap_gui/studio/review_store.py`
+- `src/spacemap_gui/studio/rois.py`
+- `src/spacemap_gui/studio/saved.py`
+- `src/spacemap_gui/studio/screening.py`
+- `src/spacemap_gui/studio/screening_comparisons.py`
+- `src/spacemap_gui/studio/screening_figures.py`
+- `src/spacemap_gui/studio/screening_graph.py`
+- `src/spacemap_gui/studio/screening_stability.py`
+- `src/spacemap_gui/studio/screening_statistics.py`
+- `src/spacemap_gui/studio/segmentation.py`
+- `src/spacemap_gui/studio/selection.py`
+- `src/spacemap_gui/studio/shell.py`
+- `src/spacemap_gui/studio/spatial.py`
+- `src/spacemap_gui/studio/spatial_exports.py`
+- `src/spacemap_gui/studio/spatial_sources.py`
+- `src/spacemap_gui/studio/steps.py`
+- `src/spacemap_gui/studio/storage.py`
+- `src/spacemap_gui/studio/subphenotype_guidance.py`
+- `src/spacemap_gui/studio/subphenotypes.py`
+- `src/spacemap_gui/studio/summary_cache.py`
+- `src/spacemap_gui/studio/tagging.py`
+- `src/spacemap_gui/studio/tagging_outputs.py`
+- `src/spacemap_gui/studio/tagging_update.py`
+- `src/spacemap_gui/studio/tasks.py`
+- `src/spacemap_gui/studio/tls.py`
+- `src/spacemap_gui/studio/training.py`
+- `src/spacemap_gui/studio/view_selection.py`
+- `src/spacemap_gui/tabs/tab5_segmentation.py`
+- `src/spacemap_gui/tabs/tab6_batch_correction.py`
+- `src/spacemap_gui/tabs/tab7_phenotyping/visualization.py`
+- `src/spacemap_gui/tabs/tab8_analysis/__init__.py`
+- `src/spacemap_gui/tabs/tab8_analysis/feature_screening_core.py`
+- `src/spacemap_gui/tabs/tab8_analysis/gland_clonality.py`
+- `src/spacemap_gui/tabs/tab9_visualization/common.py`
+- `src/spacemap_gui/tabs/tab9_visualization/f1_paper_figures.py`
+- `src/spacemap_gui/tabs/tab9_visualization/f1_validation_utils.py`
+- `src/spacemap_gui/viewer/api.py`
+- `src/spacemap_gui/viewer/artifact_api.py`
+- `src/spacemap_gui/viewer/frontend/artifact-review.js`
+- `src/spacemap_gui/viewer/frontend/flow-gating.css`
+- `src/spacemap_gui/viewer/frontend/flow-gating.html`
+- `src/spacemap_gui/viewer/frontend/flow-gating.js`
+- `src/spacemap_gui/viewer/frontend/flow-stats.js`
+- `src/spacemap_gui/viewer/frontend/gland-types.js`
+- `src/spacemap_gui/viewer/frontend/index.html`
+- `src/spacemap_gui/viewer/frontend/review.css`
+- `src/spacemap_gui/viewer/frontend/screening-results.js`
+- `src/spacemap_gui/viewer/frontend/spatial-panels.js`
+- `src/spacemap_gui/viewer/frontend/studio-lists.js`
+- `src/spacemap_gui/viewer/frontend/studio.js`
+- `src/spacemap_gui/viewer/frontend/viewer.css`
+- `src/spacemap_gui/viewer/frontend/viewer/annotation-components.js`
+- `src/spacemap_gui/viewer/frontend/viewer/annotation-rows.js`
+- `src/spacemap_gui/viewer/frontend/viewer/annotation-selection.js`
+- `src/spacemap_gui/viewer/frontend/viewer/bring.js`
+- `src/spacemap_gui/viewer/frontend/viewer/cell-context.js`
+- `src/spacemap_gui/viewer/frontend/viewer/cell-rows.js`
+- `src/spacemap_gui/viewer/frontend/viewer/cells.js`
+- `src/spacemap_gui/viewer/frontend/viewer/core.js`
+- `src/spacemap_gui/viewer/frontend/viewer/data-view.js`
+- `src/spacemap_gui/viewer/frontend/viewer/flow.js`
+- `src/spacemap_gui/viewer/frontend/viewer/histogram.js`
+- `src/spacemap_gui/viewer/frontend/viewer/image.js`
+- `src/spacemap_gui/viewer/frontend/viewer/layers.js`
+- `src/spacemap_gui/viewer/frontend/viewer/legends.js`
+- `src/spacemap_gui/viewer/frontend/viewer/markers.js`
+- `src/spacemap_gui/viewer/frontend/viewer/panel-windows.js`
+- `src/spacemap_gui/viewer/frontend/viewer/panel.js`
+- `src/spacemap_gui/viewer/frontend/viewer/regions.js`
+- `src/spacemap_gui/viewer/frontend/viewer/review.js`
+- `src/spacemap_gui/viewer/frontend/viewer/setup.js`
+- `src/spacemap_gui/viewer/frontend/viewer/shapes.js`
+- `src/spacemap_gui/viewer/frontend/viewer/split-markers.js`
+- `src/spacemap_gui/viewer/frontend/viewer/start.js`
+- `src/spacemap_gui/viewer/frontend/viewer/training-cells.js`
+- `src/spacemap_gui/viewer/frontend/viewer/view-transfer.js`
+- `src/spacemap_gui/viewer/lists_api.py`
+- `src/spacemap_gui/viewer/review_api.py`
+- `src/spacemap_gui/viewer/review_links.py`
+- `src/spacemap_gui/viewer/ui.py`
+- `src/spacemap_workflows/leiden_job.py`
+- `tests/benchmark_annotation_components.py`
+- `tests/test_agreement.py`
+- `tests/test_ai_setup.py`
+- `tests/test_annotation_names.py`
+- `tests/test_assistant_model_client.py`
+- `tests/test_cluster_model_suggestions.py`
+- `tests/test_data_result_refresh.py`
+- `tests/test_environment.py`
+- `tests/test_flow_export.py`
+- `tests/test_flow_gating.py`
+- `tests/test_flow_statistics.py`
+- `tests/test_flow_transforms.py`
+- `tests/test_marker_exploration.py`
+- `tests/test_marker_preprocessing.py`
+- `tests/test_marker_review.py`
+- `tests/test_model_review.py`
+- `tests/test_model_runtime_nodes.py`
+- `tests/test_model_service.py`
+- `tests/test_phenotype_assessment.py`
+- `tests/test_phenotype_policy.py`
+- `tests/test_phenotyping_images.py`
+- `tests/test_phenotyping_optional_metadata.py`
+- `tests/test_pipeline_folders.py`
+- `tests/test_project_moves.py`
+- `tests/test_reference_examples.py`
+- `tests/test_reference_setup.py`
+- `tests/test_review_link_address.py`
+- `tests/test_review_link_migration.py`
+- `tests/test_screening_result_presentation.py`
+- `tests/test_screening_stability.py`
+- `tests/test_screening_statistics.py`
+- `tests/test_screening_tissue_pieces.py`
+- `tests/test_segmentation_area_sources.py`
+- `tests/test_segmentation_inputs.py`
+- `tests/test_sharing.py`
+- `tests/test_studio_auto_reference.py`
+- `tests/test_studio_cell_layers.py`
+- `tests/test_studio_cell_links.py`
+- `tests/test_studio_cell_view.py`
+- `tests/test_studio_chat.py`
+- `tests/test_studio_cluster_names.py`
+- `tests/test_studio_commands.py`
+- `tests/test_studio_correction.py`
+- `tests/test_studio_data_editor_api.py`
+- `tests/test_studio_data_view.py`
+- `tests/test_studio_figures.py`
+- `tests/test_studio_flow_cache.py`
+- `tests/test_studio_flow_gating.py`
+- `tests/test_studio_flow_split.py`
+- `tests/test_studio_flow_statistics.py`
+- `tests/test_studio_flow_transfer.py`
+- `tests/test_studio_gland_clonality.py`
+- `tests/test_studio_inventory.py`
+- `tests/test_studio_job_history.py`
+- `tests/test_studio_leiden_overwrite.py`
+- `tests/test_studio_manual_reference.py`
+- `tests/test_studio_marker_figures_api.py`
+- `tests/test_studio_mr_ml.py`
+- `tests/test_studio_phenotyping_inputs.py`
+- `tests/test_studio_phenotyping_outputs.py`
+- `tests/test_studio_reference_collection.py`
+- `tests/test_studio_reference_models.py`
+- `tests/test_studio_resolve_setup.py`
+- `tests/test_studio_retraining.py`
+- `tests/test_studio_review.py`
+- `tests/test_studio_review_results.py`
+- `tests/test_studio_saved.py`
+- `tests/test_studio_screening.py`
+- `tests/test_studio_screening_comparisons.py`
+- `tests/test_studio_segmentation.py`
+- `tests/test_studio_shell.py`
+- `tests/test_studio_single_image_phenotyping.py`
+- `tests/test_studio_spatial_image_tables.py`
+- `tests/test_studio_startup_summaries.py`
+- `tests/test_studio_steps.py`
+- `tests/test_studio_storage.py`
+- `tests/test_studio_subphenotypes.py`
+- `tests/test_studio_tagging_result.py`
+- `tests/test_studio_tagging_update.py`
+- `tests/test_studio_tls.py`
+- `tests/test_subphenotype_guidance.py`
+- `tests/test_subphenotype_scoped_overwrite.py`
+- `tests/test_viewer.py`
+- `tests/test_viewer_annotation_loading.py`
+- `tests/test_viewer_import_bindings.py`
+- `tests/test_viewer_pixel_values.py`
+- `tests/viewer_annotation_commit_browser.py`
+- `tests/viewer_annotation_hierarchy_browser.py`
+- `tests/viewer_annotation_loading_browser.py`
+- `tests/viewer_annotation_markers_browser.py`
+- `tests/viewer_annotation_names_browser.py`
+- `tests/viewer_annotation_selection_browser.py`
+- `tests/viewer_annotation_sources_browser.py`
+- `tests/viewer_artifact_review_browser.py`
+- `tests/viewer_bring_browser.py`
+- `tests/viewer_cell_card_browser.py`
+- `tests/viewer_cell_context_browser.py`
+- `tests/viewer_cell_rows_browser.py`
+- `tests/viewer_cell_selection_browser.py`
+- `tests/viewer_cells_workspace_browser.py`
+- `tests/viewer_cluster_model_names_browser.py`
+- `tests/viewer_copy_preview_browser.py`
+- `tests/viewer_data_editor_browser.py`
+- `tests/viewer_data_results_refresh_browser.py`
+- `tests/viewer_display_transfer_browser.py`
+- `tests/viewer_flow_cache_browser.py`
+- `tests/viewer_flow_controls_browser.py`
+- `tests/viewer_flow_gating_browser.py`
+- `tests/viewer_flow_histogram_browser.py`
+- `tests/viewer_flow_split_browser.py`
+- `tests/viewer_flow_startup_browser.py`
+- `tests/viewer_flow_stats_browser.py`
+- `tests/viewer_flow_transfer_browser.py`
+- `tests/viewer_flow_transforms_browser.py`
+- `tests/viewer_gland_jobs_browser.py`
+- `tests/viewer_image_panel_browser.py`
+- `tests/viewer_import_choices_browser.py`
+- `tests/viewer_job_history_browser.py`
+- `tests/viewer_job_refresh_browser.py`
+- `tests/viewer_layout_transfer_browser.py`
+- `tests/viewer_merged_images_browser.py`
+- `tests/viewer_missing_markers_browser.py`
+- `tests/viewer_model_review_browser.py`
+- `tests/viewer_mr_ml_reference_browser.py`
+- `tests/viewer_panel_windows_browser.py`
+- `tests/viewer_phenotype_assessment_browser.py`
+- `tests/viewer_phenotype_palette_browser.py`
+- `tests/viewer_phenotype_policy_browser.py`
+- `tests/viewer_phenotyping_startup_browser.py`
+- `tests/viewer_polygon_grouping_browser.py`
+- `tests/viewer_result_review_browser.py`
+- `tests/viewer_review_browser.py`
+- `tests/viewer_review_image_suggestions_browser.py`
+- `tests/viewer_review_navigation_browser.py`
+- `tests/viewer_review_share_browser.py`
+- `tests/viewer_screening_browser.py`
+- `tests/viewer_screening_comparisons_browser.py`
+- `tests/viewer_screening_stability_browser.py`
+- `tests/viewer_segmentation_controls_browser.py`
+- `tests/viewer_segmentation_model_sync_browser.py`
+- `tests/viewer_segmentation_sources_browser.py`
+- `tests/viewer_spatial_browser.py`
+- `tests/viewer_spatial_image_tables_browser.py`
+- `tests/viewer_spatial_progress_browser.py`
+- `tests/viewer_split_markers_browser.py`
+- `tests/viewer_storage_browser.py`
+- `tests/viewer_studio_correction_browser.py`
+- `tests/viewer_studio_glands_browser.py`
+- `tests/viewer_studio_leiden_browser.py`
+- `tests/viewer_studio_lists_browser.py`
+- `tests/viewer_studio_manual_reference_browser.py`
+- `tests/viewer_studio_marker_figures_browser.py`
+- `tests/viewer_studio_marker_review_browser.py`
+- `tests/viewer_studio_model_stop_browser.py`
+- `tests/viewer_studio_neighbourhoods_browser.py`
+- `tests/viewer_studio_phenotyping_roles_browser.py`
+- `tests/viewer_studio_retraining_browser.py`
+- `tests/viewer_studio_segmentation_browser.py`
+- `tests/viewer_studio_single_image_phenotyping_browser.py`
+- `tests/viewer_studio_subphenotyping_browser.py`
+- `tests/viewer_studio_tagging_browser.py`
+- `tests/viewer_studio_tls_browser.py`
+- `tests/viewer_studio_training_browser.py`
+- `tests/viewer_studio_training_models_browser.py`
+- `tests/viewer_table_sync_browser.py`
+- `tests/viewer_tagging_refresh_race_browser.py`
+- `tests/viewer_tagging_update_browser.py`
+- `tests/viewer_threshold_benchmark_browser.py`
+- `tests/viewer_threshold_browser.py`
+- `tests/viewer_training_cell_layers_browser.py`
+- `tests/viewer_training_status_browser.py`
+
+</details>
 
 <details><summary><code>0f503be</code> fix: recognize the current Studio server with generic launchers</summary>
 

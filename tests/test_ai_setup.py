@@ -119,3 +119,91 @@ def test_a_model_that_stops_while_loading_is_reported(monkeypatch):
     monkeypatch.setattr(model_runtime, "_log_tail", lambda lines=12: "CUDA out of memory")
     with pytest.raises(model_runtime.ModelRuntimeError, match="out of memory"):
         model_runtime.ensure_running(precision="auto")
+
+
+def _model_page():
+    from spacemap_gui.components import ai_setup
+    from spacemap.model_catalog import list_models
+    ai_setup._render_status('stop_test')
+    for entry in list_models()[:2]:
+        ai_setup._render_model_row(entry, ai_setup._hardware(), 'stop_test')
+
+
+@pytest.fixture
+def stopping_page(setup_home, monkeypatch):
+    from streamlit.testing.v1 import AppTest
+    from spacemap.model_catalog import ModelEntry, list_models
+    from spacemap_gui.components import ai_setup
+    from spacemap_assistant import model_runtime, model_installer
+    first, second = list_models()[:2]
+    ai_settings.update_settings(active_model=first.id)
+    monkeypatch.setattr(ModelEntry, 'is_installed', lambda self: True)
+    monkeypatch.setattr(ModelEntry, 'installed_size_bytes', lambda self: 1)
+    monkeypatch.setattr(ai_setup, '_hardware', lambda: SimpleNamespace(summary=lambda: 'Test hardware'))
+    monkeypatch.setattr(ai_setup, 'can_run', lambda *a, **k: (True, ''))
+    monkeypatch.setattr(ai_setup, '_missing_packages', lambda: [])
+    monkeypatch.setattr(ai_setup, '_log', lambda *a, **k: None)
+    state = {'value': model_runtime.RuntimeStatus(True, True, True, 200, 'Ready', 'float32')}
+    monkeypatch.setattr(ai_setup, '_runtime_status', lambda: state['value'])
+    monkeypatch.setattr(model_runtime, 'runtime_status', lambda: state['value'])
+    monkeypatch.setattr(model_installer, 'read_status', lambda _: SimpleNamespace(is_active=False, state='done'))
+    def stop():
+        state['value'] = model_runtime.RuntimeStatus(True, True, False, 200, 'Test model is stopping…', stopping=True)
+        return state['value']
+    monkeypatch.setattr(model_runtime, 'stop_runtime', stop)
+    app = AppTest.from_function(_model_page, default_timeout=30).run()
+    assert not app.exception
+    return app, state, first, second
+
+
+def test_classic_stop_shows_stopping_without_exception(stopping_page):
+    from spacemap_assistant import model_runtime
+    app, state, first, _ = stopping_page
+    app.button(key=f'stop_test_{first.id}_stop').click().run()
+    assert not app.exception
+    button = app.button(key=f'stop_test_{first.id}_stop')
+    assert button.label == 'Stopping…' and button.disabled
+    assert any('stopping' in message.value for message in app.info)
+    state['value'] = model_runtime.RuntimeStatus(True, False, False, None, 'Stopped')
+    app.run()
+    assert not app.exception and app.button(key=f'stop_test_{first.id}_start').label == 'Start'
+
+
+def test_classic_stop_failure_is_inline(stopping_page, monkeypatch):
+    from spacemap_assistant import model_runtime
+    app, _, first, _ = stopping_page
+    def denied():
+        raise model_runtime.ModelRuntimeError('Synthetic stop failure')
+    monkeypatch.setattr(model_runtime, 'stop_runtime', denied)
+    app.button(key=f'stop_test_{first.id}_stop').click().run()
+    assert not app.exception
+    assert any('Synthetic stop failure' in e.value for e in app.error)
+
+
+@pytest.mark.parametrize('action', ['use', 'remove'])
+def test_classic_does_not_switch_or_delete_while_stopping(stopping_page, monkeypatch, action):
+    from spacemap_assistant import model_installer
+    app, _, first, second = stopping_page
+    removed = []
+    monkeypatch.setattr(model_installer, 'remove_model', lambda entry: removed.append(entry.id))
+    target = second if action == 'use' else first
+    app.button(key=f'stop_test_{target.id}_{action}').click().run()
+    assert not app.exception
+    assert ai_settings.load_settings()['active_model'] == first.id
+    assert removed == []
+
+
+def test_studio_use_does_not_change_model_until_stop_finishes(monkeypatch):
+    from spacemap_gui.studio import ai_setup as studio
+    from spacemap_assistant import model_runtime
+    entry = SimpleNamespace(id='replacement', name='Replacement', is_installed=lambda: True)
+    stopping = model_runtime.RuntimeStatus(True, True, False, 200, 'Stopping', stopping=True)
+    monkeypatch.setattr(studio, '_entry', lambda _: entry)
+    monkeypatch.setattr(model_runtime, 'active_entry', lambda: object())
+    monkeypatch.setattr(model_runtime, 'runtime_status', lambda: stopping)
+    monkeypatch.setattr(model_runtime, 'stop_runtime', lambda: stopping)
+    changes = []
+    monkeypatch.setattr(studio.ai_settings, 'update_settings', lambda **kw: changes.append(kw))
+    with pytest.raises(ValueError, match='stopping'):
+        studio.act('use', {'model':'replacement'})
+    assert changes == []

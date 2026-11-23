@@ -125,11 +125,12 @@ def list_images(project_root: str | Path, mappings: dict | None = None) -> list[
     those steps: they are what that step produced.
     """
     project_root = Path(project_root)
+    from spacemap_gui.studio import project_files
     claimed: dict[str, tuple[int, ImageEntry]] = {}
     for rank, (group, keys, fallback) in reversed(list(enumerate(IMAGE_GROUPS))):
         for folder in _folders(project_root, mappings or {}, keys, fallback):
             for path in sorted(folder.iterdir()):
-                if not path.is_file() or not is_viewable(path):
+                if not path.is_file() or not is_viewable(path) or project_files.excluded(path, project_root):
                     continue
                 resolved = str(path.resolve())
                 if resolved not in claimed:
@@ -164,8 +165,9 @@ def find_segmentation(project_root: str | Path, mappings: dict | None, sample: s
         folders.insert(0, Path(output) / "geojson")  # where Tab 5 writes the outlines of its output folder
     for folder in folders:
         matches += [path for path in sorted(folder.glob(f"{sample}*.geojson")) if sample_of(path.name) == sample]
+    from spacemap_gui.studio import project_files
     for path in sorted(matches, key=lambda p: "cell" not in p.name.lower()):
-        if holds_cells(path):
+        if not project_files.excluded(path, project_root) and holds_cells(path):
             return str(path)
     return None
 
@@ -178,7 +180,7 @@ def annotation_files(folder: str | Path):
     Pruning also avoids scanning every saved revision on each image open.
     """
     folder = Path(folder)
-    internal = {"studio_history", "viewer_cache"}
+    internal = {"studio_history", "viewer_cache", "deleted", "previous"}
     if internal.intersection(folder.parts):
         return
     for directory, folders, files in os.walk(folder):
@@ -191,12 +193,13 @@ def annotation_files(folder: str | Path):
 
 def find_annotations(project_root: str | Path, mappings: dict | None, sample: str) -> list[tuple[str, str]]:
     """(label, path) of every annotation file for *sample*, labelled by folder."""
+    from spacemap_gui.studio import project_files
     keys, fallbacks = ANNOTATION_FOLDERS
     project_root = Path(project_root)
     results: list[tuple[str, str]] = []
     for folder in _folders(project_root, mappings or {}, keys, fallbacks):
         for path in sorted(annotation_files(folder)):
-            if sample_of(path.name) != sample or "cell_boundaries" in path.name:
+            if sample_of(path.name) != sample or "cell_boundaries" in path.name or project_files.excluded(path, project_root):
                 continue
             try:
                 where = path.parent.relative_to(project_root)
@@ -237,10 +240,10 @@ def background_image_for(project_root: str | Path, mappings: dict | None, entry:
 
 def find_point_tables(project_root: str | Path) -> list[tuple[str, str]]:
     """Tables of positions that are not cells, for density maps: triads found by Tab 8."""
-    base = Path(project_root) / "outputs" / "spatial_analysis"
-    if not base.is_dir():
-        return []
-    return [(f"Triads / {path.name}", str(path)) for path in sorted(base.rglob("triad_instances*.csv"))]
+    from spacemap_gui.studio.spatial_sources import output_folder
+    bases = {Path(project_root) / "outputs" / "spatial_analysis", output_folder(project_root)}
+    paths = {path for base in bases if base.is_dir() for path in base.rglob('triad_instances*.csv')}
+    return [(f"Triads / {path.name}", str(path)) for path in sorted(paths)]
 
 
 def bundle_for(

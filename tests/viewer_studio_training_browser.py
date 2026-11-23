@@ -26,8 +26,8 @@ setTimeout(async()=>{
   const set=(label,value)=>{const input=tools().querySelector('[aria-label="'+label+'"]');input.value=value;input.dispatchEvent(new Event('change'));};
   set('Model name','browser_check');set('Start from','nuclei');
   button(tools(),'Start').click();
-  await until(()=>/not trained yet/.test(tools().textContent));
-  assert(/starts from nuclei/.test(tools().textContent),'A session starts from the chosen base model');
+  await until(()=>tools().querySelector('[data-training-model]'));
+  assert(tools().querySelector('[data-training-model]').textContent==='nuclei','A session starts from the chosen base model');
   // A tile: placed by a click, predicted, corrected (a cell drawn), kept.
   const tile=async(role,x,y)=>{
     set('Tile size','256');set('Tile role',role);
@@ -35,6 +35,7 @@ setTimeout(async()=>{
     await delay(50);
     viewer.raiseEvent('canvas-click',{quick:true,position:at(x,y)});
     await until(()=>/found \d+ cells|rror/.test(tools().textContent));
+    assert(button(tools(),'Train').disabled,'Pending tile corrections must be kept before training');
     const cells=state.layers.find(layer=>layer.local==='Cells to correct');
     document.querySelector('[data-tool=polygon]').click();
     const before=cells.features.length;
@@ -83,32 +84,38 @@ setTimeout(async()=>{
   await until(()=>/1 training · 1 validation/.test(tools().textContent));
   assert(/1 training · 1 validation/.test(tools().textContent) && state.previews['training-tiles-validate'],'A validation tile is kept and outlined');
   tools().querySelector('[aria-label="Show the corrected cells in the tiles"]').click();
-  await until(()=>state.previews['training-tile-cells']?.outlines?.length>0);
+  await until(()=>state.layers.find(l=>l.cell_training==='saved')?.cellOutlines.length>0);
   tools().querySelector('[aria-label="Show the tiles on the image"]').click();
   await until(()=>!state.previews['training-tiles-train']);
-  assert(state.previews['training-tile-cells'],'Tiles can be hidden, and the corrected cells inside them shown');
+  assert(state.layers.some(l=>l.cell_training==='saved'&&l.visible),'Tiles can be hidden, and the corrected cells inside them shown');
   tools().querySelector('[aria-label="Show the tiles on the image"]').click();
   tools().querySelector('[aria-label="Show the corrected cells in the tiles"]').click();
-  await until(()=>state.previews['training-tiles-train']&&!state.previews['training-tile-cells']);
-  button(tools(),'Validate').click();
+  await until(()=>state.previews['training-tiles-train']&&!state.layers.some(l=>l.cell_training==='saved'));
+  document.querySelector('.studio-training-validation').open=true;
+  button(tools(),'Check saved predictions').closest('details').open=true;
+  button(tools(),'Check saved predictions').click();
   await until(()=>/Precision \d+%/.test(tools().textContent));
-  assert(/\d+ missed, over 1 validation tile/.test(tools().textContent),'Validate compares the prediction with the corrected cells');
+  assert(/\d+ missed · 1 validation tile/.test(tools().textContent),'Validate compares the prediction with the corrected cells');
+  tools().querySelector('[aria-label="Epochs"]').closest('details').open=true;
   set('Epochs','1');
   button(tools(),'Train').click();
   const jobs=async()=>(await (await fetch('/spacemap-viewer/api/studio/browser-check/jobs')).json()).jobs;
   await until(async()=>{const job=(await jobs()).find(item=>item.kind==='train_cellpose');return job && /done|failed/.test(job.status);});
   const job=(await jobs()).find(item=>item.kind==='train_cellpose');
   assert(job.status==='done' && job.result.name==='browser_check_v1' && job.result.validation_tiles===1,'Train makes version 1 as a job: '+job.message);
-  await until(()=>/browser_check_v1/.test(tools().textContent) && button(tools(),'Use'));
-  button(tools(),'Use').click();
-  await until(()=>/is now Segmentation.s model/.test(tools().textContent));
+  assert(job.result.refreshed_inputs&&!job.result.missing_marker_training,'The single Train action refreshes fixed-marker inputs in a real training round');
+  await until(()=>tools().querySelector('[aria-label="Use for segmentation browser_check_v1"]') &&
+    [...tools().querySelector('[aria-label="Cellpose model"]').options].some(o=>o.value==='project:browser_check_v1'));
+  tools().querySelector('.studio-model-history').open=true;
+  tools().querySelector('[aria-label="Use for segmentation browser_check_v1"]').click();
+  await until(()=>tools().querySelector('[aria-label="Active model browser_check_v1"]'));
   const saved=await (await fetch('/spacemap-viewer/api/studio/browser-check/segmentation_settings')).json();
   assert(saved.values.tab4_model_type==='custom' && saved.values.tab4_custom_model.endsWith('browser_check_v1'),'Use makes Segmentation use the version: '+JSON.stringify({type:saved.values.tab4_model_type,path:saved.values.tab4_custom_model}));
   // The scores table: the base model and version 1 on the same validation tile.
   button(tools(),'Score all versions').click();
-  await until(()=>tools().querySelectorAll('.studio-scores tr').length===3 || /stopped|rror/.test(tools().textContent));
+  await until(()=>[...tools().querySelectorAll('.studio-scores th')].some(th=>th.textContent==='Found') || /stopped|rror/.test(tools().textContent));
   const rows=Array.from(tools().querySelectorAll('.studio-scores tr')).map(tr=>tr.firstChild.textContent);
-  assert(rows[0]==='Version' && /^nuclei/.test(rows[1]) && /^browser_check_v1/.test(rows[2]) && /1 validation tile/.test(tools().textContent),'Score all versions lists each version on the same tiles: '+rows.join(' | '));
+  assert(rows[0]==='Model' && /^browser_check_v1/.test(rows[1]) && /^nuclei/.test(rows[2]) && /1 validation tile/.test(tools().textContent),'Score all versions lists each version on the same tiles: '+rows.join(' | '));
   set('Tile role','train');
   button(tools(),'Place a tile').click();await delay(50);
   viewer.raiseEvent('canvas-click',{quick:true,position:at(200,130)});

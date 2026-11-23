@@ -69,8 +69,8 @@ setTimeout(async()=>{try{
  assert(true,'Heatmap: a group clicked shows its cells');
  tab('Method agreement');await until(()=>row('Agreement:'));
  button(row('Agreement:'),'Compare').click();
- await until(()=>/accuracy 100.0%/.test(tools().textContent)&&figure('viz-agreement'));
- assert(true,'Method agreement: accuracy, F1 per phenotype and the confusion table');
+ await until(()=>figure('viz-agreement')?.querySelector('img')?.naturalWidth>0);
+ assert(figure('viz-agreement').textContent.includes('Macro F1'),'Method agreement: Classic F1 figures and scores in the Figures panel');
  tab('UMAP');await until(()=>row('UMAP:'));
  button(row('UMAP:'),'Make').click();
  await until(()=>figure('viz-umap')?.querySelector('canvas.spatial-umap'),);

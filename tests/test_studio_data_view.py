@@ -149,6 +149,64 @@ def test_custom_local_label_is_scoped_by_roi(tmp_path):
     assert data_view.labels_of(path, "roi_name", "B", [{"col":"kind", "values":["T"]}], "object_number") == [1, 2]
 
 
+def test_saved_edits_infer_types_from_values_and_keep_numeric_measurements(tmp_path):
+    import numpy as np
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    from spacemap import dataio, labels, pending_columns
+
+    path = tmp_path / 'typed.parquet'
+    pd.DataFrame({'measurement': [1., 2., np.nan], 'phenotype_score': [1, 2, 3],
+                  'empty': [None] * 3, 'flag': [True, True, False]}).to_parquet(path, index=False)
+    # Warm both caches before editing; the next reads must reflect new values.
+    assert data_view.query(path)['kinds']['measurement'] == 'value'
+    assert data_view._table(path).kinds['measurement'] == 'value'
+    labels.append(path, [{'row': 1, 'column': 'measurement', 'value': 'Treg'},
+                         {'row': 1, 'column': 'phenotype_score', 'value': '2.5'},
+                         {'row': 0, 'column': 'empty', 'value': '7'},
+                         {'row': 0, 'column': 'flag', 'value': 'false'}])
+    page = data_view.query(path)
+    assert page['kinds'] == {'measurement': 'group', 'phenotype_score': 'value', 'empty': 'value', 'flag': 'value'}
+    assert page['rows'] == [[0, '1.0', 1., 7, False], [1, 'Treg', 2.5, None, True], [2, None, 3., None, False]]
+    assert data_view.query(path, filters=[{'col': 'measurement', 'values': ['Treg']}])['matched'] == 1
+    assert data_view.query(path, filters=[{'col': 'flag', 'values': ['false']}])['matched'] == 2
+    assert data_view.summary(path, column='phenotype_score')['max'] == 3
+    reader = data_view._table(path)
+    assert reader.take([0, 1], ['measurement'])['measurement'] == ['1.0', 'Treg']
+    assert reader.take([1, 0], ['phenotype_score'])['phenotype_score'].tolist() == [2.5, 1.]
+    loaded = dataio.load(path)
+    assert loaded.measurement.fillna('').tolist() == ['1.0', 'Treg', '']
+    assert loaded.phenotype_score.tolist() == [1., 2.5, 3.]
+    copy = data_view.save(path, 'copy', name='typed-copy.parquet')
+    assert pq.read_table(copy).to_pydict() == {
+        'measurement': ['1.0', 'Treg', None], 'phenotype_score': [1., 2.5, 3.],
+        'empty': [7, None, None], 'flag': [False, True, False]}
+    pending_columns.commit(path)
+    schema = pq.read_schema(path)
+    assert pa.types.is_string(schema.field('measurement').type)
+    assert pa.types.is_floating(schema.field('phenotype_score').type)
+    assert pd.read_parquet(path).measurement.fillna('').tolist() == ['1.0', 'Treg', '']
+
+
+def test_cleared_text_edits_restore_numeric_type_and_nulls(tmp_path):
+    from spacemap import labels
+
+    path = tmp_path / 'empty.parquet'
+    pd.DataFrame({'custom': [float('nan')] * 2, 'new_column': [None] * 2}).to_parquet(path)
+    labels.append(path, [{'row': 0, 'column': 'custom', 'value': 'Treg'}])
+    assert data_view.query(path)['kinds']['custom'] == 'group'
+    labels.append(path, [{'row': 0, 'column': 'custom', 'value': ''}])
+    assert data_view.query(path)['kinds']['custom'] == 'value'
+    assert data_view.query(path, columns=['custom'])['rows'] == [[0, None], [1, None]]
+    assert data_view.summary(path, column='custom')['empty'] == 2
+    data_view.edit(path, [{'row': 0, 'col': 'new_column', 'value': 2.5}])
+    assert data_view.query(path)['kinds']['new_column'] == 'value'
+    assert data_view.query(path, columns=['new_column'])['rows'] == [[0, 2.5], [1, None]]
+    data_view.edit(path, [{'row': 1, 'col': 'new_column', 'value': 'Treg'}])
+    assert data_view.query(path)['kinds']['new_column'] == 'group'
+    assert data_view.query(path, columns=['new_column'])['rows'] == [[0, '2.5'], [1, 'Treg']]
+
+
 def test_bulk_replace_scopes_schema_edits_row_delete_and_history(tmp_path):
     path=_table(tmp_path,'.parquet')
     first=data_view.query(path)
@@ -207,7 +265,7 @@ def test_edits_are_atomic_and_conflicts_are_rejected(tmp_path):
     with pytest.raises(ValueError,match='changed'):
         data_view.mutate(path,{'kind':'delete_rows','scope':'all'},revision=initial['revision'])
     frame=pd.read_parquet(path);frame.to_parquet(path,index=False)
-    with pytest.raises(ValueError,match='outside Data'):data_view.query(path)
+    with pytest.raises(ValueError,match='Saved data changed'):data_view.query(path)
     data_view.history(path,'discard');assert data_view.query(path)['matched']==10
 
 

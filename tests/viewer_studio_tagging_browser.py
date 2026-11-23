@@ -68,6 +68,25 @@ setTimeout(async()=>{
   assert(scale.kind==='numeric','A distance shows as a colour scale: '+JSON.stringify(scale).slice(0,200));
   let jobs=(await (await fetch(studioApi('/jobs'))).json()).jobs;
   assert(!jobs.some(job=>job.kind==='cell_tagging'),'Nothing is written by the preview');
+  showDataTab(); await until(()=>dataView.result?.rows.length);
+  dataView.sort={col:'M0',desc:true}; dataView.filters=[{col:'M0',lo:0,hi:null}]; await dataLoad();
+  cells.hidden=new Set(['keep-hidden']); cells.filters=[{col:'M0',lo:0,hi:null}];
+  await delay(500);
+  const image=state.layers.find(l=>l.type==='image'), imageItem=image.item, imageId=state.spec.id,
+    channels=JSON.stringify(image.channels), centre=state.viewer.viewport.getCenter(), zoom=state.viewer.viewport.getZoom();
+  const oldFetch=window.fetch; let polls=0;
+  window.fetch=async(url,...args)=>{
+    if(String(url).endsWith('/studio/browser-check/jobs')) {polls++;return new Response(JSON.stringify({jobs:[{
+      id:'polling-check',kind:'cell_tagging',status:'running',message:'Other image: '+polls,progress:.1,
+      started:new Date().toISOString()}]}),{headers:{'Content-Type':'application/json'}});}
+    return oldFetch(url,...args);
+  };
+  const version=state.versions[cells.id]||0;
+  await delay(13500);
+  window.fetch=oldFetch;
+  assert(polls>=3 && (state.versions[cells.id]||0)===version,'Repeated tagging progress polls do not redraw the cell preview');
+  assert(cells.hidden.has('keep-hidden') && cells.filters.length===1 && cells.color_by==='preview:dist_tumor',
+    'Progress polling preserves colouring, hidden groups and cell filters');
   tools().querySelector('.studio-pairs th input[type=checkbox]').click();
   button(document.querySelector('.studio-runbar'),'Selected').click();
   for(let i=0;i<600;i++){jobs=(await (await fetch(studioApi('/jobs'))).json()).jobs;const job=jobs.find(item=>item.kind==='cell_tagging');if(job && /done|failed/.test(job.status))break;await delay(100);}
@@ -75,6 +94,17 @@ setTimeout(async()=>{
   assert(job.status==='done' && job.result.count===1 && job.result.failed===0,'Tagging the ticked table writes it: '+job.message);
   await until(()=>tools().querySelector('tr[data-source] .chip.ok')?.textContent==='Tagged');
   assert(true,'Its row turns green');
+  await until(()=>cells.table?.startsWith('tagged_') && dataView.source?.table===cells.table && dataView.queryReady);
+  assert(cells.color_by==='dist_tumor' && cells.hidden.has('keep-hidden') && cells.filters.length===1,
+    'Saved tags replace the matching preview while preserving cell filters');
+  assert(dataView.info.columns.some(c=>(c.name||c)==='dist_tumor') && dataView.sort.desc && dataView.filters.length===1,
+    'Data follows the saved tags and preserves sorting and filters');
+  const retained={image:state.spec.id===imageId,tiles:image.item===imageItem,markers:JSON.stringify(image.channels)===channels,
+    zoom:[zoom,state.viewer.viewport.getZoom()],pan:state.viewer.viewport.getCenter().distanceTo(centre)};
+  assert(retained.image && retained.tiles && retained.markers && Math.abs(retained.zoom[0]-retained.zoom[1])<1e-8 && retained.pan<1e-8,
+    'Tagging completion preserves the current image, image tiles, markers and viewport: '+JSON.stringify(retained));
+  const savedVersion=state.versions[cells.id]; await delay(6500);
+  assert(state.versions[cells.id]===savedVersion,'Completed jobs do not repeatedly redraw the saved result');
   // Batch correction's current full-path output folder control.
   document.querySelector('[data-step=tab6]').click();
   await until(()=>tools().querySelector('[aria-label="Output folder"]'));
@@ -83,7 +113,7 @@ setTimeout(async()=>{
   await until(()=>tools().querySelector('[aria-label="Output folder"]')?.value.endsWith('/outputs/combined_check'));
   assert(true,'A step’s output folder is changed in the step, saved as the project’s folder');
   fetch('/result?ok='+encodeURIComponent(JSON.stringify({checks})));
- }catch(error){fetch('/result?error='+encodeURIComponent(String(error)+'\n'+error.stack+'\n'+document.querySelector('#studio-tools')?.textContent.slice(-900)));}
+ }catch(error){fetch('/result?error='+encodeURIComponent(String(error)+'\n'+error.stack+'\n'+JSON.stringify({table:window.__state?.layers.find(l=>l.type==='cells')?.table,data:dataView.source,queryReady:dataView.queryReady,info:dataView.status?.textContent,jobs:document.querySelector('.studio-jobs-error')?.textContent})+'\n'+document.querySelector('#studio-tools')?.textContent.slice(-900)));}
 },100);
 </script>
 """

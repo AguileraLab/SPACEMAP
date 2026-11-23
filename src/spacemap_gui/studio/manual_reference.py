@@ -27,8 +27,14 @@ def options(channel, column=""):
     chosen = column or (refs[0] if refs else "phenotype_ref1")
     counts = data_view.summary(path, column=chosen, limit=200) if chosen in table.names else {}
     names = list(dict.fromkeys([item['name'] for item in phenotype_presets.read()['entries']] + sorted(set(reference.phenotype_names(path, chosen)) | set(reference.phenotype_names(path)))))
+    known = set(refs)
+    training_columns = [name for name in table.names if name in known or name.casefold().startswith(('phenotype_', 'cell_type', 'celltype'))]
     return {"table":str(path), "revision":fingerprint(path), "rows":table.count, "references":refs, "column":chosen,
             "phenotypes":names, "counts":counts,
+            "training_columns": training_columns,
+            "other_training_columns": [name for name in table.names if table.kinds[name] == 'group'
+                                       and name not in known and name not in training_columns
+                                       and name not in roles.values() and name not in keys.values()],
             "preset_colours":phenotype_presets.ensure(names),
             "columns":[name for name in table.names if table.kinds[name] == "group" and name not in roles.values() and name not in keys.values()],
             "writing":pending_columns.commit_status(path), "pending_labels":labels.pending_count(path),
@@ -55,7 +61,7 @@ def create(channel, column):
 
 def _positions(channel, path, keys, selection):
     table = data_view._table(path)
-    if not isinstance(selection, dict) or len(set(selection) & {"rows", "cells", "filters", "token"}) != 1:
+    if not isinstance(selection, dict) or len(set(selection) & {"rows", "cells", "filters", "token", "flow_token"}) != 1:
         raise ValueError("Choose cells in the viewer, Data rows, filtered Data rows, or a marker rule.")
     if "token" in selection:
         from . import selection as rules
@@ -67,8 +73,20 @@ def _positions(channel, path, keys, selection):
             raise ValueError("Select 1–200,000 cells.")
         if selection.get("roi") is None:
             raise ValueError("The selected cells need an ROI.")
+        if not keys["roi_column"]:
+            from spacemap_gui.viewer import registry
+            from spacemap.viewer.catalog import sample_of
+            project = registry.session_project(channel) or {}
+            image = phenotyping_inputs.single_image(project["root"], path)
+            if not image or sample_of(str(selection["roi"])) != image:
+                raise ValueError("These cells belong to another image. Select its cell table first.")
         return [{"roi":str(selection["roi"]), "ids":list(dict.fromkeys(ids))}]
-    if "rows" in selection:
+    if 'flow_token' in selection:
+        from . import flow_gating
+        rows = flow_gating.token_rows(selection['flow_token'], channel, path)
+        if selection.get('view_filters'):
+            rows = np.intersect1d(rows, data_view._view(table,selection['view_filters'],None))
+    elif "rows" in selection:
         rows = selection["rows"]
         if not isinstance(rows, list) or len(rows) > 200000 or any(isinstance(v, bool) or not isinstance(v, int) or not 0 <= v < table.count for v in rows):
             raise ValueError("Select valid rows of the current combined table.")
@@ -82,11 +100,18 @@ def _positions(channel, path, keys, selection):
         raise ValueError("No cells are selected.")
     if len(rows) > 200000:
         raise ValueError("Narrow the selection to at most 200,000 cells for a manual assignment.")
-    for name in keys.values():
+    for name in (v for v in keys.values() if v):
         if name not in table.names:
             raise ValueError("Choose ROI and segmentation cell columns before assigning labels.")
-    values = table.take(rows, list(keys.values()))
-    frame = pd.DataFrame({"roi":values[keys["roi_column"]], "label":values[keys["label_column"]]})
+    values = table.take(rows, [v for v in keys.values() if v])
+    if keys["roi_column"]:
+        image = values[keys["roi_column"]]
+    else:
+        from spacemap_gui.viewer import registry
+        from spacemap.viewer.catalog import sample_of
+        project = registry.session_project(channel) or {}
+        image = phenotyping_inputs.single_image(project["root"], path) or sample_of(path)
+    frame = pd.DataFrame({"roi":image, "label":values[keys["label_column"]]})
     numbers = pd.to_numeric(frame.label, errors="coerce")
     if frame.roi.isna().any() or not np.isfinite(numbers).all() or (numbers < 1).any() or (numbers != np.floor(numbers)).any():
         raise ValueError("Some selected rows have missing or invalid ROI/cell IDs. Nothing was assigned.")
@@ -148,8 +173,23 @@ def evaluate(path, reference_column, method):
             "note":"Only manually labelled cells are scored. Missing predictions count as errors. Labels must use the same names. If these cells trained the model or helped name clusters, this is agreement, not an independent test."}
 
 
+def training_image(channel):
+    """The open image, independent of the checkboxes used by Train selected."""
+    from spacemap_gui.viewer import registry
+    from spacemap.viewer.catalog import sample_of
+    view = registry.session_view(channel) or {}
+    for layer in view.get('spec', {}).get('layers', []):
+        if layer.get('type') == 'cells':
+            registered = registry.resolve_object(layer.get('token', ''), 'cells') or {}
+            roi = layer.get('roi') or registered.get('roi')
+            if roi:
+                return sample_of(str(roi))
+    return ''
+
+
 def training_settings(channel, column, checked_only=False):
-    from . import reference_features, tasks
+    from . import reference_examples, reference_features, reference_setup, tasks
+    from spacemap_gui.viewer import registry
     path, keys, roles = context(channel)
     table = data_view._table(path)
     if column not in table.names or table.kinds[column] != "group" or column in keys.values():
@@ -162,8 +202,19 @@ def training_settings(channel, column, checked_only=False):
     if not features["selected"]:
         raise ValueError("Choose measurements in Model training → Features first.")
     kinds = {item["name"]:item["group"] for item in features["features"]}
-    settings = {"table":path,"markers":features["selected"],"training_column":column,"checked_only":checked_only,
+    settings = {"table":path,"project_root":registry.session_project(channel)["root"],
+                "markers":features["selected"],"training_column":column,"checked_only":checked_only,
                 "feature_kinds":{name:kinds[name] for name in features["selected"]},
-                "allow_missing":features["allow_missing"],**keys}
+                "allow_missing":features["allow_missing"],**keys,
+                **reference_setup.training(registry.session_project(channel)["root"])}
+    if keys['roi_column']:
+        image = training_image(channel)
+        if image:
+            settings['selected_images'] = [image]
+        else:
+            from . import phenotyping_images
+            sources = phenotyping_images.sources(settings['project_root'], path)
+            settings['selected_images'] = next(s['selected_images'] for s in sources if s['table'] == str(path))
     settings["revision"] = tasks.source_revision(settings)
+    reference_examples.require_reusable(settings)
     return settings

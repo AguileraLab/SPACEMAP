@@ -869,6 +869,7 @@ def predict_weighted_ensemble(
     weights_df: pd.DataFrame,
     label_encoder: LabelEncoder,
     excluded_phenotypes: list[str] | None = None,
+    excluded_prediction_phenotypes: list[str] | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Predict phenotypes using weighted ensemble of ML model and method votes.
@@ -946,9 +947,11 @@ def predict_weighted_ensemble(
         out=np.zeros_like(final_scores),
         where=support_totals > 0,
     )
-    final_prediction_indices = np.argmax(normalized_support, axis=1)
+    from spacemap.phenotype_policy import prediction_positions
+    permitted = prediction_positions(label_encoder.classes_, excluded_prediction_phenotypes or [])
+    final_prediction_indices = permitted[np.argmax(normalized_support[:, permitted], axis=1)]
     final_predictions = label_encoder.inverse_transform(final_prediction_indices)
-    prediction_confidence = np.max(normalized_support, axis=1)
+    prediction_confidence = normalized_support[np.arange(n_samples), final_prediction_indices]
     
     print(f"Generated predictions for {len(final_predictions)} cells")
     
@@ -1210,6 +1213,7 @@ def run_ml_mr_analysis(
     results_callback=None,
     preserve_reference_labels: bool | None = None,
     log_to_stdout: bool = True,
+    excluded_prediction_phenotypes: list[str] | None = None,
 ) -> bool:
     """
     Run the complete ML-MR analysis workflow.
@@ -1643,6 +1647,7 @@ def run_ml_mr_analysis(
             validation_weights,
             label_encoder,
             excluded_phenotypes=excluded_phenotypes,
+            excluded_prediction_phenotypes=excluded_prediction_phenotypes,
         )
         validation_results = _validation_results(
             unified_df.loc[split_test_indices, ground_truth_column].astype(str).str.strip().to_numpy(),
@@ -1678,6 +1683,7 @@ def run_ml_mr_analysis(
         weights_df,
         label_encoder,
         excluded_phenotypes=excluded_phenotypes,
+        excluded_prediction_phenotypes=excluded_prediction_phenotypes,
     )
     unified_df[output_phenotype_col] = final_predictions
     unified_df[confidence_col_name] = final_confidence
@@ -1685,8 +1691,10 @@ def run_ml_mr_analysis(
     low_confidence_mask = (
         unified_df[confidence_col_name] < refined_confidence_threshold
     )
+    from spacemap.phenotype_policy import allowed
+    retained_mask = training_mask & allowed(unified_df[ground_truth_column], excluded_prediction_phenotypes or [])
     if preserve_reference_labels:
-        low_confidence_mask &= ~training_mask
+        low_confidence_mask &= ~retained_mask
     n_low_confidence = int(low_confidence_mask.sum())
     unified_df.loc[low_confidence_mask, refined_output_phenotype_col] = (
         refined_low_confidence_label
@@ -1727,11 +1735,11 @@ def run_ml_mr_analysis(
     # Preserve annotations only after validation, so held-out accuracy never
     # benefits from copying the known answer into the prediction column.
     if preserve_reference_labels:
-        references = unified_df.loc[training_mask, ground_truth_column].astype("string").str.strip()
+        references = unified_df.loc[retained_mask, ground_truth_column].astype("string").str.strip()
         for name in (output_phenotype_col, refined_output_phenotype_col):
-            unified_df.loc[training_mask, name] = references
-        unified_df.loc[training_mask, confidence_col_name] = np.nan
-        _notify(f"[OK] Kept {int(training_mask.sum()):,} reference labels; their prediction scores are blank.")
+            unified_df.loc[retained_mask, name] = references
+        unified_df.loc[retained_mask, confidence_col_name] = np.nan
+        _notify(f"[OK] Kept {int(retained_mask.sum()):,} reference labels; their prediction scores are blank.")
     
     _notify(f"[OK] ML-MR predictions generated for all {len(unified_df):,} cells")
     _notify(f"  Phenotype distribution: {unified_df[output_phenotype_col].value_counts().to_dict()}")
@@ -1759,6 +1767,7 @@ def run_ml_mr_analysis(
         # Known labels remain useful even when their measurements are missing.
         # Do not label excluded analysis subsets or fabricate scores for them.
         known = _valid_reference_mask(source_df[ground_truth_column], excluded_phenotypes)
+        known &= allowed(source_df[ground_truth_column], excluded_prediction_phenotypes or [])
         if analysis_filter_applied:
             known &= analysis_mask
         for name in (output_phenotype_col, refined_output_phenotype_col):

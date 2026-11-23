@@ -17,6 +17,7 @@ import numpy as np
 import pandas as pd
 
 from spacemap import labels as label_store
+from spacemap.sharing import share, shared_directory
 from . import cells
 from .sources import fingerprint
 
@@ -144,8 +145,11 @@ def database(table, *, write=False):
         yield None
         return
     if write:
-        path.parent.mkdir(parents=True, exist_ok=True)
+        shared_directory(path.parent)
+        share(path)  # repair an owned legacy receipt before opening it for writing
     db = sqlite3.connect(path if write else path.as_uri() + "?mode=ro", uri=not write, timeout=30)
+    if write:
+        share(path)
     db.row_factory = sqlite3.Row
     try:
         if write:

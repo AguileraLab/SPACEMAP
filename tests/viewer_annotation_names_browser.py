@@ -29,16 +29,18 @@ setTimeout(async()=>{try {
  fetch('/result?progress='+encodeURIComponent('tissue loaded, panel built'));
  const row=name=>document.querySelector('#panel [data-annotation-name="'+name+'"]');
  await until(()=>row('tissue'));
- assert(document.querySelector('#panel [data-annotation-source="markers"]') && row('tissue').querySelector('.kind').textContent==='3' && /Tissue/.test(row('tissue').querySelector('.layer-head').title),
+ assert(document.querySelector('#panel [data-annotation-root="working"]') && row('tissue').querySelector('.kind').textContent==='3 polygons' && /Tissue/.test(row('tissue').querySelector('.layer-head').title),
    'Annotations has a block for the open image, and tissue is one row of 3 polygons, from Tissue');
  // Rename one piece: it moves to its own name row.
  const id=tissue().features[0].properties.id;
  nameRegions(tissue(), new Set([id]), 'lymph_node');
  await until(()=>row('lymph_node'));
- assert(row('lymph_node').querySelector('.kind').textContent==='1' && row('tissue').querySelector('.kind').textContent==='2','Renamed polygons form their own name row');
+ assert(row('lymph_node').querySelector('.kind').textContent==='1 polygon' && row('tissue').querySelector('.kind').textContent==='2 polygons','Renamed polygons form their own name row');
+ row('tissue').querySelector('.annotation-fold').click();
+ assert(row('tissue').querySelector('.layer-head [aria-label="Sort polygons"]'),'Local polygon sorting sits beside the expanded name');
  const drawn=()=>document.querySelectorAll('#shapes g[data-layer="tissue-regions"] path').length;
  row('lymph_node').querySelector('[aria-label="Show lymph_node"]').click();
- await until(()=>drawn()===2);
+ await until(()=>drawn()===1);
  assert(tissue().visible,'Hiding a name hides only its polygons');
  const colour=row('tissue').querySelector('[aria-label="Colour of tissue"]');colour.value='#00ff00';colour.dispatchEvent(new Event('change'));
  await until(()=>tissue().features.filter(f=>annotationName(tissue(),f)==='tissue').every(f=>shapeColor(f)==='#00ff00'));
@@ -54,7 +56,7 @@ setTimeout(async()=>{try {
  window.prompt=()=>'primary';
  row('tissue').querySelector('[aria-label="Duplicate tissue"]').click();
  await until(()=>row('primary'));
- assert(row('primary').querySelector('.kind').textContent==='2' && /Copy of tissue/.test(row('primary').querySelector('.layer-head').title),'Duplicate makes a new name row with a copy of the polygons');
+ assert(row('primary').querySelector('.kind').textContent==='2 polygons' && /Copy of tissue/.test(row('primary').querySelector('.layer-head').title),'Duplicate makes a new name row with a copy of the polygons');
  // Delete: a copy leaves the project whole; a name in the tissue loses its polygons only.
  window.confirm=()=>true;
  const copyLayer=s.layers.find(l=>l.origin==='Copy of tissue');
@@ -81,20 +83,20 @@ setTimeout(async()=>{try {
  window.fetch=async(url,options)=>{const response=await originalFetch(url,options);if(String(url).endsWith('/annotation_export')&&options?.method==='POST'&&!String(options.body).includes('"action"'))exported=await response.clone().json();return response;};
  const click=HTMLAnchorElement.prototype.click;HTMLAnchorElement.prototype.click=function(){if(!this.download)click.call(this);};
  button(document.querySelector('.studio-runbar'),'This image').click();
- await until(()=>exported);
+ await until(()=>exported&&!button(document.querySelector('.studio-runbar'),'This image').disabled);
  assert(exported.names&&exported.names.join()==='tissue','Export writes the ticked annotations only: '+JSON.stringify(exported.names||exported.error));
  assert(exported.geojson.features.find(f=>f.properties.name==='tissue').properties.classification.color.join()==='0,255,0','Each name keeps its colour in the file');
  assert(/as markers\.geojson/.test(document.querySelector('.studio-runbar').textContent),'The file is named after its image');
  // Export name and colour in the rules change the file only.
  const exportName=ruleRow('local:tissue').querySelector('input[type=text]');exportName.value='Tissue_new';exportName.dispatchEvent(new Event('change'));
  await until(async()=>(await (await fetch(studioApi('/annotation_export'))).json()).settings.rules['local:tissue']?.name==='Tissue_new');
- exported=null;button(document.querySelector('.studio-runbar'),'This image').click();await until(()=>exported);
+ exported=null;button(document.querySelector('.studio-runbar'),'This image').click();await until(()=>exported&&!button(document.querySelector('.studio-runbar'),'This image').disabled);
  assert(exported.names.join()==='Tissue_new'&&row('tissue'),'The export name changes the file, not the polygons');
  // File names: <prefix><image name><suffix>.geojson.
  const affix=(label,value)=>{const input=tools().querySelector('[aria-label="'+label+'"]');input.value=value;input.dispatchEvent(new Event('change'));};
  affix('File name prefix','QC_');await until(()=>/e\.g\. QC_markers\.geojson/.test(tools().textContent));
  affix('File name suffix','_v2');await until(()=>/e\.g\. QC_markers_v2\.geojson/.test(tools().textContent));
- exported=null;button(document.querySelector('.studio-runbar'),'This image').click();await until(()=>exported);
+ exported=null;button(document.querySelector('.studio-runbar'),'This image').click();await until(()=>exported&&!button(document.querySelector('.studio-runbar'),'This image').disabled);
  assert(exported.filename==='QC_markers_v2.geojson'&&/stage0_tissue_annotation\/QC_markers_v2\.geojson$/.test(exported.saved_as),'Prefix and suffix name the exported file, in the output folder itself: '+exported.saved_as);
  // A name changed in Layers shows in the rules without pressing anything.
  nameRegions(tissue(), new Set(tissue().features.filter(f=>f.properties.name==='lymph_node').map(f=>f.properties.id)), 'node');
@@ -102,7 +104,7 @@ setTimeout(async()=>{try {
  assert(true,'A rename in Layers shows in Export at once');
  window.fetch=originalFetch;HTMLAnchorElement.prototype.click=click;
  fetch('/result?ok='+encodeURIComponent(JSON.stringify({checks})));
-}catch(error){fetch('/result?error='+encodeURIComponent(String(error)+'\n'+(document.querySelector('#panel')?.textContent||'').slice(0,600)));}},100);
+}catch(error){fetch('/result?error='+encodeURIComponent(String(error)+'\n'+(document.querySelector('#studio-tools')?.textContent||'').slice(-2200)));}},100);
 </script>
 """
 

@@ -4,11 +4,12 @@
 "use strict";
 
 const splitMarkers = {point:null, cursor:null, pinned:false, selection:null, epoch:0, cards:[], cache:new Map(), limits:new Map(), pending:new Map(), active:0, queue:[], wanted:new Set()};
+const splitMarkerPixels = {cache:new Map(),pending:null,wanted:null,timer:null,lastStarted:0};
 const SPLIT_DEFAULTS = {open:false, all:false, lockOnCell:true, zoom:2, size:156, height:300, floating:false, width:720, x:80, y:100, tab:'markers'};
 
 function splitMarkerPreferences(saved) {
   const source = saved || {}, out = {...SPLIT_DEFAULTS};
-  for (const key of ['open','all','floating','lockOnCell']) if (typeof source[key] === 'boolean') out[key] = source[key];
+  for (const key of ['open','all','lockOnCell']) if (typeof source[key] === 'boolean') out[key] = source[key];
   if (['markers','data'].includes(source.tab)) out.tab = source.tab;
   for (const [key,lo,hi] of [['zoom',.25,8],['size',96,280],['height',140,900],['width',320,1800],['x',0,10000],['y',0,10000]]) {
     if (Number.isFinite(source[key])) out[key] = Math.min(hi,Math.max(lo,source[key]));
@@ -25,8 +26,35 @@ function splitMarkerOptions() {
 }
 
 function saveSplitMarkerOptions() {
-  try { localStorage.setItem('spacemap-split-markers',JSON.stringify(splitMarkerOptions())); } catch (_) { /* private mode */ }
+  try { localStorage.setItem(state.reviewer?'spacemap-review-split-markers':'spacemap-split-markers',JSON.stringify(splitMarkerOptions())); } catch (_) { /* private mode */ }
   saveView();
+}
+
+function splitMarkersVisible() {
+  const opt=splitMarkerOptions();
+  return !!viewerPanelWindow('markers') || (opt.open && (!(state.studio || state.reviewer) || opt.tab==='markers'));
+}
+
+function openSplitTab(key) {
+  const child=viewerPanelWindow(key);if(child){child.focus();return;}
+  const opt=splitMarkerOptions();opt.open=true;opt.tab=key;syncSplitMarkers();saveSplitMarkerOptions();
+}
+
+function floatSplitTab() {
+  const opt=splitMarkerOptions(),key=(state.studio || state.reviewer)?opt.tab:'markers';
+  if(key==='data')dataViewInto(splitMarkers.dataBox);
+  stopSplitMarkerPreview();
+  const child=floatViewerPanel(key,key==='data'?'Data':'Marker tiles',{
+    tools:key==='markers'?[splitMarkers.markerTools]:[],
+    content:key==='markers'?[splitMarkers.note,splitMarkers.grid]:[splitMarkers.dataBox],
+    onDock:select=>{stopSplitMarkerPreview();if(select){opt.tab=key;opt.open=true;}syncSplitMarkers();saveSplitMarkerOptions();},
+    onResize:()=>{placeSplitMarkers();scheduleSplitMarkers();}
+  });
+  if(!child){scheduleSplitMarkers();message('The browser blocked the window. Allow pop-ups for Studio, then click Float again.',true);return;}
+  // Keep the other docked view usable while this view is detached.
+  const other=key==='markers'?'data':'markers';
+  if((state.studio || state.reviewer)&&!viewerPanelWindow(other)){opt.tab=other;opt.open=true;}else opt.open=false;
+  syncSplitMarkers();saveSplitMarkerOptions();
 }
 
 function splitMarkerImage() {
@@ -43,6 +71,7 @@ function resetSplitMarkers() {
   stopSplitMarkerPreview();splitMarkers.generation=(splitMarkers.generation||0)+1;
   splitMarkers.epoch++; splitMarkers.point=null; splitMarkers.cursor=null; splitMarkers.selection=null; splitMarkers.pinned=false;
   splitMarkers.lastInspection=null;splitMarkers.limits.clear();
+  splitMarkerPixels.cache.clear();
   splitMarkers.limitWait=null;splitMarkers.limitError=null;splitMarkers.failures?.clear();
   splitMarkers.signature=null;
   for (const bitmap of splitMarkers.cache.values()) bitmap.close();
@@ -85,15 +114,15 @@ function followSplitMarkerCursor(position) {
   if(splitMarkers.pinned&&(!state.inspectedCell||!state.layers.includes(state.inspectedCell.layer)))releaseSplitMarkerSelection();
   if(splitMarkers.pinned)return;
   splitMarkers.point={...splitMarkers.cursor}; splitMarkers.span=0;
-  if(splitMarkerOptions().open)scheduleSplitMarkers();
+  if(splitMarkersVisible())scheduleSplitMarkers();
 }
 
 function ensureSplitMarkers() {
   if (splitMarkers.panel) return;
   const opt=splitMarkerOptions();
-  const toggle=el('button',{id:'split-marker-toggle',type:'button',text:state.studio?'▴ Marker tiles · Data':'▴ Marker tiles',title:'Show individual markers around the cursor or selected cells','aria-controls':'split-marker-panel',onclick:()=>{
-    opt.open=!opt.open; if(!opt.open)opt.floating=false; syncSplitMarkers();saveSplitMarkerOptions();
-  }});
+  const toggle=el('button',{id:'split-marker-toggle',type:'button',text:'▴ Marker tiles',title:'Show marker tiles', 'aria-controls':'split-marker-panel',onclick:()=>openSplitTab('markers')});
+  const dataToggle=el('button',{id:'data-panel-toggle',type:'button',text:'▴ Data',title:'Show Data',onclick:()=>openSplitTab('data')});
+  const handles=el('div',{id:'viewer-panel-handles'},[toggle,(state.studio || state.reviewer)?dataToggle:null]);
   const scope=select([['selected','Selected markers'],['all','All markers']],opt.all?'all':'selected',value=>{
     opt.all=value==='all';syncSplitMarkers();saveSplitMarkerOptions();
   }); scope.setAttribute('aria-label','Marker tile scope');
@@ -113,51 +142,47 @@ function ensureSplitMarkers() {
     saveSplitMarkerOptions();
   }});
   const lockLabel=el('label',{class:'inline-check',title:'Keep tiles on selected cells. Deselect or close the cell card to follow the pointer again.'},[lock,el('span',{text:'Lock on cell'})]);
-  const float=el('button',{class:'btn small',text:'Float',title:'Float above Studio; drag the header to move',onclick:()=>{
-    opt.floating=!opt.floating;syncSplitMarkers();saveSplitMarkerOptions();
-  }});
+  const float=el('button',{class:'btn small',text:'Float',title:'Open this view in a separate browser window',onclick:floatSplitTab});
   const hide=el('button',{class:'btn small',text:'Hide ▾',title:'Collapse to the bottom of the viewer',onclick:()=>{
     opt.open=false;opt.floating=false;syncSplitMarkers();saveSplitMarkerOptions();
   }});
   // Tabs: Marker tiles, and (in Studio) Data, the cells' table linked to the image.
   const tabs=el('div',{class:'split-tabs',role:'tablist'});
-  const tab=(id,text)=>el('button',{type:'button',class:'split-tab',role:'tab','data-tab':id,text,onclick:()=>{opt.tab=id;syncSplitMarkers();saveSplitMarkerOptions();}});
+  const tab=(id,text)=>el('button',{type:'button',class:'split-tab',role:'tab','data-tab':id,text,onclick:()=>openSplitTab(id)});
   tabs.append(tab('markers','Marker tiles'));
-  if(state.studio)tabs.append(tab('data','Data'));
+  if((state.studio || state.reviewer))tabs.append(tab('data','Data'));
   const markerTools=el('span',{class:'split-marker-tools'},[scope,zoom,el('label',{class:'split-size'},[el('span',{text:'Size'}),size]),lockLabel,follow]);
   const head=el('div',{class:'split-marker-head'},[tabs,markerTools,el('span',{class:'grow'}),float,hide]);
   const note=el('div',{class:'split-marker-note',role:'status'});
   const grid=el('div',{class:'split-marker-grid'});
   const resize=el('div',{class:'split-marker-resize',role:'separator',tabindex:0,'aria-label':'Resize marker panel',title:'Drag up or down to resize. Arrow keys also resize.'});
-  const corner=el('div',{class:'split-marker-corner',title:'Drag to resize the floating panel'});
   const dataBox=el('div',{class:'split-data'});
-  const panel=el('section',{id:'split-marker-panel','aria-label':'Split marker viewer'},[resize,head,note,grid,dataBox,corner]);
-  $('stage').append(toggle,panel);
-  Object.assign(splitMarkers,{toggle,panel,grid,note,head,scope,zoom,size,follow,lock,float,tabs,markerTools,dataBox});
+  const panel=el('section',{id:'split-marker-panel','aria-label':'Split marker viewer'},[resize,head,note,grid,dataBox]);
+  $('stage').append(handles,panel);
+  Object.assign(splitMarkers,{toggle,dataToggle,handles,panel,grid,note,head,scope,zoom,size,follow,lock,float,tabs,markerTools,dataBox});
   grid.addEventListener('scroll',()=>scheduleSplitMarkers(),{passive:true});
-  panel.addEventListener('contextmenu',event=>{
+  grid.addEventListener('contextmenu',event=>{
     event.preventDefault();event.stopPropagation();closeContextMenu();
     const menu=el('div',{id:'ctxmenu',class:'split-marker-menu',role:'menu'},[el('div',{class:'ctx-title',text:'Marker tile zoom'}),
       el('div',{class:'ctx-row'},[.25,.5,1,2,4,8].map(v=>el('button',{text:v===1?'100% (native)':v*100+'%',onclick:()=>{
         opt.zoom=v;zoom.value=String(v);closeContextMenu();scheduleSplitMarkers();saveSplitMarkerOptions();
       }})))]);
-    menu.style.left=Math.max(8,Math.min(event.clientX,innerWidth-360))+'px';
-    document.body.append(menu);menu.style.top=Math.max(8,Math.min(event.clientY,innerHeight-menu.offsetHeight-8))+'px';
+    const doc=grid.ownerDocument,win=doc.defaultView;
+    menu.style.left=Math.max(8,Math.min(event.clientX,win.innerWidth-360))+'px';
+    doc.body.append(menu);menu.style.top=Math.max(8,Math.min(event.clientY,win.innerHeight-menu.offsetHeight-8))+'px';
   });
-  const drag=(handle,kind)=>handle.addEventListener('pointerdown',event=>{
-    if(event.button!==0 || (kind==='move' && (!opt.floating || event.target.closest('button,input,select,label'))))return;
+  const drag=handle=>handle.addEventListener('pointerdown',event=>{
+    if(event.button!==0)return;
     event.preventDefault();handle.setPointerCapture(event.pointerId);
-    const start={x:event.clientX,y:event.clientY,height:panel.offsetHeight,width:panel.offsetWidth,left:panel.offsetLeft,top:panel.offsetTop};
+    const start={y:event.clientY,height:panel.offsetHeight};
     const move=e=>{
-      if(kind==='move'){opt.x=start.left+e.clientX-start.x;opt.y=start.top+e.clientY-start.y;}
-      else if(kind==='corner'){opt.width=Math.max(320,start.width+e.clientX-start.x);opt.height=Math.max(140,start.height+e.clientY-start.y);}
-      else opt.height=Math.max(140,start.height+start.y-e.clientY);
+      opt.height=Math.max(140,start.height+start.y-e.clientY);
       placeSplitMarkers();scheduleSplitMarkers();
     };
     const end=()=>{handle.removeEventListener('pointermove',move);handle.removeEventListener('pointerup',end);handle.removeEventListener('pointercancel',end);saveSplitMarkerOptions();};
     handle.addEventListener('pointermove',move);handle.addEventListener('pointerup',end);handle.addEventListener('pointercancel',end);
   });
-  drag(head,'move');drag(resize,'height');drag(corner,'corner');
+  drag(resize);
   resize.addEventListener('keydown',e=>{if(['ArrowUp','ArrowDown'].includes(e.key)){e.preventDefault();e.stopPropagation();opt.height+=e.key==='ArrowUp'?24:-24;opt.height=Math.max(140,opt.height);placeSplitMarkers();scheduleSplitMarkers();saveSplitMarkerOptions();}});
   splitMarkers.observer=new ResizeObserver(()=>{placeSplitMarkers();scheduleSplitMarkers();});
   splitMarkers.observer.observe($('stage'));
@@ -167,50 +192,55 @@ function ensureSplitMarkers() {
 function placeSplitMarkers() {
   const {panel,toggle}=splitMarkers;if(!panel)return;
   const opt=splitMarkerOptions(), stage=$('stage');
-  // Floating panels are body children so they can cross both Studio sidebars.
-  const parent=opt.floating&&opt.open?document.body:stage;if(panel.parentElement!==parent)parent.append(panel);
-  panel.classList.toggle('floating',opt.floating&&opt.open);panel.classList.toggle('is-open',opt.open);
-  panel.inert=!opt.open;panel.setAttribute('aria-hidden',String(!opt.open));
-  toggle.setAttribute('aria-expanded',String(opt.open));toggle.hidden=opt.open;
-  const height=Math.min(opt.height,Math.max(140,(opt.floating?innerHeight:stage.clientHeight)-65));
-  const dockedHeight=opt.open&&!opt.floating?height:0;
+  const open=opt.open&&!viewerPanelWindow((state.studio || state.reviewer)?opt.tab:'markers');
+  panel.classList.toggle('is-open',open);
+  panel.inert=!open;panel.setAttribute('aria-hidden',String(!open));
+  toggle.setAttribute('aria-expanded',String(open&&opt.tab==='markers'));
+  splitMarkers.dataToggle.setAttribute('aria-expanded',String(open&&opt.tab==='data'));
+  splitMarkers.handles.hidden=open;
+  toggle.textContent=viewerPanelWindow('markers')?'↗ Marker tiles':'▴ Marker tiles';
+  splitMarkers.dataToggle.textContent=viewerPanelWindow('data')?'↗ Data':'▴ Data';
+  const height=Math.min(opt.height,Math.max(140,stage.clientHeight-65));
+  const dockedHeight=open?height:0;
   stage.style.setProperty('--marker-dock-height',dockedHeight+'px');
   if(state.viewer?.navigator?.element)state.viewer.navigator.element.style.bottom=dockedHeight+'px';
   panel.style.height=height+'px';panel.style.setProperty('--marker-size',opt.size+'px');
-  if(opt.floating){
-    const width=Math.min(opt.width,innerWidth-16);panel.style.width=width+'px';
-    opt.x=Math.max(8,Math.min(opt.x,innerWidth-width-8));opt.y=Math.max(8,Math.min(opt.y,innerHeight-height-8));
-    panel.style.left=opt.x+'px';panel.style.top=opt.y+'px';
-  }else{panel.style.width='';panel.style.left='';panel.style.top='';}
+  viewerPanelWindow('markers')?.document.body.style.setProperty('--marker-size',opt.size+'px');
+
 }
 
 function syncSplitMarkers() {
   ensureSplitMarkers();
   const opt=splitMarkerOptions(),image=splitMarkerImage();
-  placeSplitMarkers();splitMarkers.toggle.disabled=!image && !state.studio;
-  // The Data tab (Studio): the cells' table instead of the marker tiles, in the same panel.
-  const dataTab=!!state.studio&&opt.tab==='data';
-  splitMarkers.tabs.querySelectorAll('.split-tab').forEach(b=>{const on=b.dataset.tab===(dataTab?'data':'markers');b.classList.toggle('on',on);b.setAttribute('aria-selected',String(on));});
-  splitMarkers.markerTools.hidden=dataTab;splitMarkers.grid.hidden=dataTab;splitMarkers.note.hidden=dataTab;splitMarkers.dataBox.hidden=!dataTab;
-  if(dataTab){if(opt.open)dataViewInto(splitMarkers.dataBox);stopSplitMarkerPreview();return;}
+  placeSplitMarkers();splitMarkers.toggle.disabled=!image && !(state.studio || state.reviewer);
+  const dataTab=!!(state.studio || state.reviewer)&&opt.tab==='data',markersVisible=splitMarkersVisible();
+  splitMarkers.tabs.querySelectorAll('.split-tab').forEach(b=>{
+    const detached=!!viewerPanelWindow(b.dataset.tab),on=!detached&&b.dataset.tab===(dataTab?'data':'markers');
+    b.classList.toggle('on',on);b.setAttribute('aria-selected',String(on));b.classList.toggle('detached',detached);
+    b.title=detached?'Focus the separate window':'';
+  });
+  splitMarkers.markerTools.hidden=!markersVisible;splitMarkers.grid.hidden=!markersVisible;splitMarkers.note.hidden=!markersVisible;
+  const dataVisible=!!viewerPanelWindow('data')||(dataTab&&opt.open);
+  splitMarkers.dataBox.hidden=!dataVisible;
+  if(dataVisible)dataViewInto(splitMarkers.dataBox);
   splitMarkers.scope.value=opt.all?'all':'selected';splitMarkers.zoom.value=String(opt.zoom);splitMarkers.size.value=opt.size;
-  splitMarkers.follow.disabled=!splitMarkers.pinned;splitMarkers.float.textContent=opt.floating?'Dock':'Float';
-  splitMarkers.lock.checked=opt.lockOnCell;
-  splitMarkers.float.setAttribute('aria-label',opt.floating?'Dock marker tiles':'Float marker tiles');
+  splitMarkers.follow.disabled=!splitMarkers.pinned;splitMarkers.lock.checked=opt.lockOnCell;
+  splitMarkers.float.setAttribute('aria-label',dataTab?'Float Data':'Float marker tiles');
   const channels=splitMarkerChannels(image), signature=JSON.stringify([image?.token,channels.map(c=>[c.index,c.label,c.color,c.low,c.high]),opt.size]);
   if(signature!==splitMarkers.signature){
     splitMarkers.signature=signature;
     splitMarkers.cards=channels.map(channel=>{
       const canvas=el('canvas',{'aria-label':(channel.label||channel.name)+' marker crop'});
+      const intensity=el('span',{class:'split-marker-intensity',text:'…','aria-label':(channel.label||channel.name)+' pixel intensity',title:'Full-resolution pixel intensity at the centre crosshair'});
       const card=el('div',{class:'split-marker-tile','data-marker':channel.name},[
-        el('div',{class:'split-marker-label',title:channel.label||channel.name},[el('span',{class:'split-marker-swatch',style:'background:'+channel.color}),el('span',{text:channel.label||channel.name})]),canvas]);
-      return {channel,canvas,card};
+        el('div',{class:'split-marker-label',title:channel.label||channel.name},[el('span',{class:'split-marker-swatch',style:'background:'+channel.color}),el('span',{text:channel.label||channel.name})]),canvas,intensity]);
+      return {channel,canvas,card,intensity};
     });splitMarkers.grid.replaceChildren(...splitMarkers.cards.map(c=>c.card));
   }
   splitMarkers.note.textContent=!image?'Open a multichannel image.':!channels.length?'Select markers in Layers, or choose All markers.':
     (splitMarkers.pinned?(splitMarkers.selection?.members?splitMarkers.selection.members.length+' cells':'Cell '+splitMarkers.selection?.label)+' · pinned':'Follow cursor')+
     ' · '+channels.length+' markers';
-  if(!opt.open){stopSplitMarkerPreview();return;}
+  if(!markersVisible){stopSplitMarkerPreview();return;}
   if(!splitMarkers.point && state.viewer && image?.item){
     const p=image.item.viewportToImageCoordinates(state.viewer.viewport.getCenter(true));splitMarkers.point={x:p.x,y:p.y};
   }
@@ -218,15 +248,65 @@ function syncSplitMarkers() {
 }
 
 function scheduleSplitMarkers(changed=true) {
-  if(!splitMarkerOptions().open || (state.studio&&splitMarkerOptions().tab==='data'))return;
+  if(!splitMarkersVisible())return;
   if(changed)splitMarkers.epoch++;
   if(splitMarkers.timer)return;
-  splitMarkers.timer=requestAnimationFrame(()=>{splitMarkers.timer=null;renderSplitMarkers();});
+  splitMarkers.timerWindow=splitMarkers.grid.ownerDocument.defaultView;
+  splitMarkers.timer=splitMarkers.timerWindow.requestAnimationFrame(()=>{splitMarkers.timer=null;renderSplitMarkers();});
 }
 
 function stopSplitMarkerPreview() {
-  splitMarkers.epoch++;cancelAnimationFrame(splitMarkers.timer);splitMarkers.timer=null;
+  splitMarkers.epoch++;(splitMarkers.timerWindow||window).cancelAnimationFrame(splitMarkers.timer);splitMarkers.timer=null;
   splitMarkers.wanted=new Set();pruneSplitMarkerRequests();splitMarkers.rendering=false;
+  splitMarkerPixels.wanted=null;clearTimeout(splitMarkerPixels.timer);splitMarkerPixels.timer=null;
+  splitMarkerPixels.pending?.controller.abort();
+}
+
+function formatSplitMarkerIntensity(value) {
+  if(!Number.isFinite(value))return '—';
+  let text=Number.isInteger(value)?String(value):Number(value.toPrecision(5)).toString();
+  if(text.length>8)text=value.toExponential(2).replace('e+','e');
+  return text.length>8?value.toExponential(0).replace('e+','e'):text;
+}
+
+function updateSplitMarkerPixels(image,point,cards) {
+  const x=Math.floor(point.x),y=Math.floor(point.y),key=JSON.stringify([image.token,image.info.fingerprint,x,y]);
+  const outside=x<0||y<0||x>=image.info.width||y>=image.info.height;
+  const cache=splitMarkerPixels.cache,values=cache.get(key)||{};
+  if(cache.has(key)){cache.delete(key);cache.set(key,values);}
+  const missing=[];
+  for(const {channel,card,intensity} of cards){
+    const known=outside||Object.hasOwn(values,channel.index),value=outside?null:values[channel.index];
+    // A late response never labels a crop belonging to a different location.
+    const matches=card.dataset.center?.split(',').map(Number).every((v,i)=>Math.floor(v)===(i?y:x))&&!card.classList.contains('loading')&&!card.classList.contains('failed');
+    intensity.textContent=matches&&known?formatSplitMarkerIntensity(value):'…';
+    intensity.title=matches&&known?'Full-resolution pixel ('+x+', '+y+'): '+(value??'unavailable'):'Loading pixel intensity…';
+    if(matches&&known){intensity.dataset.pixel=x+','+y;intensity.dataset.value=value??'';}else{delete intensity.dataset.pixel;delete intensity.dataset.value;}
+    if(!known)missing.push(channel.index);
+  }
+  splitMarkerPixels.wanted=missing.length?{key,image,x,y,channels:[...new Set(missing)],generation:splitMarkers.generation}:null;
+  pumpSplitMarkerPixels();
+}
+
+function pumpSplitMarkerPixels() {
+  const probe=splitMarkerPixels;
+  if(probe.pending||probe.timer||!probe.wanted)return;
+  // One batched read in flight, at most 20/s. Pointer events replace the next
+  // target instead of queuing old positions; crop rendering never waits for it.
+  probe.timer=setTimeout(async()=>{
+    probe.timer=null;const job=probe.wanted;if(!job)return;
+    job.controller=new AbortController();probe.pending=job;probe.lastStarted=performance.now();
+    try{
+      const found=await getJSON('/image/'+job.image.token+'/pixels?x='+job.x+'&y='+job.y+'&ch='+job.channels.join(','),{signal:job.controller.signal});
+      if(!job.controller.signal.aborted&&job.generation===splitMarkers.generation)probe.cache.set(job.key,{...probe.cache.get(job.key),...found.values});
+    }catch(error){
+      if(error.name!=='AbortError'&&job.generation===splitMarkers.generation)probe.cache.set(job.key,{...probe.cache.get(job.key),...Object.fromEntries(job.channels.map(c=>[c,null]))});
+    }finally{
+      while(probe.cache.size>64)probe.cache.delete(probe.cache.keys().next().value);
+      if(probe.pending===job)probe.pending=null;
+      if(probe.wanted)scheduleSplitMarkers(false);
+    }
+  },Math.max(0,50-(performance.now()-probe.lastStarted)));
 }
 
 function splitMarkerGeometry(image,point,size,zoom,span=0,dpr=1) {
@@ -334,7 +414,7 @@ function drawMarkerCrop(canvas,image,geometry,tiles,bitmaps,{dpr=1,pixels=splitM
   ctx.drawImage(mosaic,x/scale-ox,y/scale-oy,width/scale,width/scale,0,0,size,size);
   ctx.strokeStyle='#fff';ctx.lineWidth=dpr;ctx.shadowColor='#000';ctx.shadowBlur=2*dpr;
   if(rings.length)for(const ring of rings){ctx.beginPath();ring.forEach(([px,py],i)=>ctx[i?'lineTo':'moveTo']((px-x)*factor,(py-y)*factor));ctx.closePath();ctx.stroke();}
-  else {const mid=size/2;ctx.beginPath();ctx.moveTo(mid-4*dpr,mid);ctx.lineTo(mid+4*dpr,mid);ctx.moveTo(mid,mid-4*dpr);ctx.lineTo(mid,mid+4*dpr);ctx.stroke();}
+  const mid=size/2;ctx.beginPath();ctx.moveTo(mid-4*dpr,mid);ctx.lineTo(mid+4*dpr,mid);ctx.moveTo(mid,mid-4*dpr);ctx.lineTo(mid,mid+4*dpr);ctx.stroke();
   ctx.shadowBlur=0;
   const mpp=image.info.pixel_size_um;
   if(mpp){const length=niceLength(width*mpp/5),px=length/mpp*factor;
@@ -355,11 +435,11 @@ async function paintMarkerCrop(canvas,image,channel,geometry,options={}) {
 
 function renderSplitMarkers() {
   const opt=splitMarkerOptions(),image=splitMarkerImage(),point=splitMarkers.point;
-  if(!opt.open||(state.studio&&opt.tab==='data')||!image||!point){stopSplitMarkerPreview();return;}
-  const epoch=splitMarkers.epoch,current=()=>opt.open&&epoch===splitMarkers.epoch&&state.layers.includes(image);
+  if(!splitMarkersVisible()||!image||!point){stopSplitMarkerPreview();return;}
+  const epoch=splitMarkers.epoch,current=()=>splitMarkersVisible()&&epoch===splitMarkers.epoch&&state.layers.includes(image);
   const rect=splitMarkers.grid.getBoundingClientRect(),cards=splitMarkers.cards.filter(({card})=>{const r=card.getBoundingClientRect();return r.bottom>rect.top&&r.top<rect.bottom;});
   const pixels=cards[0]?.canvas.clientWidth || opt.size;
-  const dpr=Math.min(2,window.devicePixelRatio||1),geo=splitMarkerGeometry(image,point,pixels,opt.zoom,splitMarkers.pinned?splitMarkers.span:0,dpr);
+  const dpr=Math.min(2,splitMarkers.grid.ownerDocument.defaultView.devicePixelRatio||1),geo=splitMarkerGeometry(image,point,pixels,opt.zoom,splitMarkers.pinned?splitMarkers.span:0,dpr);
   const rings=splitMarkers.pinned&&state.inspectedCell?.result===splitMarkers.selection?state.cellOutline||[]:[];
   let failures=0;splitMarkers.rendering=false;
   try {
@@ -396,6 +476,7 @@ function renderSplitMarkers() {
         tiles.forEach((tile,i)=>{if(!bitmaps[i])splitMarkerBitmap(tile.url,{preview:true}).catch(()=>{});});
       }
     }
+    updateSplitMarkerPixels(image,point,cards);
     if(failures)splitMarkers.note.textContent=failures+' marker tiles could not load. Move the cursor or reopen the panel to retry.';
   }catch(error){splitMarkers.rendering=false;if(current())splitMarkers.note.textContent=error.message;}
 }
@@ -405,7 +486,7 @@ function renderSplitMarkers() {
 async function askCellAI(layer,result,button) {
   if(result.aiBusy)return;
   const image=state.layers.find(l=>l.type==='image'&&l.token===layer.image_token&&l.id!=='he');
-  if(!image||!state.studio?.askCell) {message('Open Studio to ask the Assistant about a cell.',true);return;}
+  if(!image||!(state.studio || state.reviewer)?.askCell) {message('Open Studio to ask the Assistant about a cell.',true);return;}
   if(result.profile?.status!=='ready'){message('Wait for the cell measurements to load first.',true);return;}
   result.aiBusy=true;button.disabled=true;button.textContent='Preparing…';
   const profile=result.profile,table=layer.table;
@@ -462,7 +543,7 @@ async function askCellAI(layer,result,button) {
     // Keep full measurements separate from duplicate details, within chat's view budget.
     data.current_labels=Object.fromEntries(Object.entries(result.details||{}).filter(([k,v])=>/^phenotype_|tissue|tumor|annotation|region/i.test(k)&&typeof v!=='object').slice(0,60));
     if(!current())return;
-    await state.studio.askCell({images,context:data,text:'Suggest the most plausible phenotype for '+(result.members?'these selected cells':'this selected cell')+
+    await (state.studio || state.reviewer).askCell({images,context:data,text:'Suggest the most plausible phenotype for '+(result.members?'these selected cells':'this selected cell')+
       ' using the supplied marker measurements, morphology, labelled marker tiles and existing phenotype vocabulary. Compare plausible alternatives and explain contradictory evidence or uncertainty. '+
       'Distinguish measured values from display brightness; do not infer positivity solely from tile colours. Propose a name for review only; do not change labels or run a command.'});
   }catch(error){message(error.message,true);}
@@ -471,5 +552,5 @@ async function askCellAI(layer,result,button) {
 
 // Open the panel on its Data tab (a table opened from elsewhere).
 function showDataTab() {
-  const opt=splitMarkerOptions();opt.open=true;opt.tab='data';syncSplitMarkers();saveSplitMarkerOptions();
+  openSplitTab('data');
 }

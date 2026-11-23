@@ -21,6 +21,8 @@ from matplotlib.colors import to_hex, to_rgb
 from matplotlib.lines import Line2D
 from matplotlib.patches import FancyArrowPatch, FancyBboxPatch
 import numpy as np
+
+from spacemap.agreement import safe_cohen_kappa
 import pandas as pd
 import seaborn as sns
 import streamlit as st
@@ -29,7 +31,6 @@ from spacemap_gui.ui_utils import clamp_numeric_widget_state
 from sklearn.metrics import (
     accuracy_score,
     balanced_accuracy_score,
-    cohen_kappa_score,
     f1_score,
     precision_recall_fscore_support,
     precision_score,
@@ -633,7 +634,7 @@ def _generic_scores(
                     truth, prediction, labels=labels, average="macro", zero_division=0
                 )
             ),
-            "cohen_kappa": float(cohen_kappa_score(truth, prediction)),
+            "cohen_kappa": float(safe_cohen_kappa(truth, prediction)),
             "prediction_coverage": float(assigned.mean()) if len(assigned) else 0.0,
         }
 
@@ -1142,7 +1143,7 @@ def _build_generic_human_tables(
             {
                 "n_shared_cells": int(overlap.sum()),
                 "agreement": float(agreement.mean()) if len(agreement) else np.nan,
-                "cohen_kappa": float(cohen_kappa_score(left, right))
+                "cohen_kappa": float(safe_cohen_kappa(left, right))
                 if len(agreement)
                 else np.nan,
                 "symmetric_macro_f1": float(

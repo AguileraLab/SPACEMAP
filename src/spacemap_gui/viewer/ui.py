@@ -183,6 +183,7 @@ def image_layer(
         "type": "image",
         "name": name or Path(path).name,
         "token": token,
+        "path": str(Path(path).resolve()),
         "channels": channels or [],
         "opacity": opacity,
         "visible": visible,
@@ -344,6 +345,9 @@ def layers_for_image(entry: dict, *, show_he: bool = False, context: str = "") -
             hidden = hidden | {str(studio_annotation.domains(output, studio_annotation.sample_id(entry["path"])).resolve())}
     except (OSError, ValueError, KeyError):
         pass
+    from spacemap_gui.studio import annotation_links, annotation_inputs, project_files
+    bundle.annotations.extend((Path(row['path']).stem, row['path']) for row in annotation_links.records(root, entry['path'])
+                              if Path(row['path']).is_file() and not project_files.excluded(row['path'], root))
     shown = []
     for label, path in bundle.annotations:
         resolved = str(Path(path).resolve())
@@ -356,10 +360,12 @@ def layers_for_image(entry: dict, *, show_he: bool = False, context: str = "") -
                 "id": f"ann{number}",
                 "type": "annotations",
                 "name": label,
+                "saved_file": str(Path(path).resolve()),
                 "token": registry.register_object("annotations", path=path, image=entry["path"]),
                 "image_token": layers[0]["token"],
                 "opacity": 0.7,
                 "visible": context == "tab4" and number == 0,
+                **annotation_inputs.display_metadata(root, entry['path'], path),
             }
         )
     from spacemap_gui.studio import cell_layers
@@ -399,6 +405,13 @@ def layers_for_image(entry: dict, *, show_he: bool = False, context: str = "") -
             fits, reason = cell_view.matches(reference, path, entry["sample"], count)
             (older if fits else left_out).append((name, path) if fits else {"name": name, "reason": reason})
         tables = [{"id": f"t{i}", "name": name, "path": path} for i, (name, path) in enumerate(list(own) + older)]
+        # Imported measurements belong only to the outlines chosen during import.
+        # Stable IDs keep saved tables and density maps attached to the same file.
+        for item in data:
+            bound = item.get("segmentation") or bundle.segmentation
+            if item["show"] == "cells" and bound and Path(bound).resolve() == Path(segmentation).resolve():
+                tables.append({"id": "import_" + item["id"], "name": "Data: " + item["name"],
+                               "path": item["table"], "source_file": item["source"]})
         point_tables = [
             {"id": f"p{i}", "name": name, "path": path}
             for i, (name, path) in enumerate(catalog.find_point_tables(root))
@@ -439,8 +452,8 @@ def layers_for_image(entry: dict, *, show_he: bool = False, context: str = "") -
             "image_token": layers[0]["token"],
             "roi": entry["sample"],  # the image's name in a combined table (batch_id)
             "mode": "both" if color_by else "outline",
-            "tables": [{"id": t["id"], "name": t["name"]} for t in tables],
-            "density_tables": [{"id": t["id"], "name": t["name"]} for t in tables + point_tables],
+            "tables": [{"id": t["id"], "name": t["name"], "file": str(t["path"]), "source_file": t.get("source_file", "")} for t in tables],
+            "density_tables": [{"id": t["id"], "name": t["name"], "file": Path(t["path"]).name} for t in tables + point_tables],
             "table": tables[table_index]["id"] if tables else "",
             "color_by": color_by,
             "label_columns": label_columns,
@@ -471,10 +484,8 @@ def layers_for_image(entry: dict, *, show_he: bool = False, context: str = "") -
     from spacemap_gui.studio import cell_data
 
     data = cell_data.records(root, entry["path"])
-    # Cell data shown on the image's own cells: its table joins theirs (after their own, before an older combined one).
-    linked = [("Data: " + item["name"], item["table"]) for item in data if item["show"] == "cells"]
     if bundle.segmentation:
-        cells_layer, made_note = make_cells(bundle.segmentation, "cells", list(own_tables) + linked)
+        cells_layer, made_note = make_cells(bundle.segmentation, "cells", list(own_tables))
         note = made_note or note
         layers.append(cells_layer)
     # Cell data drawn as circles or Voronoi cells: each its own cell layer, coloured by its own table.
@@ -543,12 +554,20 @@ def _spec(title: str, layers: list[dict], note: str | None = None) -> dict:
         "layers": layers,
         "note": note or "",
         "session": _session_id(),
+        "display_scope": _display_scope(),
         "height": 780,
     }
     workspace = _workspace_token(registry.resolve(image["token"]) if image else None)
     if workspace:
         spec["workspace"] = workspace
     return spec
+
+
+def _display_scope() -> str | None:
+    """Browser display preferences survive a new Studio session for this project."""
+    from hashlib import sha256
+    root, _ = _project()
+    return 'project-' + sha256(str(Path(root).resolve()).encode()).hexdigest()[:24] if root else None
 
 
 def _publish(spec: dict, context: str = "") -> None:
@@ -621,7 +640,7 @@ def current_mappings(project: dict) -> dict:
 
 
 def window_images(session: str) -> list[dict]:
-    """The images a viewer window can switch to (no paths: ids, groups and names)."""
+    """Images for the owner viewer, including paths for exact source matching."""
     project = registry.session_project(session)
     if not project:
         return []
@@ -643,8 +662,10 @@ def window_images(session: str) -> list[dict]:
             except ValueError:
                 pass
             entries[index] = replace(entry, group=f"{entry.group} ({folder})")
+    from spacemap_gui.studio import project_files
+    entries = [e for e in entries if Path(e.path).is_file() and not project_files.excluded(e.path, root)]
     registry.session_remember_images(session, [vars(e) for e in entries])
-    return [{"id": i, "group": e.group, "name": e.name, "sample": e.sample} for i, e in enumerate(entries)]
+    return [{"id": i, "group": e.group, "name": e.name, "sample": e.sample, "path": str(Path(e.path).resolve())} for i, e in enumerate(entries)]
 
 
 def window_add_image(session: str, path: str) -> dict:
@@ -652,8 +673,11 @@ def window_add_image(session: str, path: str) -> dict:
     project = registry.session_project(session) or {}
     entry = catalog.add_image(project.get("root"), path)
     images = window_images(session)
-    added = next(i for i in reversed(images) if (i["group"], i["name"]) == (entry.group, entry.name))
-    return {"images": images, "added": added["id"]}
+    # Different stages can contain the same filename. Identity is the exact
+    # chosen path; display groups may be renamed to disambiguate duplicates.
+    paths = registry.session_images(session)
+    added = next(i for i, item in enumerate(paths) if Path(item['path']).resolve() == Path(entry.path).resolve())
+    return {"images": images, "added": added}
 
 
 def window_image_spec(session: str, image_id: int) -> dict:
@@ -674,6 +698,7 @@ def window_image_spec(session: str, image_id: int) -> dict:
             "layers": layers,
             "note": note or "",
             "session": session,
+            "display_scope": _display_scope(),
             "height": 780,
         }
         workspace = _workspace_token(entry["path"])
@@ -874,6 +899,7 @@ def studio_link(context: str) -> str | None:
         }
     else:
         spec = view["spec"]
+    spec = {**spec, "display_scope": _display_scope()}
     registry.publish(channel, spec, project=project)
     return api_location()["api"] + "/window/index.html?studio=1&session=" + quote(channel) + "&step=" + quote(context)
 

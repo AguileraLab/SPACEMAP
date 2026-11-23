@@ -154,6 +154,47 @@ def test_cells_are_coloured_by_a_column_and_classes_can_be_hidden(roi_project):
     assert scale["max"] > scale["min"] and numeric_lut[40][3] == 255
 
 
+@pytest.mark.parametrize('mode', ['outline', 'fill', 'both'])
+@pytest.mark.parametrize('z', [0, 2])
+def test_manual_reference_keeps_unassigned_outlines_and_filtered_cells_hidden(mode, z):
+    labels = np.zeros((8, 15), dtype=np.uint32)
+    labels[1:7, 1:6] = 1
+    labels[1:7, 9:14] = 8  # sparse, unassigned label
+    lut, _ = cells.categorical_lut(np.array([1, 8]), np.array(['Treg', '']), colors={'Treg': '#ff0000'})
+    tile = cells.render_reference_tile(labels, lut, mode=mode, z=z)
+    assert tile[1, 9, 3] == 255
+    assert tile[0, 0, 3] == 0
+    if mode != 'outline' or z >= 2:
+        assert tuple(tile[3, 3]) == (255, 0, 0, 255)
+    if z == 0:
+        assert tile[3, 11, 3] == 0  # unassigned interior stays transparent
+    filtered = cells.render_reference_tile(np.where(labels == 8, 0, labels), lut, mode=mode, z=z)
+    assert not filtered[:, 8:, 3].any()
+    # Normal categorical views still hide missing/hidden groups entirely.
+    categorical = cells.render_cell_tile(labels, lut, mode=mode, z=z)
+    assert not categorical[:, 8:, 3].any()
+
+
+def test_manual_reference_tile_route_refreshes_assignments_and_respects_filters(client, roi_project):
+    from spacemap_gui.viewer import registry
+    token = registry.register_object('cells', image=roi_project['image'], pyramid=roi_project['pyramid'],
+        roi='s1r1', tables={'t0': roi_project['table']}, colors={})
+    route = f'/cells/{token}/tile/0/0/0.png'
+    def tile(**extra):
+        response = client.get(route, params={'mode': 'both', 't': 't0', 'reference': 'phenotype_ref1', **extra})
+        assert response.status_code == 200, response.text
+        return np.asarray(Image.open(io.BytesIO(response.content)))
+    assert tile()[15, 15, 3] == 0
+    cells.assign(roi_project['table'], 's1r1', [1], 'phenotype_ref1', 'Treg')
+    drawn = tile()
+    assert drawn[15, 15, 3] == 255 and drawn[10, 55, 3] == 255 and drawn[15, 55, 3] == 0
+    filtered = tile(f=json.dumps([{'col': 'label', 'lo': 1, 'hi': 1}]))
+    assert filtered[15, 15, 3] == 255 and filtered[10, 55, 3] == 0
+    cells.assign(roi_project['table'], 's1r1', [1], 'phenotype_ref1', '')
+    cleared = tile()
+    assert cleared[15, 15, 3] == 0 and cleared[10, 15, 3] == 255
+
+
 def test_labelling_cells_saves_to_the_label_store_and_can_be_undone(roi_project):
     from spacemap import dataio
 
@@ -200,6 +241,10 @@ def test_annotations_are_drawn_in_class_colours(tmp_path):
     assert tile[425, 425, 3] > 0  # geometry collections are drawn too
     hidden = annotations.render_annotation_tile(shapes, open_source(image).info, 0, 0, 0, hidden={"tumor"})
     assert hidden[200, 200, 3] == 0
+    solid = annotations.render_annotation_tile(shapes, open_source(image).info, 0, 0, 0, fill_alpha=255, line_px=0)
+    assert solid[200, 200, 3] == 255
+    outline = annotations.render_annotation_tile(shapes, open_source(image).info, 0, 0, 0, fill_alpha=0)
+    assert outline[200, 200, 3] == 0 and outline[100, 100, 3] == 255
 
 
 # ---------------------------------------------------------------- catalog
@@ -259,6 +304,32 @@ def test_routes_serve_only_registered_images(client, tmp_path):
     notes.write_text("not an image")
     with pytest.raises(ValueError):
         registry.register(notes)
+
+
+def test_cluster_review_palette_is_local_and_matches_tiles(client, roi_project):
+    from spacemap_gui.viewer import registry
+
+    token = registry.register_object("cells", image=roi_project["image"], pyramid=roi_project["pyramid"],
+                                     roi="s1r1", tables={"t0": roi_project["table"]}, colors={})
+    base = f"/cells/{token}"
+    params = {"t": "t0", "col": "phenotype_leiden"}
+    original = client.get(base + "/legend", params=params).json()
+    preview = {**params, "group_colours": json.dumps({"T": "#123456", "B": "#abcdef"}), "hide": "B"}
+    items = client.get(base + "/legend", params=preview).json()["items"]
+    assert {item["value"]: item["color"] for item in items} == {"T": "#123456", "B": "#abcdef"}
+    response = client.get(base + "/tile/0/0/0.png", params={**preview, "mode": "fill"})
+    rgba = np.asarray(Image.open(io.BytesIO(response.content)))
+    assert set(map(tuple, rgba[rgba[..., 3] > 0, :3])) == {(0x12, 0x34, 0x56)}
+    both = client.get(base + "/tile/0/0/0.png", params={**preview, "mode": "both"})
+    both_rgba = np.asarray(Image.open(io.BytesIO(both.content)))
+    # The same cells are visible with or without outlines.
+    np.testing.assert_array_equal(both_rgba[..., 3] > 0, rgba[..., 3] > 0)
+    assert client.get(base + "/legend", params=params).json() == original
+    # Separate reviews may assign the same cluster ID different colours.
+    other = {**params, "group_colours": json.dumps({"T": "#654321"})}
+    assert next(i for i in client.get(base + "/legend", params=other).json()["items"] if i["value"] == "T")["color"] == "#654321"
+    for invalid in ['[]', '{"T":"red"}', '{"T":null}']:
+        assert client.get(base + "/legend", params={**params, "group_colours": invalid}).status_code == 400
 
 
 def test_cell_and_annotation_routes(client, roi_project):
@@ -566,7 +637,33 @@ def test_density_stamp_added_files_and_window_routes(client, roi_project, tmp_pa
     assert client.get(f"/cells/{token}/density/0/0/0.png?{query}").headers["content-type"] == "image/png"
     legend = client.get(f"/cells/{token}/density/legend?{query}").json()
     assert legend["cells"] == 20 and legend["colormap"] == "magma"
+    # Viewer filters and hidden clusters use the same cell IDs as the overlay.
+    filtered = client.get(f"/cells/{token}/density/legend", params={"t":"t0","viewer":"1",
+        "f":json.dumps([{"col":"phenotype_leiden","values":["T"]}])}).json()
+    assert filtered['cells']==20
+    hidden = client.get(f"/cells/{token}/density/legend", params={"t":"t0","viewer":"1",
+        "col":"phenotype_leiden","hide":"T"}).json()
+    assert hidden['cells']==20
+    empty = client.get(f"/cells/{token}/density/legend", params={"t":"t0","fcol":"phenotype_leiden","fvals":""}).json()
+    assert empty['cells']==0
+    # A map without viewer scope stays independent of the displayed selection.
+    assert client.get(f"/cells/{token}/density/legend?t=t0").json()['cells']==40
     assert client.get(f"/cells/{token}/density/legend?t=missing").status_code == 400
+    assert 'Cell data' in client.get(f"/cells/{token}/density/legend?t=missing").json()['error']
+    # The status count must agree with all cells, hidden groups and their
+    # intersection with filters; an absent filter is not an empty population.
+    assert client.get(f"/cells/{token}/filter?t=t0").json() == {"shown":40,"total":40}
+    assert client.get(f"/cells/{token}/filter", params={"t":"t0","col":"phenotype_leiden","hide":"T"}).json() == {"shown":20,"total":40}
+    assert client.get(f"/cells/{token}/filter", params={"t":"t0","col":"phenotype_leiden","hide":"T",
+        "f":json.dumps([{"col":"phenotype_leiden","values":["T"]}])}).json() == {"shown":0,"total":40}
+    assert client.get(f"/cells/{token}/filter", params={"t":"t0","col":"M0","lo":"0","hi":"10"}).json() == {"shown":5,"total":40}
+    # A missing/expired tagging preview has no LUT: the renderer uses a single
+    # colour, so counts must retain the explicit filters without raising len(None).
+    assert client.get(f"/cells/{token}/filter", params={"t":"t0","col":"preview:missing"}).json() == {"shown":40,"total":40}
+    assert client.get(f"/cells/{token}/filter", params={"t":"t0","col":"preview:missing",
+        "f":json.dumps([{"col":"phenotype_leiden","values":["T"]}])}).json() == {"shown":20,"total":40}
+    assert client.get(f"/cells/{token}/density/legend", params={"t":"t0","viewer":"1","col":"preview:missing",
+        "f":json.dumps([{"col":"phenotype_leiden","values":["T"]}])}).json()['cells'] == 20
     before = client.get(f"/cells/{token}/stamp?t=t0").json()["stamp"]
     cells.assign(roi_project["table"], "s1r1", [1], "phenotype_ref1", "NK")
     assert client.get(f"/cells/{token}/stamp?t=t0").json()["stamp"] != before  # labels count as a change
@@ -668,7 +765,7 @@ def test_a_viewer_window_lists_and_opens_the_projects_images(client, tmp_path, m
                      project={"root": str(tmp_path), "mappings": {}, "unified": str(table), "colors": {}, "tab": "tab7"})
     images = client.get("/session/win/images").json()["images"]
     assert {(i["group"], i["name"]) for i in images} == {("Registered", "P1_merged.ome.tiff"), ("ROIs", "s1r1.ome.tiff")}
-    assert all("path" not in image for image in images)  # the browser never sees paths
+    assert all(Path(image["path"]).is_file() for image in images)  # owner view matches exact sources
     roi = next(i for i in images if i["sample"] == "s1r1")
     opened = client.post("/session/win/open", json={"id": roi["id"]}).json()
     cells_layer = next(layer for layer in opened["spec"]["layers"] if layer["type"] == "cells")
@@ -807,7 +904,8 @@ def test_images_from_outside_the_project_can_be_added_to_its_list(client, tmp_pa
     _write_channel_pages(other, channels=1, height=200, width=200)
     added = client.post("/session/win/add-image", json={"path": str(other)}).json()
     listed = added["images"]
-    assert listed[added["added"]]["name"] == "s9r9.ome.tiff" and all("path" not in i for i in listed)
+    assert listed[added["added"]]["name"] == "s9r9.ome.tiff"
+    assert listed[added["added"]]["path"] == str(other.resolve())
     again = client.post("/session/win/add-image", json={"path": str(scan)}).json()  # already listed
     assert again["images"][again["added"]]["name"] == "P11_roi_2.ome.tiff" and len(again["images"]) == 3
     opened = client.post("/session/win/open", json={"id": added["added"]}).json()
@@ -1018,17 +1116,15 @@ def test_the_clicked_cell_is_outlined(client, tmp_path, monkeypatch):
     assert abs(np.array(big[0])[:, 0].max() - 220) <= 1
 
 
-def test_the_studio_and_viewer_buttons_go_in_the_top_bar_columns(monkeypatch):
+def test_the_studio_and_viewer_buttons_go_in_the_top_bar_columns():
     from streamlit.testing.v1 import AppTest
-    from spacemap_gui.viewer import ui
-
-    monkeypatch.setattr(ui, "studio_link", lambda context: "http://127.0.0.1:1/studio?step=" + context)
 
     def page():
         import streamlit as st
 
         from spacemap_gui.viewer import ui
 
+        ui.studio_link = lambda context: "http://127.0.0.1:1/studio?step=" + context
         _, studio, viewer, _ = st.columns([3.2, 1, 1, 1])
         ui.render_viewer_launcher("tab3", studio_area=studio, viewer_area=viewer)
 

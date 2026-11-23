@@ -148,7 +148,7 @@ def _pick_batch_marker_defaults(
         return shared_defaults
 
     ignore_exact = {
-        "x", "y", "X", "Y", "id", "label", "area", "quality",
+        "x", "y", "X", "Y", "id", "label", "area", "quality", "tissue",
         "original_filename", "file_prefix", "batch",
         config.get("cell_id_col", "cell_id"),
         config.get("batch_id_col", "batch_id"),
@@ -2193,12 +2193,13 @@ def render_setup(project_root: Path):
         c_filt2.markdown("**Area Filter**")
         if st.session_state.bc_common_columns:
             current_area = st.session_state.bc_config.get('area_col', 'area')
-            default_area_idx = st.session_state.bc_common_columns.index(current_area) if current_area in st.session_state.bc_common_columns else 0
+            area_options = list(dict.fromkeys(['None', current_area, *st.session_state.bc_common_columns]))
+            default_area_idx = area_options.index(current_area)
             area_col = c_filt2.selectbox(
                 "Area Column",
-                options=st.session_state.bc_common_columns,
+                options=area_options,
                 index=default_area_idx,
-                help="Select the column representing cell/nuclei area (e.g. 'area'). Used for size-based filtration."
+                help="Select the cell/nuclei area column for size-based filtration, or None to skip this filter."
             )
         else:
             area_col = c_filt2.text_input(
@@ -2438,7 +2439,7 @@ def render_setup(project_root: Path):
                     for col in st.session_state.bc_metadata_cols:
                         df_raw[col] = row.get(col, "")
 
-                    if i < 3 or "P1_P3_roi_2" in fname:
+                    if i < 3:
                          meta_debug = {c: row.get(c, "N/A") for c in st.session_state.bc_metadata_cols}
                          log_step(f"Loaded {fname}: {len(df_raw)} rows. Metadata applied: {meta_debug}")
 

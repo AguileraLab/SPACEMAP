@@ -6,6 +6,9 @@ out by Tab 3's own ``process_single_image_rois``; an extracted ROI is
 ``<rois>/<image>_<ROI name>.ome.tiff``.
 """
 
+from . import project_files
+
+
 from pathlib import Path
 import re
 
@@ -79,7 +82,7 @@ def images_plan(root, mappings, config):
     picks = _saved(config, FILES_KEY, {}) or {}
     pairs = next((tab[PAIR_KEY] for tab in (config.get("tab_configurations") or {}).values()
                   if isinstance(tab, dict) and isinstance(tab.get(PAIR_KEY), dict)), {})
-    names = sorted(p.name for p in places["images"].iterdir() if p.is_file() and _is_image(p.name)) if places["images"].is_dir() else []
+    names = sorted(p.name for p in places["images"].iterdir() if p.is_file() and not project_files.excluded(p, root) and _is_image(p.name)) if places["images"].is_dir() else []
     rows = []
     for name in names:
         file = shapes_file(places["shapes"], name, picks.get(name))

@@ -42,12 +42,12 @@ setTimeout(async()=>{try{
  change(input('Start from'),folder[0].value);input('Refresh starting models').click();await delay(500);
  assert(input('Start from').value.endsWith('studio_recent_v26'),'Refresh preserves an explicitly chosen starting model');
  change(input('Model name'),'improved_cells');button('Start').click();
- await until(()=>button('Start over'));
+ await until(()=>button('New training'));
  let saved=await (await fetch('/spacemap-viewer/api/studio/browser-check/training')).json();
  assert(saved.session.base.endsWith('studio_recent_v26')&&saved.session.current===saved.session.base,'Training session starts with the selected saved weights');
- button('Start over').click();await until(()=>input('Start from'));
+ button('New training').click();await until(()=>input('Start from'));
  assert(input('Start from').value.endsWith('studio_old_v9'),'Start over uses the current segmentation model');
- button('Cancel').click();await until(()=>button('Start over'));
+ button('Cancel').click();await until(()=>button('New training'));
  saved=await (await fetch('/spacemap-viewer/api/studio/browser-check/training')).json();
  assert(saved.session.name==='improved_cells','Cancelling a new session keeps the existing session');
  fetch('/result?ok='+encodeURIComponent(JSON.stringify({checks})));

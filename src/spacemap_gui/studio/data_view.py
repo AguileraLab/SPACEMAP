@@ -73,6 +73,37 @@ def _as_text(array):
     return pc.cast(array, pa.string())
 
 
+def saved_image_values(path, column):
+    """Saved image names, independent of Data drafts and their SQLite indexes."""
+    if not column:
+        return []
+    from spacemap import labels, pending_columns
+    from . import summary_cache
+    import pyarrow.compute as pc
+
+    def version():
+        files = [Path(path), labels.sidecar_path(path)]
+        files += [Path(item['file']) for item in pending_columns.pending(path) if item['column'] == column]
+        return [summary_cache.file_stamp(file) for file in files]
+
+    def build():
+        table = _table(str(path))
+        if column not in table.names:
+            raise ValueError(f'The table has no column {column}.')
+        if column in table.overlays:
+            chunks = [table._whole(column)]
+        elif table.file is not None:
+            chunks = (batch.column(0) for batch in table.file.iter_batches(columns=[column], batch_size=16384))
+        else:
+            chunks = table.memory.column(column).chunks
+        values = set()
+        for chunk in chunks:
+            values.update(pc.drop_null(pc.unique(chunk)).to_pylist())
+        return {'values': [str(value) for value in sorted(values)[:5000]]}
+
+    return summary_cache.cached('saved-image-values-v1', [str(Path(path).resolve()), column], version, build)['values']
+
+
 class _Table:
     """One table (or one image's rows of it): which rows of the file, then each column read when it is needed."""
 
@@ -101,18 +132,23 @@ class _Table:
             self.schema = self.memory.schema
             self.length = self.memory.num_rows
         self.names = [n for n in self.schema.names if not n.startswith("__index_level_")]
-        from spacemap import dataio, labels, pending_columns
-        self.overlays = set(pending_columns.pending_names(path)) | set(labels.pending_columns(path))
+        from spacemap import column_types, dataio, labels, pending_columns
+        edits = labels.load(path)
+        self.label_columns = set(edits['column'])
+        self.overlays = set(pending_columns.pending_names(path)) | self.label_columns
         self.names = list(dict.fromkeys([*self.names, *dataio.columns(str(path))]))
-        self.kinds = {f.name: "value" if (pa.types.is_integer(f.type) or pa.types.is_floating(f.type) or pa.types.is_boolean(f.type))
-                      else "group" for f in self.schema if f.name in self.names}
+        self.types = {f.name: column_types.plain(f.type) for f in self.schema if f.name in self.names}
         for item in pending_columns.pending(path):
             if not item["stale"]:
                 import pyarrow.parquet as pq
                 dtype = pq.read_schema(item["file"]).field("value").type
-                self.kinds[item["column"]] = "value" if pa.types.is_integer(dtype) or pa.types.is_floating(dtype) or pa.types.is_boolean(dtype) else "group"
+                self.types[item["column"]] = column_types.plain(dtype)
         for name in self.names:
-            self.kinds.setdefault(name, "group")
+            self.types.setdefault(name, pa.null())
+        for name, group in edits.groupby('column'):
+            self.types[name] = column_types.with_values(self.types[name], group['value'])
+        self.kinds = {name: "value" if pa.types.is_integer(dtype) or pa.types.is_floating(dtype)
+                      or pa.types.is_boolean(dtype) else "group" for name, dtype in self.types.items()}
         self.rows = None  # the file's row numbers of these rows (None: all of them)
         if roi_column and roi_value is not None:
             if roi_column not in self.names:
@@ -123,14 +159,19 @@ class _Table:
         self.columns = OrderedDict()   # column -> numpy array (numbers) or object array (text), for these rows
         self.views = OrderedDict()     # (filters, sort) -> positions among these rows, in view order
 
+    def _overlay(self, rows, column):
+        from spacemap import column_types
+        from spacemap.viewer.cells import values_at_rows
+
+        values = values_at_rows(self.path, rows, column)
+        return column_types.array(values, self.types[column])
+
     def _whole(self, column):
         """One column of the whole file, as one Arrow array."""
         import pyarrow as pa
 
         if column in self.overlays:
-            from spacemap.viewer.cells import values_at_rows
-            values = values_at_rows(self.path, np.arange(self.length), column)
-            return pa.array(values.tolist(), from_pandas=True)
+            return self._overlay(np.arange(self.length), column)
         if self.memory is not None:
             found = self.memory.column(column)
         else:
@@ -154,6 +195,32 @@ class _Table:
                 self.columns.popitem(last=False)
             return values
 
+    def project(self, names):
+        """Read a small analysis projection together, including saved overlays."""
+        with self.lock:
+            names=list(dict.fromkeys(names))
+            missing=set(names)-set(self.names)
+            if missing:
+                raise ValueError('Missing columns: '+', '.join(sorted(missing)))
+            stored=[n for n in names if n not in self.columns and n not in self.overlays]
+            batch=(self.memory.select(stored) if self.memory is not None else self.file.read(columns=stored)) if stored else None
+            result={}
+            for name in names:
+                if name in self.columns:
+                    self.columns.move_to_end(name)
+                    result[name]=self.columns[name]
+                elif name in self.overlays:
+                    result[name]=self.column(name)
+                else:
+                    array=batch.column(name).combine_chunks()
+                    if self.rows is not None:
+                        array=array.take(self.rows)
+                    result[name]=_values(array,self.kinds[name]=='value')
+                    self.columns[name]=result[name]
+            while len(self.columns)>COLUMNS_KEPT:
+                self.columns.popitem(last=False)
+            return result
+
     def _position(self, row):
         if self.rows is None:
             return row if 0 <= row < self.length else None
@@ -175,9 +242,8 @@ class _Table:
             if name in self.columns:
                 result[name] = _pick(self.columns[name], positions)
             elif name in self.overlays:
-                from spacemap.viewer.cells import values_at_rows
                 rows = self.file_rows(positions)
-                array = pa.array(values_at_rows(self.path, rows, name).tolist(), from_pandas=True)
+                array = self._overlay(rows, name)
                 values = _values(array, self.kinds[name] == "value")
                 result[name] = values
             else:

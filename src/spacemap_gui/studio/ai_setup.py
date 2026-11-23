@@ -63,6 +63,7 @@ def _runtime():
         return {
             "running": state.running,
             "ready": state.ready,
+            "stopping": getattr(state, 'stopping', False),
             "message": state.message,
             "port": state.port,
             "model": state.model_id,
@@ -155,7 +156,12 @@ def act(action, body):
         if not entry.is_installed():
             raise ValueError(f"Download {entry.name} first.")
         if model_runtime.runtime_status().running and model_runtime.active_entry() != entry:
-            model_runtime.stop_runtime()  # the model in use makes room for this one
+            try:
+                stopped = model_runtime.stop_runtime()
+            except model_runtime.ModelRuntimeError as error:
+                raise ValueError(str(error)) from error
+            if stopped.running:
+                raise ValueError('The current model is stopping. Choose Use again once it has stopped.')
         ai_settings.update_settings(active_model=entry.id, backend="local")
         model_client.save_provider_settings(
             model_client.LOCAL_PROVIDER, model_client.load_provider_settings().nvidia_model_id

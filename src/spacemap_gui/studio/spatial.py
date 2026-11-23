@@ -41,6 +41,12 @@ def read(table, names, images=None):
     from spacemap import dataio
 
     names = list(dict.fromkeys([IMAGE, *names]))
+    from spacemap import table_collection
+    if table_collection.is_collection(table):
+        table_collection.validate(table, names, images)
+        # Saved embeddings use these collection row positions to recolour later.
+        frame = table_collection.load(table, names)
+        return frame[frame[IMAGE].isin(list(map(str, images)))] if images else frame
     available = set(columns(table))
     missing = [n for n in names if n not in available]
     if missing:
@@ -57,6 +63,9 @@ def _text(series):
 
 def markers_of(table):
     """The marker columns: numbers that are not positions, ids, shape measures, distances, sizes or results."""
+    from spacemap import table_collection
+    if table_collection.is_collection(table):
+        return list(dict.fromkeys(m for r in table_collection.entries(table) for m in markers_of(r['path'])))
     skip = {"x_centroid", "y_centroid", "label", "cell_id", "area", "eccentricity", "solidity", "extent", "orientation",
             "perimeter", "major_axis_length", "minor_axis_length", "patient", IMAGE, "tissue_roi"}
     parquet = _file(table)
@@ -173,8 +182,10 @@ def agreement(table, reference, method, images=None):
 
 
 # ---------------------------------------------------------------- jobs
-def _out(root, kind):
-    folder = Path(root) / "outputs/spatial_analysis" / kind / ("studio_" + datetime.now().strftime("%Y%m%d_%H%M%S"))
+def _out(root, kind, base=None):
+    from .spatial_sources import output_folder
+    import uuid
+    folder = Path(base or output_folder(root)) / kind / ("studio_" + datetime.now().strftime("%Y%m%d_%H%M%S") + '_' + uuid.uuid4().hex[:8])
     folder.mkdir(parents=True, exist_ok=True)
     return folder
 
@@ -190,7 +201,7 @@ def density_job(settings, folder, report):
     table, column = settings["table"], settings["column"]
     region = settings.get("region") or ""
     frame = read(table, [column, *POSITION, *([region] if region else [])], settings.get("images") or None)
-    out = _out(settings["root"], "density")
+    out = _out(settings["root"], "density", settings.get('spatial_output'))
     microns = float(settings.get("pixel_um", 0.5083))
     keys = [IMAGE, region] if region else [IMAGE]
     grouped = list(frame.groupby(keys, dropna=False))
@@ -245,13 +256,16 @@ def triads_job(settings, folder, report):
     frame = read(settings["table"], [column, *POSITION, "label", *([region] if region else []), *([batch] if batch != IMAGE else [])],
                  settings.get("images") or None)
     frame[list(POSITION)] = frame[list(POSITION)].apply(pd.to_numeric, errors="coerce")
+    from .spatial_sources import isolate_images
+    grouping = isolate_images(frame, {**chosen, 'batch_col': batch, 'roi_col': region}, settings['table'])
+    batch, region = grouping['batch_col'], grouping['roi_col']
     report("Counting triads and shuffling phenotypes…", 0.1)
     triad = tuple(str(p) for p in chosen["triad"])
     summary, per_region, null, instances = triads._detect_triad_enrichment(
         frame, triad, column, batch, region, "None", "", float(chosen["min_um"]), float(chosen["max_um"]),
         float(chosen["pixel_um"]), int(chosen["min_cells"]), int(chosen["n_permutations"]), int(chosen.get("seed", 0)), False,
         int(chosen.get("max_saved", 200000)))
-    out = _out(settings["root"], "triads")
+    out = _out(settings["root"], "triads", settings.get('spatial_output'))
     if not instances.empty:
         labels = frame["label"].to_numpy()
         for corner in ("a", "b", "c"):
@@ -321,6 +335,9 @@ def screening_config(table, chosen):
 
 def screening_job(settings, folder, report):
     """Classic Tab 8's feature screening with Studio's choices; the run is saved where classic saves it."""
+    if settings.get("version") == 2:
+        from .screening import job
+        return job(settings, folder, report)
     from spacemap_gui.tabs.tab8_analysis import feature_screening_core as core
 
     config = screening_config(settings["table"], settings["values"])

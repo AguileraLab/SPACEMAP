@@ -9,7 +9,7 @@ from viewer_threshold_browser import main
 DRIVER = r"""
 <script>
 const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
-const until=async check=>{for(let i=0;i<4000;i++){if(check())return;await delay(50);}throw Error('Timed out: '+check);};
+const until=async check=>{for(let i=0;i<4000;i++){if(await check())return;await delay(50);}throw Error('Timed out: '+check);};
 let checks=0;const assert=(condition,message)=>{if(!condition)throw Error(message);checks++;};
 const button=(container,text)=>Array.from(container.querySelectorAll('button')).find(item=>item.textContent===text);
 setTimeout(async()=>{
@@ -30,20 +30,25 @@ setTimeout(async()=>{
   await until(()=>document.querySelector('#panel [aria-label="Nuclear marker '+names[1]+'"]'));
   assert(document.querySelector('#panel [aria-label="Nuclear marker '+first+'"]').getAttribute('aria-pressed')==='true','The nuclear marker is lit N in Layers');
   document.querySelector('#panel [aria-label="Nuclear marker '+names[1]+'"]').click();
-  await until(()=>nucleus(names[1]).checked);
+  await until(()=>nucleus(names[1]).checked&&nucleus(first).checked);
+  assert(nucleus(first).type==='checkbox','Nuclear markers allow multiple selections');
+  document.querySelector('#panel [aria-label="Nuclear marker '+first+'"]').click();
   document.querySelector('#panel [aria-label="Cell border marker '+names[0]+'"]').click();
   await until(()=>border(names[0]).checked);
   await until(async()=>{const v=await settings();return v.tab4_last_nuclear_names[0]===names[1]&&v.tab4_last_membrane_names.includes(names[0]);});
   assert(document.querySelector('#panel [aria-label="Cell border marker '+names[0]+'"]').getAttribute('aria-pressed')==='true','N and M in Layers set the roles, saved without a Save button');
   document.querySelector('#panel [aria-label="Cell border marker '+names[0]+'"]').click();
   document.querySelector('#panel [aria-label="Nuclear marker '+first+'"]').click();
+  document.querySelector('#panel [aria-label="Nuclear marker '+names[1]+'"]').click();
   await until(()=>nucleus(first).checked && !border(names[0]).checked);
   // One model list, grouped as the artifact models are.
   const model=form().querySelector('[aria-label="Cellpose model"]');
   assert(Array.from(model.querySelectorAll('optgroup')).map(g=>g.label).includes('Cellpose'),'Models are one list, in groups');
   model.value='nuclei';model.dispatchEvent(new Event('change'));
-  await until(()=>/is the model now/.test(tools().textContent));
+  await until(async()=>(await settings()).tab4_model_type==='nuclei');
   assert((await settings()).tab4_model_type==='nuclei','Choosing a model saves it as Tab 5\'s model');
+  nucleus(names[1]).click();
+  await until(async()=>(await settings()).tab4_last_nuclear_names.length===2);
   const test=button(tools(),'Test on this view');test.click();
   await until(()=>!test.disabled && /cells ·|error|Could/.test(test.parentElement.parentElement.textContent));
   const text=test.parentElement.parentElement.textContent;

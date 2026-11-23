@@ -13,6 +13,20 @@ setTimeout(async()=>{try{
  const field=name=>document.querySelector('#studio-seg [aria-label="'+name+'"]');
  const settings=async()=>(await(await fetch('/spacemap-viewer/api/studio/browser-check/segmentation_settings')).json()).values;
  await until(()=>field('GPU batch mode'));
+ const nucleus=name=>field('Nucleus marker '+name),role=name=>document.querySelector('#panel [aria-label="Nuclear marker '+name+'"]');
+ const names=s.layers.find(l=>l.type==='image').channels.map(c=>c.name),first=names.find(n=>nucleus(n).checked),second=names.find(n=>n!==first);
+ assert(nucleus(first).type==='checkbox'&&nucleus(first).disabled,'Nucleus uses checkboxes and keeps at least one selected');
+ nucleus(second).click();
+ await until(async()=>{const v=await settings();return [first,second].every(n=>v.tab4_last_nuclear_names.includes(n));});
+ assert([first,second].every(n=>nucleus(n).checked&&role(n).getAttribute('aria-pressed')==='true'),'Multiple nuclear markers save and synchronize with Layers');
+ assert(field('Cell border marker '+second).disabled,'Nuclear and border choices cannot silently disagree');
+ // Keep a response in flight while the user makes a newer choice in Layers.
+ const originalFetch=window.fetch;let release,held=false;
+ window.fetch=async(url,args)=>{const response=await originalFetch(url,args);if(String(url).includes('/segmentation_settings')&&args?.method==='POST'&&!held){held=true;await new Promise(r=>release=r);}return response;};
+ role(first).click();await until(()=>held);role(first).click();release();
+ await until(async()=>{const v=await settings();return [first,second].every(n=>v.tab4_last_nuclear_names.includes(n));});
+ window.fetch=originalFetch;
+ assert(nucleus(first).checked&&nucleus(second).checked,'A delayed save cannot overwrite a newer nuclear-marker selection');
  assert(field('GPU batch mode').value==='Auto'&&field('GPU batch').hidden&&!field('GPU batch mode').closest('details').open,'GPU tuning defaults to Auto inside folded settings');
  field('GPU batch mode').closest('details').open=true;
  field('GPU batch mode').value='Manual';field('GPU batch mode').dispatchEvent(new Event('change'));
@@ -23,6 +37,7 @@ setTimeout(async()=>{try{
  document.querySelector('[data-step=tab4]').click();
  await delay(200);document.querySelector('[data-step=tab5]').click();
  await until(()=>field('GPU batch mode')?.value==='Manual');
+ assert([first,second].every(n=>nucleus(n).checked),'Multiple nuclear markers survive navigation');
  assert(field('GPU batch').value==='128'&&field('GPU index').value==='2','GPU settings survive navigation');
  const helpText=Array.from(document.querySelectorAll('#studio-seg [title]')).map(n=>n.title).join(' ');
  assert(!/NucleusC|A100|23,545|Chosen:/.test(helpText),'Segmentation help has no machine-specific benchmark or selected-model history');

@@ -225,11 +225,11 @@ def render_annotation_tile(
             continue
         value = index_of[name]
         area, outline = annotations.at_zoom(hit, z)
-        if area is not None:
+        if fill_alpha > 0 and area is not None:
             clipped = shapely.clip_by_rect(area, *clip)
             if not clipped.is_empty:
                 fills.append((clipped, value))
-        if outline is not None:
+        if line_px > 0 and outline is not None:
             clipped = shapely.clip_by_rect(outline, *clip)
             if not clipped.is_empty:
                 lines.append((clipped, value))

@@ -54,18 +54,23 @@ def job(root, path, mode, **changes):
     return settings
 
 
-def test_markers_are_found_inside_the_phenotype_then_it_is_split_on_them(parents, tmp_path):
+@pytest.mark.parametrize("transform", ["stored", "auto"])
+def test_markers_are_found_inside_the_phenotype_then_it_is_split_on_them(parents, tmp_path, transform):
     root, path, t_cells = parents
-    found = subphenotypes.run(job(root, path, "discover"), tmp_path / "find", lambda *args: None)
+    found = subphenotypes.run(job(root, path, "discover", transform=transform), tmp_path / "find", lambda *args: None)
     rows = {row["marker"]: row for row in found["discovery"]["T cell"]["markers"]}
     assert found["discovery"]["T cell"]["cells"] == len(t_cells)
-    assert rows["CD20"]["recommended"] and not rows["PanCK"]["recommended"] and rows["PanCK"]["flag"]
-    split = subphenotypes.run(job(root, path, "run"), tmp_path / "run", lambda *args: None)
+    assert rows["CD20"]["recommended"]
+    if transform == "stored":
+        assert not rows["PanCK"]["recommended"] and rows["PanCK"]["flag"]
+    # Spread-based suggestions may change after compressing the raw intensity tails.
+    split = subphenotypes.run(job(root, path, "run", transform=transform), tmp_path / "run", lambda *args: None)
     assert split["column"] == "phenotype_sub_clusters" and len(split["clusters"]) == 2
     assert {item["name"] for item in split["clusters"]} == {"T_cell_0", "T_cell_1"}
     # With two clusters all increased markers tie at z=1/sqrt(2); their exact order is not biological evidence.
     assert any("CD20" in item["top_markers"] for item in split["clusters"]) and split["markers_used"]["T cell"]
     assert split["profile"]["aggregation"] == "median"
+    assert split["markers_used"]["T cell"] == MARKERS  # Suggestions never silently replace checked markers.
     cd20 = split["profile"]["columns"].index("CD20")
     assert max(row[cd20] for row in split["profile"]["values"]) > 0
     labels = dataio.load(path, columns=["phenotype_parent", "phenotype_sub_clusters"])
@@ -74,6 +79,37 @@ def test_markers_are_found_inside_the_phenotype_then_it_is_split_on_them(parents
     assert "of" in split["summary"] and split["checks"] and split["where"]
     assert split["cells"] == len(t_cells)
     json.dumps(split, allow_nan=False)  # the Jobs list sends it to the page as strict JSON
+
+
+@pytest.mark.parametrize("corrected", [False, True])
+def test_run_uses_all_eight_checked_markers_without_automatic_discovery(parents, tmp_path, monkeypatch, corrected):
+    import spacemap.ph_subpheno_utils as clustering
+
+    root, path, t_cells = parents
+    frame = pd.read_csv(path)
+    names = [*MARKERS, "Ki67", "PCNA", "gH2AX", "HLA-A"]
+    # Even constant markers remain visible; Run must not silently drop them.
+    for name in names[4:]:
+        frame[name] = 5.
+    if corrected:
+        for name in names:
+            frame[name + "_corr"] = np.arcsinh(frame[name] / 5.)
+        names = [name + "_corr" for name in names]
+    frame.to_csv(path, index=False)
+    def no_discovery(*args):
+        pytest.fail("Run must not invoke automatic marker selection")
+    monkeypatch.setattr(subphenotypes, "_discover", no_discovery)
+    def cluster(matrix, *args, **kwargs):
+        assert matrix.shape == (len(t_cells), 8)
+        assert np.isfinite(matrix).all()
+        return np.arange(len(matrix)) % 2
+    monkeypatch.setattr(clustering, "subcluster", cluster)
+    settings = job(root, path, "run", markers=names, chosen_markers={})
+    settings["markers"] = names
+    result = subphenotypes.run(settings, tmp_path / "eight", lambda *args: None)
+    assert result["markers_used"]["T cell"] == names
+    assert result["profile"]["columns"] == names
+    assert all(len(row) == 8 for row in result["profile"]["values"])
 
 
 def test_settings_are_tab7s_file(parents):

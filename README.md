@@ -15,6 +15,8 @@ jobs into one browser workspace. Review an image, adjust annotations, inspect
 cell identities and run analyses without losing your place. The classic
 SPACEMAP interface, Python modules and notebooks remain available.
 
+The proposed **0.5.0** update is described in [the release guide](docs/studio-release-0.5.0.md).
+
 ## Get started
 
 ```bash
@@ -45,11 +47,20 @@ See [Your first project](docs/first-project.md) and
 - **Interactive review:** draw and correct polygons, assign manual cell labels,
   inspect phenotype disagreements and edit cell-table values and columns.
 - **Reusable models:** train Cellpose from existing models; use manual-reference
-  models or reference-weighted phenotyping for cohort prediction.
+  models or reference-weighted phenotyping for cohort prediction; choose which
+  classes to train or predict and inspect marker evidence before sub-phenotyping.
 - **Background analysis:** saved job results, independent elapsed timers,
   informative progress and safe stopping for supported compute workers.
 - **Spatial exploration:** neighbourhoods, interactions, density, triads and
   reviewable **TLS candidates**, including structure boundaries and signed distances.
+- **Feature screening and gland types:** configurable distance zones, sample-level
+  comparisons, multiple-testing correction and resampling, plus independently
+  fitted gland-composition types and surrounding bed niches.
+- **Flow and plots:** linked gates, marker distributions, transformations, statistics
+  and figure layouts using the selected cell data.
+- **Collaborator review:** named, scoped reviewer links, suggested labels, shared
+  context and an owner approval workflow. Reviewer display preferences remain
+  independent of the owner’s viewer.
 - **Shared project formats:** Studio and the classic tools use the same project
   settings, images and tables. Choose CPU workers and supported GPU backends in
   the relevant step.
@@ -74,8 +85,9 @@ Studio has a dedicated Cell tagging step. Classic tab numbers remain unchanged.
 | 6 · Cell tagging | 5 | Annotation membership, tissue pieces, areas, distances and beds |
 | 7 · Batch correction | 6 | Combine tables and correct marker batch effects |
 | 8 · Phenotyping | 7 | Thresholds, Leiden, SOM, VORTEX, SCIMAP, consensus and manual-reference ML |
-| 9 · Spatial analysis | 8 | Neighbourhoods, interactions, density and TLS candidates |
+| 9 · Spatial analysis | 8 | Neighbourhoods, interactions, TLS, feature screening and gland types |
 | 10 · Visualization | 9 | Maps, heatmaps and exported figures |
+| 11 · Review | — | Flag items, share scoped review links and approve reviewer decisions |
 
 Start at the stage matching your existing inputs. Confirm image/channel names,
 cell IDs, annotation alignment and micrometres per pixel before analysing a

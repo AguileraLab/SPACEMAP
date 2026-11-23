@@ -63,10 +63,11 @@ function createViewer() {
       if (button.getAttribute("data-mode") === "select") {  // selection mode: outlines select regions instead of drawing
         state.selectMode = !state.selectMode;
         if (state.selectMode && !["rect", "polygon", "freehand"].includes(state.tool)) setTool("rect"); else updateToolbar();
-        message(state.selectMode ? "Select: draw around regions to select them (Shift adds); right-click one to name them." : "Drawing again.");
+        message(state.selectMode ? "Choose Annotations or Cells, then draw a rectangle, polygon or freehand area. Shift adds." : "Selection mode off.");
         return;
       }
       const tool = button.getAttribute('data-tool'), target = toolbarDrawTarget();
+      if(state.reviewer&&['rect','polygon','freehand'].includes(tool))state.selectMode=true;
       if (tool !== 'off' && !state.selectMode && target?.type === 'shapes' && !target.visible) setVisible(target, true);
       setTool(button.getAttribute("data-tool"));
     };
@@ -89,6 +90,7 @@ function createViewer() {
   $("btn-zoom-in").onclick = () => { viewer.viewport.zoomBy(1.6); viewer.viewport.applyConstraints(); };
   $("btn-zoom-out").onclick = () => { viewer.viewport.zoomBy(1 / 1.6); viewer.viewport.applyConstraints(); };
   $("btn-save").onclick = saveImage;
+  $("btn-copy-preview").onclick = copyPreview;
   $("btn-save-full").onclick = saveFullResolution;
   $("btn-window").hidden = STANDALONE || !state.spec.session;
   $("btn-minimize").hidden = STANDALONE;
@@ -141,7 +143,11 @@ function createViewer() {
 async function openLayersInOrder(viewer) {
   const layers = state.layers.slice();
   const waitFor = async (group) => {
-    while (state.viewer === viewer && group.some((layer) => layer.visible && !layer.loadFailed &&
+    // OpenSeadragon skips tiles at opacity zero. Removed layers and density
+    // maps without a source cannot finish loading either; none blocks the rest.
+    while (state.viewer === viewer && group.some((layer) => state.layers.includes(layer) &&
+      layer.visible && layer.opacity > 0 && !layer.loadFailed &&
+      !(layer.type === 'density' && !layer.table) &&
       (!layer.item || !layer.item.getFullyLoaded()))) {
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
@@ -206,6 +212,8 @@ function restack() {
 }
 
 function addLayer(layer) {
+  if(layer.displayNamesPending)return; // Resolve carried annotation names before drawing any classes.
+  if(layer.type==="density"){resolveDensityData(layer);if(!layer.table)return;}
   if (layer.adding || layer.item) return;
   const gate = layer.type === "cells" && !state.imagesReady ? state.whenImagesReady :
     (layer.type === "annotations" || layer.type === "density") && !state.cellsReady ? state.whenCellsReady : null;
@@ -218,12 +226,13 @@ function addLayer(layer) {
   layer.loadFailed = false;
   viewer.addTiledImage({
     tileSource: tileSource(layer),
-    opacity: layer.opacity,
+    opacity: displayOpacity(layer),
     success: (event) => {
       layer.adding = false;
       if (state.viewer !== viewer) return;
-      if (!layer.visible) { state.viewer.world.removeItem(event.item); return; }  // hidden while opening
+      if (!layer.visible || !state.layers.includes(layer)) { state.viewer.world.removeItem(event.item); return; }  // hidden while opening
       layer.item = event.item;
+      layer.item.setOpacity(displayOpacity(layer)); // the slider may change while tiles open
       applySwipe(layer);
       state.layers.filter((l) => l.align).forEach(applyAlign);
       restack();
@@ -245,17 +254,21 @@ function retire(layer) {
   layer.retiring = [];
 }
 
-function refreshLayer(layer) {
+function refreshLayer(layer, {keepVisible = false} = {}) {
+  if(layer.type==="density"){resolveDensityData(layer);if(!layer.table){layer.item?.setOpacity(0);return;}}
   if (layer.type === 'image') syncSplitMarkers();
   const viewer = state.viewer;
   if (layer.type === "shapes") { renderShapes(); return; }
   if (!layer.visible) return;
   debounce("refresh-" + layer.id, () => {
     if (state.viewer !== viewer || !state.layers.includes(layer)) return;
-    if (layer.adding) { refreshLayer(layer); return; }  // try again once it has opened
+    if (layer.adding) { refreshLayer(layer, {keepVisible}); return; }  // try again once it has opened
     if (!layer.item) { addLayer(layer); return; }
     const world = state.viewer.world;
     const previous = layer.item;
+    // Background result updates keep the rendered cells until their new tiles
+    // are ready. Explicit filtering still hides obsolete cells immediately.
+    if(layer.type==="cells"&&!keepVisible){previous.setOpacity(0);for(const old of layer.retiring||[])old.setOpacity(0);}
     if (!(layer.retiring || []).includes(previous)) layer.retiring = (layer.retiring || []).concat([previous]);
     const generation = (layer.generation || 0) + 1;
     layer.generation = generation;
@@ -273,7 +286,7 @@ function refreshLayer(layer) {
           if (state.viewer !== viewer) return;
           if (swapped || generation !== layer.generation || layer.item !== fresh || !layer.visible || !state.layers.includes(layer)) return;
           swapped = true;
-          fresh.setOpacity(layer.opacity);
+          fresh.setOpacity(displayOpacity(layer));
           layer.retiring = (layer.retiring || []).filter((old) => old !== fresh);
           retire(layer);
           restack();
@@ -283,7 +296,7 @@ function refreshLayer(layer) {
         if (fresh.getFullyLoaded()) setTimeout(swap, 0);
         else {
           fresh.addHandler("fully-loaded-change", (e) => { if (e.fullyLoaded) setTimeout(swap, 0); });
-          setTimeout(swap, 5000);  // never wait for ever on a slow tile
+          if (!keepVisible) setTimeout(swap, 5000);  // background refreshes retain the complete old overlay
         }
       },
     });
@@ -291,7 +304,9 @@ function refreshLayer(layer) {
 }
 
 function setVisible(layer, visible) {
+  if(!visible&&state.cellAreaOverlay?.layer===layer)clearCellInspection();
   layer.visible = visible;
+  if(layer.type==='annotations')annotationOutline(layer);
   saveView();
   if (layer.type === "shapes") { renderShapes(); updateToolbar(); return; }
   if (!visible) retire(layer);
@@ -299,8 +314,34 @@ function setVisible(layer, visible) {
   if (!visible && layer.item) { state.viewer.world.removeItem(layer.item); layer.item = null; }
 }
 
+function isAnnotationDisplayLayer(layer) {
+  return (layer.type === 'annotations' || layer.type === 'shapes') && !layer.training_part && !layer.cell_training;
+}
+
+function displayOpacity(layer) {
+  return isAnnotationDisplayLayer(layer) ? (state.annotationOpacity ?? layer.opacity ?? 1) : (layer.opacity ?? 1);
+}
+
+function syncAnnotationOpacity() {
+  state.layers.filter(isAnnotationDisplayLayer).forEach(layer => {
+    layer.opacity = displayOpacity(layer);
+    layer.item?.setOpacity(layer.opacity);
+    (layer.retiring || []).forEach(item => item.setOpacity(layer.opacity));
+  });
+}
+
+function setAnnotationOpacity(opacity) {
+  state.annotationOpacity = Math.max(0, Math.min(1, Number(opacity)));
+  syncAnnotationOpacity();
+  state.layers.filter(layer => layer.type === 'annotations').forEach(annotationOutline);
+  renderShapes();
+  saveView();
+}
+
 function setOpacity(layer, opacity) {
+  if (isAnnotationDisplayLayer(layer)) { setAnnotationOpacity(opacity); return; }
   layer.opacity = opacity;
+  if(layer.type==='annotations')annotationOutline(layer);
   saveView();
   if (layer.type === "shapes") { renderShapes(); return; }
   if (layer.item) layer.item.setOpacity(opacity);
@@ -407,6 +448,34 @@ function download(canvas, suffix) {
 function saveImage() {
   const canvas = viewCanvas(true);
   if (canvas) download(canvas, "_view");
+}
+
+// Capture only the rendered view, using the identical scale-bar and overlay
+// composition as Save image. Call write inside the user's click activation.
+async function copyPreview() {
+  try {
+    const canvas = viewCanvas(true);
+    if (!canvas) return;
+    const png = new Promise((resolve, reject) => canvas.toBlob(blob => blob ? resolve(blob) : reject(Error('The browser could not create the preview.')), 'image/png'));
+    if (navigator.clipboard?.write && typeof ClipboardItem !== 'undefined') {
+      try {
+        await navigator.clipboard.write([new ClipboardItem({'image/png': png})]);
+        message('Preview copied, including the scale bar.');
+        return;
+      } catch (_) { /* Offer the actual image when browser permission blocks writing. */ }
+    }
+    const blob = await png;
+    document.getElementById('copy-preview-dialog')?.close();
+    const url = URL.createObjectURL(blob), dialog = el('dialog', {id:'copy-preview-dialog', class:'copy-preview-dialog', 'aria-label':'Copy preview'});
+    const picture = el('img', {src:url, alt:'Viewer preview with scale bar; right-click to copy the image'});
+    dialog.append(el('strong', {text:'Copy preview'}), el('p', {text:'Direct clipboard access is unavailable. Right-click this image and choose Copy Image.'}), picture,
+      el('div', {class:'row'}, [el('button', {type:'button',class:'btn',text:'Close',onclick:()=>dialog.close()})]));
+    dialog.addEventListener('close',()=>{URL.revokeObjectURL(url);dialog.remove();},{once:true});
+    document.body.append(dialog);dialog.showModal();
+    message('Preview ready to copy.');
+  } catch (error) {
+    message('Could not copy the preview: ' + error.message, true);
+  }
 }
 
 // The view as drawn on screen (image, cells, shapes), optionally with its scale bar.
@@ -519,13 +588,12 @@ async function figureLegend() {
   const cells = state.layers.find((l) => l.type === "cells" && l.visible && l.color_by && !l.live);
   if (cells) {
     try {
-      const legend = await getJSON("/cells/" + cells.token + "/legend?t=" + encodeURIComponent(cells.table || "") +
-        "&col=" + encodeURIComponent(cells.color_by) + "&cmap=" + encodeURIComponent(cells.colormap || "viridis") +
+      const legend = await getJSON("/cells/" + cells.token + "/legend?" + cellColourQuery(cells) +
         "&hide=" + encodeURIComponent(Array.from(cells.hidden || []).join("\u001f")));
       entries.push({ kind: "heading", label: cells.color_by });
       if (legend.kind === "numeric") entries.push({ kind: "gradient", colormap: legend.colormap, min: legend.min, max: legend.max });
       else (legend.items || []).filter((item) => !(cells.hidden || new Set()).has(item.value)).slice(0, 40)
-        .forEach((item) => entries.push({ kind: "swatch", label: String(item.value), color: item.color }));
+        .forEach((item) => entries.push({ kind: "swatch", label: cellGroupAppearance(cells)?.names?.[item.value] || String(item.value), color: item.color }));
     } catch (error) { /* a figure without the cell legend is still a figure */ }
   }
   return entries;
@@ -597,7 +665,10 @@ function applyAlign(layer) {
 }
 
 // Right click on the image (Move tool): zoom to a magnification, fit, centre, copy the position, the H&E.
-function closeContextMenu() { const menu = $("ctxmenu"); if (menu) { menu.beforeClose?.(); menu.remove(); } }
+function closeContextMenu() {
+  const docs=[document,...[...viewerPanelWindows.values()].filter(v=>!v.window.closed).map(v=>v.window.document)];
+  for(const doc of docs){const menu=doc.getElementById("ctxmenu");if(menu){menu.beforeClose?.();menu.remove();}}
+}
 document.addEventListener("contextmenu", (event) => {
   if (event.target.closest?.('#split-marker-panel, #split-marker-toggle')) return;
   const stage = $("stage");
@@ -636,12 +707,14 @@ document.addEventListener("contextmenu", (event) => {
     }, !base),
     he ? act(he.visible ? "Hide the H&E" : "Show the H&E", () => setVisible(he, !he.visible)) : null,
     act("Save a picture of the view", () => $("btn-save") && $("btn-save").click()),
+    act("Copy preview", copyPreview),
   ].filter(Boolean);
   const menu = el("div", { id: "ctxmenu", role: "menu" }, items);
   if(menu.querySelector('.cell-phenotype-menu'))menu.classList.add('has-cell-phenotypes');
   menu.style.left = Math.min(event.clientX, window.innerWidth - 230) + "px";
   menu.style.top = Math.min(event.clientY, window.innerHeight - 260) + "px";
   document.body.appendChild(menu);
+  annotationContextItems(menu,imagePoint,act);
   menu.style.top=Math.max(8,Math.min(event.clientY,window.innerHeight-menu.getBoundingClientRect().height-8))+'px';
   menu.reposition=()=>{
     menu.style.left=Math.max(8,Math.min(event.clientX,window.innerWidth-menu.getBoundingClientRect().width-8))+'px';

@@ -157,11 +157,14 @@ def list_annotation_classes(geojson_path: str | os.PathLike) -> list[str]:
     return sorted(name for name in names if name)
 
 
-def load_annotation_polygons(geojson_path: str | os.PathLike) -> dict[str, list]:
+def load_annotation_polygons(geojson_path: str | os.PathLike, *, labels=None) -> dict[str, list]:
     """Group valid polygons by lower-cased classification name."""
     grouped: dict[str, list] = {}
+    selected = {str(label).lower() for label in labels} if labels is not None else None
     for feature in _iter_features(geojson_path):
         name = _feature_class_name(feature)
+        if selected is not None and (not name or name.lower() not in selected):
+            continue
         geometry_dict = feature.get("geometry")
         if not name or not geometry_dict:
             continue
@@ -506,15 +509,18 @@ def _nearest_visible_distance(
     if total == 0 or not regions or container_geometry is None:
         return np.array([], dtype=int), np.array([], dtype=float)
 
-    geometries = np.array([region["geom"] for region in regions], dtype=object)
-    boundaries = np.array([geometry.boundary for geometry in geometries], dtype=object)
-    shapely.prepare(geometries)
-    tree = STRtree(geometries)
     # Buffering a detailed tissue piece is costly. Reuse it across annotation
     # classes within this run, and do not build it for cells already inside a
     # target. A run-local cache cannot become stale after a GeoJSON edit.
     if probe_cache is None:
         probe_cache = {}
+    target_key = ('targets', tuple(id(region['geom']) for region in regions))
+    if target_key not in probe_cache:
+        geometries = np.array([region['geom'] for region in regions], dtype=object)
+        boundaries = np.array([geometry.boundary for geometry in geometries], dtype=object)
+        shapely.prepare(geometries)
+        probe_cache[target_key] = (geometries, boundaries, STRtree(geometries))
+    geometries, boundaries, tree = probe_cache[target_key]
 
     def get_probe():
         key = (id(container_geometry), float(tolerance_px))

@@ -1,6 +1,6 @@
 [project]
 name = "spacemap-ai"
-version = "0.4.0"
+version = "0.5.0"
 description = "SPACEMAP Studio: an interactive spatial multiplex imaging pipeline with optional AI assistance"
 readme = "README.md"
 requires-python = ">=3.10,<3.11"
@@ -127,7 +127,10 @@ notebook = [
     "nbstripout>=0.7.1",
 ]
 
-all = ["spacemap-ai[ai,gguf,deepcell,notebook]"]
+# Optional Flow logicle/biexponential transforms and vector/PDF figure export.
+flow = ["flowutils>=1.1,<1.2", "cairosvg>=2.7,<3"]
+
+all = ["spacemap-ai[ai,gguf,deepcell,notebook,flow]"]
 
 [project.urls]
 Homepage = "https://github.com/AguileraLab/SPACEMAP"
@@ -151,7 +154,12 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build]
 artifacts = ["src/spacemap_gui/tabs/tab7_phenotyping/heatmap_click_selector/frontend/build/**"]
-exclude = ["**/node_modules/**"]
+exclude = [
+    "**/node_modules/**", "analysis/**", "docs/validation/**", "docs/codex/**",
+    "outputs/**", "project/**", "projects/**", "data/**", "test_codes/**",
+    "release-artifacts/**", ".spacemap_home/**", ".env", ".env.*",
+    ".streamlit/secrets.toml", ".aws/**", ".ssh/**", ".codex/**", ".agents/**",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/spacemap", "src/spacemap_gui", "src/spacemap_assistant", "src/spacemap_workflows"]
@@ -201,6 +209,8 @@ select = ["E9", "F63", "F7", "F82"]
 
 # SCIMAP installs pytest-xvfb transitively; these tests need no X server.
 [tool.pytest.ini_options]
+# Test this checkout even when another SPACEMAP copy is installed.
+pythonpath = ["src"]
 addopts = "-p no:xvfb -m \"not integration and not smoke\""
 testpaths = ["tests"]
 norecursedirs = ["scimap_ref"]

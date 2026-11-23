@@ -364,7 +364,36 @@ def test_completed_job_layer_and_undo(setup, monkeypatch):
     )
     result = run(setup, "show_job_result", {"job_id": "a" * 32})
     assert result["status"] == "done" and result["spec"]["layers"][-1]["color_by"] == "phenotype_ml_consensus"
+    assert len(result["spec"]["layers"]) == 2
+    again = run(setup, "show_job_result", {"job_id": "a" * 32})
+    assert again["status"] == "done" and len(again["spec"]["layers"]) == 2
+    assert again["effects"][0]["type"] == "cells"
+    assert len(run(setup, "undo", {"command_id": again["command_id"]})["spec"]["layers"]) == 2
     assert len(run(setup, "undo", {"command_id": result["command_id"]})["spec"]["layers"]) == 2
+
+
+def test_show_result_removes_legacy_copy_and_uses_result_table(setup, monkeypatch):
+    from copy import deepcopy
+    from spacemap_gui.studio import jobs
+
+    spec = deepcopy(setup[3])
+    cells_layer = spec["layers"][-1]
+    unrelated = setup[2] / "other.csv"
+    pd.DataFrame({"label": [1], "M0": [5]}).to_csv(unrelated, index=False)
+    registry.resolve_object(cells_layer["token"], "cells")["tables"]["other"] = str(unrelated)
+    cells_layer["table"] = "other"
+    copy = {**cells_layer, "id": "result-" + "b" * 32, "added": True}
+    # The old copy can come before the actual segmentation in the layer list.
+    spec["layers"].insert(1, copy)
+    registry.publish(setup[0], spec)
+    monkeypatch.setattr(jobs, "status", lambda *_: {
+        "status": "done", "result": {"table": str(setup[1]), "column": "phenotype_ml_consensus"}})
+    result = run(setup, "show_job_result", {"job_id": "a" * 32})
+    assert result["status"] == "done", result
+    layers = result["spec"]["layers"]
+    assert len(layers) == 2 and layers[-1]["id"] == cells_layer["id"]
+    assert layers[-1]["table"] == "t0"
+    assert any(effect["type"] == "remove_layer" for effect in result["effects"])
 
 
 def test_classic_assistant_counts_in_chat_and_opens_visual_results(setup, monkeypatch):

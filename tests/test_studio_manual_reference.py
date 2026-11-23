@@ -51,6 +51,25 @@ def test_custom_column_selection_identity_undo_and_native_parquet_commit(study):
     assert reference.options([path], path)["reference_columns"] == ["my labels", "phenotype_ref1"]
 
 
+def test_new_reference_labels_are_visible_in_data_before_table_commit(study):
+    from spacemap_gui.studio import data_editor
+
+    channel, path, _ = study
+    manual.create(channel, "my labels")
+    empty = data_editor.query(path, columns=["my labels"])
+    assert empty["rows"] == [[i, None] for i in range(5)]
+    assign(study, {"rows": [0, 4]}, "Custom phenotype")
+    shown = data_editor.query(path, columns=["my labels", "label"])
+    assert shown["rows"] == [
+        [0, "Custom phenotype", 1], [1, None, 2], [2, None, 3],
+        [3, None, 4], [4, "Custom phenotype", 1],
+    ]
+    filtered = data_editor.query(path, columns=["my labels"],
+                                 filters=[{"col": "my labels", "values": ["Custom phenotype"]}])
+    assert filtered["rows"] == [[0, "Custom phenotype"], [4, "Custom phenotype"]]
+    assert data_editor.summary(path, column="my labels")["groups"] == [("Custom phenotype", 2)]
+
+
 def test_filtered_assignment_and_clear_use_all_matches_with_guarded_undo(study):
     saved = assign(study, {"filters":[{"col":"M0","lo":2,"hi":4}]})
     assert saved["assigned"] == 3
@@ -61,6 +80,44 @@ def test_filtered_assignment_and_clear_use_all_matches_with_guarded_undo(study):
     cleared = assign(study, {"rows":[1,2,3]}, "")
     assert cleared["assigned"] == 3
     assert manual.options(study[0], "my labels")["counts"]["groups"] == []
+
+
+@pytest.mark.parametrize("storage", ["native", "pending"])
+def test_text_labels_replace_empty_numeric_reference_schema(study, storage):
+    from spacemap_gui.studio import data_editor, data_view
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    channel, path, _ = study
+    column = "phenotype_ref1"
+    assert pa.types.is_floating(pq.read_schema(path).field(column).type)
+    if storage == "pending":
+        pending_columns.save(path, {column: pd.Series([float("nan")] * 5)},
+                             anchor_column="cell_id", anchor_values=pd.read_parquet(path).cell_id)
+    original = path.read_bytes()
+    # Warm both readers while the column is still entirely empty/numeric.
+    assert data_editor.query(path, columns=[column])["rows"] == [[i, None] for i in range(5)]
+    assert data_view._table(path).take([0], [column])[column][0] != "Treg"
+    first = assign(study, {"rows": [0, 4]}, "Treg", column=column)
+    assert first["assigned"] == 2 and path.read_bytes() == original
+    shown = data_editor.query(path, columns=[column])
+    assert shown["rows"] == [[0, "Treg"], [1, None], [2, None], [3, None], [4, "Treg"]]
+    assert shown["kinds"][column] == "group" and shown["kinds"]["M0"] == "value"
+    assert data_editor.query(path, columns=[column], filters=[{"col": column, "values": ["Treg"]}])["matched"] == 2
+    assert manual.options(channel, column)["counts"]["groups"] == [("Treg", 2)]
+    reader = data_view._table(path)
+    assert reader.kinds[column] == "group" and reader.kinds["M0"] == "value"
+    assert reader.column(column).to_pylist() == ["Treg", None, None, None, "Treg"]
+    assert reader.take([4, 0, 2], [column])[column] == ["Treg", "Treg", None]
+    second = assign(study, {"filters": [{"col": column, "values": ["Treg"]}]}, "CD8", column=column)
+    assert second["assigned"] == 2
+    manual.undo(channel, second["request_id"])
+    assert data_editor.summary(path, column=column)["groups"] == [("Treg", 2)]
+    # Both streamed Data saves and the explicit label commit preserve text.
+    copy = data_editor.save(path, mode="copy", name="labelled.parquet")
+    assert pd.read_parquet(copy)[column].fillna("").tolist() == ["Treg", "", "", "", "Treg"]
+    pending_columns.commit(path)
+    assert pd.read_parquet(path)[column].fillna("").tolist() == ["Treg", "", "", "", "Treg"]
 
 
 def test_request_retry_is_idempotent_and_other_columns_are_protected(study):

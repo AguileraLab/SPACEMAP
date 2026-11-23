@@ -83,15 +83,13 @@ function showHistogram(layer) {
   Object.entries(layer.inputs || {}).forEach(([index, parts]) => parts.row.classList.toggle("picked", Number(index) === layer.histogramFor));
   const channel = layer.channels.find((c) => c.index === layer.histogramFor);
   const parts = channel && (layer.inputs || {})[channel.index];
-  if (!channel || !parts) {
-    holder.appendChild(el("div", { class: "row muted" }, [el("span", { text: "Histogram" }),
-      help("Click a marker's name to see its histogram, set its range there, or rename it.")]));
-    return;
-  }
-  holder.appendChild(el("div", { class: "section-title", text: "Histogram: " + (channel.label || channel.name) }));
+  const section = imageControlSection('histogram', 'Histogram', "Choose a marker to inspect its pixels. Drag the white lines to set black and full-colour levels. Display settings do not change saved measurements.",
+    channel ? [el('span', {class:'histogram-marker', text:channel.label || channel.name})] : []);
+  holder.append(section.box);
+  if (!channel || !parts) {section.body.append(el('span', {class:'muted', text:'Choose a marker.'})); return;}
   const cells = liveForImage(layer), marker = linkedMarker(layer, channel);
-  if (cells && marker) holder.appendChild(resolveHistogramBox(cells, marker, layer, channel));
-  else holder.appendChild(histogramBox(layer, channel, parts.low, parts.high));
+  if (cells && marker) section.body.appendChild(resolveHistogramBox(cells, marker, layer, channel));
+  else section.body.appendChild(histogramBox(layer, channel, parts.low, parts.high));
 }
 
 function resolveHistogramBox(cells, marker, image, channel) {
@@ -229,25 +227,43 @@ function histogramViewSummary(layer) {
 }
 function histogramBox(layer, channel, lowInput, highInput) {
   const box=el('div',{class:'hist'}),regions=regionOptions(layer.token);
-  if(channel.region===undefined)channel.region=layer.autoScope||'';
+  // Histogram scope is an explicit per-marker choice, independent of Auto levels.
+  if(channel.region===undefined)channel.region='';
   const population=regionSelect([['','Whole image']],regions,channel.region,v=>{channel.region=v;load();});
   population.setAttribute('aria-label','Image histogram population');
   const add=(value,label)=>{const existing=Array.from(population.options).find(o=>o.value===value);if(existing)existing.textContent=label;else population.append(el('option',{value,text:label}));};
   if(channel.region&&!Array.from(population.options).some(o=>o.value===channel.region))add(channel.region,'Current annotation selection');
-  for(const annotation of thresholdAnnotations(layer)){
+  const annotations = thresholdAnnotations(layer), loaded = new Set();
+  const loadClasses = annotation => {
+    if (loaded.has(annotation.token)) return; loaded.add(annotation.token);
+    annotationLegend(annotation).then(legend=>{
+      if (!box.isConnected) return;
+      for(const item of legend.items)add(JSON.stringify({annotation:annotation.token,class:item.value}),annotation.name+': '+item.value);
+      population.value=channel.region;
+    }).catch(error=>{loaded.delete(annotation.token); if (box.isConnected) {status.hidden=false;status.textContent='Annotation choices: '+error.message;}});
+  };
+  for(const annotation of annotations){
     add(JSON.stringify({annotation:annotation.token}),annotation.name+': all areas');
-    annotationLegend(annotation).then(legend=>{for(const item of legend.items)add(JSON.stringify({annotation:annotation.token,class:item.value}),annotation.name+': '+item.value);population.value=channel.region;}).catch(error=>{stats.textContent='Annotation choices: '+error.message;});
+    if (annotation.legendRequest) loadClasses(annotation);
   }
+  population.addEventListener('focus', () => annotations.forEach(loadClasses));
+  population.addEventListener('pointerdown', () => annotations.forEach(loadClasses));
   population.value=channel.region;
   box.append(field('Measure in',population));
   const options=el('details',{class:'histogram-options'},[el('summary',{text:'Histogram display'})]);
   options.append(histogramDisplayControls(layer,'Image histogram',()=>load()));box.append(options);
-  const canvas=el('canvas',{width:400,height:110}),caption=el('div',{class:'hint'}),stats=el('div',{class:'hint',text:'Measuring…'});
-  box.append(canvas,caption,stats);
-  box.append(el('div',{class:'hint',text:'Drag the white lines to set the black and full-colour levels. Upper brightness changes only the display.'}));
+  const canvas=el('canvas',{width:400,height:110,'aria-label':'Marker intensity histogram'}),caption=el('div',{class:'hint histogram-caption'});
+  const stats=el('div',{class:'histogram-stats'}), status=el('div',{class:'hint',role:'status',text:'Measuring…'});
+  box.append(canvas,caption,stats,status);
   const rename=el('input',{type:'text',value:channel.label||channel.name});
-  rename.onchange=()=>{channel.label=rename.value.trim()||channel.name;remember(layer);};box.append(field('Name',rename));
-  let histogram=null,dragging=null,request=0;
+  rename.setAttribute('aria-label','Marker display name');
+  rename.onchange=()=>{
+    channel.label=rename.value.trim()||channel.name; remember(layer);
+    const name = layer.inputs?.[channel.index]?.row.querySelector('.cname');
+    if (name) name.textContent = channel.label === channel.name ? channel.name : channel.label + ' (' + channel.name + ')';
+    const badge=box.closest('[data-image-section=histogram]')?.querySelector('.histogram-marker'); if(badge)badge.textContent=channel.label;
+  };box.append(field('Name',rename));
+  let histogram=null,histogramKey='',dragging=null,request=0;
   const xOf=v=>Math.max(0,Math.min(canvas.width,(histogramProjection(v,histogram.scale,histogram.cofactor)-histogram.axis[0])/(histogram.axis[1]-histogram.axis[0])*canvas.width));
   function draw(){
     const ctx=canvas.getContext('2d'),w=canvas.width,h=canvas.height;
@@ -271,16 +287,23 @@ function histogramBox(layer, channel, lowInput, highInput) {
   canvas.onpointermove=e=>{if(dragging)move(e);};
   canvas.onpointerup=canvas.onpointercancel=()=>{dragging=null;};
   async function load(){
-    const id=++request;stats.textContent='Measuring…';
+    const id=++request;
     try{
-      const v=histogramView(layer),result=await getJSON('/image/'+layer.token+'/histogram?'+new URLSearchParams({ch:channel.index,scale:v.scale,cofactor:v.cofactor,native:layer.autoNative?1:0,...regionParams(channel.region,layer.token)}));
-      if(id!==request)return;histogram=result;
+      const v=histogramView(layer),key=new URLSearchParams({ch:channel.index,scale:v.scale,cofactor:v.cofactor,native:layer.autoNative?1:0,...regionParams(channel.region,layer.token)}).toString();
+      if(histogram&&key===histogramKey){status.textContent='';status.hidden=true;draw();return;}
+      status.hidden=false; status.textContent='Measuring…';
+      const result=await getJSON('/image/'+layer.token+'/histogram?'+key);
+      if(id!==request||!box.isConnected||!state.layers.includes(layer))return;histogram=result;histogramKey=key;
       if(channel.low===undefined)channel.low=result.suggested[0];
       if(channel.high===undefined)channel.high=Math.max(result.suggested[1],channel.low+1);
       lowInput.value=channel.low;highInput.value=channel.high;
-      stats.textContent=number(result.min)+'–'+number(result.max)+' raw · median '+number(result.median)+' · '+result.pixels.toLocaleString()+' pixels'+(result.downsample>1?' at 1/'+number(result.downsample)+' resolution':'')+(result.omitted?' · '+result.omitted.toLocaleString()+' nonpositive pixels omitted on Log10':'');
+      stats.replaceChildren(...[
+        ['range','Raw range',number(result.min)+'–'+number(result.max)], ['median','Median',number(result.median)],
+        ['pixels','Pixels',result.pixels.toLocaleString()], ['resolution','Resolution',result.downsample>1?'1/'+number(result.downsample):'Full']
+      ].map(([key,label,value])=>el('div',{'data-hist-stat':key},[el('strong',{text:value}),el('span',{text:label})])));
+      status.textContent=result.omitted?result.omitted.toLocaleString()+' nonpositive pixels omitted on Log10':'';status.hidden=!status.textContent;
       draw();
-    }catch(error){if(id===request)stats.textContent=error.message;}
+    }catch(error){if(id===request&&box.isConnected){status.hidden=false;status.textContent=error.message;}}
   }
   load();return box;
 }

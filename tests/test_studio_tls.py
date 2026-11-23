@@ -18,6 +18,56 @@ def options(**changes):
             "min_fraction": 0., "pixel_um": 1., **changes}
 
 
+def test_indexed_candidate_counts_match_original_predicates(monkeypatch):
+    from spacemap import cell_spatial_annotation as tagging
+    rng=np.random.default_rng(473)
+    xy=rng.uniform(0,100,(1500,2))
+    labels=rng.choice(['B','T','Other'],len(xy))
+    tissue=box(0,0,100,100).difference(box(45,20,55,80))
+    keep=shapely.intersects(tissue,shapely.points(xy));xy,labels=xy[keep],labels[keep]
+    original=lambda points,geometries,tree=None: shapely.STRtree(geometries).query(points,predicate='intersects')
+    with monkeypatch.context() as m:
+        m.setattr(tagging,'_point_region_pairs',original)
+        before,tags_before=tls.detect_region(xy,labels,options(min_b=3,min_t=3),1.,tissue)
+    after,tags_after=tls.detect_region(xy,labels,options(min_b=3,min_t=3),1.,tissue)
+    assert len(before)==len(after)
+    for a,b in zip(before,after):
+        assert a['geom'].equals_exact(b['geom'],0)
+        assert {k:v for k,v in a.items() if k!='geom'}=={k:v for k,v in b.items() if k!='geom'}
+    for key in tags_before:
+        np.testing.assert_allclose(tags_before[key],tags_after[key],atol=1e-10,rtol=0,equal_nan=True)
+
+
+def test_distance_cache_reuses_targets_and_keeps_gap_visibility(monkeypatch):
+    from spacemap import cell_spatial_annotation as tagging
+    tissue=box(0,0,20,20).difference(box(8,0,12,15))
+    regions=[{'geom':box(1,5,4,9)},{'geom':box(14,5,18,9)}]
+    points=shapely.points([[2,6],[6,6],[10,18],[19,6]])
+    expected=tagging._nearest_visible_distance(points,regions,tissue,0,2)
+    tree=tagging.STRtree;calls=[]
+    def count(geometries):
+        calls.append(1);return tree(geometries)
+    monkeypatch.setattr(tagging,'STRtree',count)
+    cache={}
+    for _ in range(2):
+        actual=tagging._nearest_visible_distance(points,regions,tissue,0,2,probe_cache=cache)
+        np.testing.assert_array_equal(actual[0],expected[0])
+        np.testing.assert_allclose(actual[1],expected[1],rtol=0,atol=0)
+    assert len(calls)==1
+
+
+def test_loading_only_tissue_preserves_its_geometry(tmp_path):
+    from spacemap.cell_spatial_annotation import load_annotation_polygons
+    path=tmp_path/'annotations.geojson'
+    path.write_text(json.dumps({'type':'FeatureCollection','features':[
+        {'type':'Feature','geometry':mapping(box(0,0,20,20)), 'properties':{'classification':{'name':'Tissue'}}},
+        {'type':'Feature','geometry':mapping(box(1,1,3,3)), 'properties':{'classification':{'name':'Tumor'}}}]}))
+    all_polygons=load_annotation_polygons(path)
+    selected=load_annotation_polygons(path,labels=['Tissue'])
+    assert list(selected)==['tissue']
+    assert selected['tissue'][0].equals_exact(all_polygons['tissue'][0],0)
+
+
 def test_boundary_distance_area_and_non_lymphocyte_membership():
     xy = np.array([[0, 0], [1, 0], [.5, .5], [4, 0]])
     regions, tags = tls.detect_region(xy, np.array(["B", "T", "Other", "Other"]), options(), 1)
@@ -349,6 +399,30 @@ def test_auto_mpp_loaded_image_has_priority_without_leaking_to_other_images(coho
     found = tls.calibration(root, ["one", "two"], [{"path": str(loaded), "sample": "one"}])
     assert found["one"]["mpp"] == .42 and found["one"]["source"] == "image"
     assert found["two"] == {"mpp": None, "source": "missing"}
+
+
+def test_auto_mpp_keeps_assigned_image_instead_of_same_sample_raw_image(cohort):
+    import tifffile
+    from spacemap_gui import persistence
+    root, _ = cohort
+    processed = root / 'processed'
+    processed.mkdir()
+    assigned = processed / 'one.ome.tiff'
+    raw = root / 'one_CODEX.qptiff'
+    tifffile.imwrite(assigned, np.zeros((8, 8), dtype=np.uint16),
+                     metadata={'axes': 'YX', 'PhysicalSizeX': .8, 'PhysicalSizeY': .8})
+    tifffile.imwrite(raw, np.zeros((8, 8), dtype=np.uint16), ome=True,
+                     metadata={'axes': 'YX', 'PhysicalSizeX': .2, 'PhysicalSizeY': .2})
+    persistence.save_project_config(str(root), {
+        'directory_mappings': {'viz_roi_dir': str(processed)}, 'mpp_codex': 1.25})
+    entries = [{'path': str(raw), 'sample': 'one'}]
+    found = tls.calibration(root, ['one'], entries)['one']
+    assert found == {'mpp': .8, 'source': 'image', 'file': str(assigned)}
+    # Missing processed calibration must not silently borrow a different
+    # pixel grid from the acquisition with the same sample name.
+    tifffile.imwrite(assigned, np.zeros((9, 9), dtype=np.uint16), metadata={'axes': 'YX'})
+    found = tls.calibration(root, ['one'], entries)['one']
+    assert found == {'mpp': 1.25, 'source': 'project'}
 
 
 @pytest.mark.parametrize("bad", [0, -1, float("nan"), float("inf"), "unknown"])

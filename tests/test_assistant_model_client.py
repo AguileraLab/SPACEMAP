@@ -1,5 +1,6 @@
 import json
 import stat
+from http.client import IncompleteRead
 
 import pytest
 
@@ -295,3 +296,30 @@ def test_nvidia_key_is_saved_owner_only_and_can_be_removed(tmp_path, monkeypatch
     assert stat.S_IMODE(key_path.stat().st_mode) == 0o600
     assert model_client.delete_nvidia_api_key()
     assert not key_path.exists()
+
+
+@pytest.mark.parametrize('error, expected', [(TimeoutError('timed out'), 'no data for 600 seconds'),
+    (ConnectionResetError('reset'), 'If you stopped it, this is expected'),
+    (IncompleteRead(b'partial'), 'If you stopped it, this is expected')])
+def test_local_stream_read_errors_explain_timeout_or_shutdown(monkeypatch, error, expected):
+    class FailedResponse(_Response):
+        def __iter__(self):
+            raise error
+    client = LocalModelClient()
+    monkeypatch.setattr(client, '_request', lambda *a, **k: FailedResponse([]))
+    with pytest.raises(ModelUnavailable, match=expected):
+        list(client.stream_complete([]))
+
+
+def test_local_keepalives_cannot_extend_the_configured_response_limit(monkeypatch):
+    client = LocalModelClient(timeout_seconds=30)
+    clock = [0]
+    monkeypatch.setattr(model_client.time, 'monotonic', lambda: clock[0])
+    class Keepalive(_Response):
+        def __iter__(self):
+            for _ in range(4):
+                clock[0] += 10
+                yield b': waiting for model tokens\n\n'
+    monkeypatch.setattr(client, '_request', lambda *a, **k: Keepalive([]))
+    with pytest.raises(ModelUnavailable, match='within 30 seconds'):
+        list(client.stream_complete([]))

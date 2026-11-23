@@ -15,7 +15,9 @@ setTimeout(async()=>{try{
  const panel=()=>document.querySelector('#split-marker-panel'),cards=()=>[...panel().querySelectorAll('.split-marker-tile')];
  const ready=()=>s.inspectedCell?.result.profile?.status==='ready';
  const rendered=()=>cards().length&&cards().every(c=>c.dataset.rendered);
- let requests=0,active=0,peak=0,chatBody;
+ let requests=0,active=0,peak=0,chatBody,pixelCalls=0,pixelActive=0,pixelPeak=0,delayPixels=false;
+ const pixelReady=()=>cards().length&&cards().every(c=>c.querySelector('.split-marker-intensity')?.dataset.pixel===Math.floor(splitMarkers.point.x)+','+Math.floor(splitMarkers.point.y));
+ const pixelCorrect=()=>cards().every(c=>{const value=c.querySelector('.split-marker-intensity'),[x,y]=value.dataset.pixel.split(',').map(Number),index=img.channels.find(ch=>ch.name===c.dataset.marker).index;return Number(value.dataset.value)===(y*400+x)%4000+index*1000;});
  const originalFetch=window.fetch;
  window.fetch=async(url,args)=>{
    const where=String(url);
@@ -25,6 +27,7 @@ setTimeout(async()=>{try{
    }
    if(where.includes('/chat')&&(!args?.method||args.method==='GET'))return new Response(JSON.stringify({model:{enabled:true,images:true,provider:'local',model:'Test only'},messages:[],memories:[]}));
    if(where.includes('/image/')&&where.includes('/tile/')&&where.includes('.png')){requests++;active++;peak=Math.max(peak,active);try{return await originalFetch(url,args);}finally{active--;}}
+   if(where.includes('/pixels?')){pixelCalls++;pixelActive++;pixelPeak=Math.max(pixelPeak,pixelActive);try{if(delayPixels)await delay(150);return await originalFetch(url,args);}finally{pixelActive--;}}
    return originalFetch(url,args);
  };
  assert(!splitMarkerOptions().open&&document.querySelector('#split-marker-toggle'),'Marker drawer starts collapsed at the bottom');
@@ -35,26 +38,46 @@ setTimeout(async()=>{try{
  assert(cards().length===1&&cards()[0].dataset.marker==='M0','Selected mode shows only checked image markers');
  const first=cards()[0].querySelector('canvas'),pixel=first.getContext('2d').getImageData(20,20,1,1).data;
  assert(pixel[0]+pixel[1]+pixel[2]>0,'The marker crop contains rendered image pixels');
+ await until(pixelReady);assert(pixelCorrect(),'The crosshair readout matches the native image pixel exactly');
+ const readout=cards()[0].querySelector('.split-marker-intensity'),readoutStyle=getComputedStyle(readout),valueBox=readout.getBoundingClientRect(),canvasBox=first.getBoundingClientRect();
+ assert(readoutStyle.fontSize==='10px'&&valueBox.left>canvasBox.left+canvasBox.width/2&&valueBox.bottom<=canvasBox.bottom+1,'Pixel intensity is bottom-right in the scale-bar text size');
  const savedStyle=JSON.stringify(img.channels);
  panel().querySelector('[aria-label="Marker tile scope"]').value='all';panel().querySelector('[aria-label="Marker tile scope"]').dispatchEvent(new Event('change'));
  await until(()=>cards().length===2&&rendered());
  assert(JSON.stringify(img.channels)===savedStyle,'All markers adds tiles without changing main image channels or ranges');
  const before=requests;followSplitMarkerCursor(pos(202,202));await delay(500);
  assert(requests===before,'Nearby cursor movement reuses decoded tiles');
+ await until(pixelReady);assert(pixelCorrect(),'Each visible marker reports its own full-resolution channel intensity');
+ const pixelBefore=pixelCalls;followSplitMarkerCursor(pos(202.2,202.2));await delay(120);
+ assert(pixelCalls===pixelBefore,'Moving within the same pixel reuses its intensity values');
+ const wrong=[];const observer=new MutationObserver(()=>{for(const c of cards()){const value=c.querySelector('.split-marker-intensity');if(value.dataset.pixel&&value.dataset.pixel!==c.dataset.center.split(',').map(v=>Math.floor(Number(v))).join(','))wrong.push(value.dataset.pixel);}});observer.observe(panel(),{subtree:true,attributes:true,childList:true});
+ delayPixels=true;const batchBefore=pixelCalls;followSplitMarkerCursor(pos(225.2,230.2));await until(()=>pixelActive===1);followSplitMarkerCursor(pos(227.2,233.2));
+ await until(pixelReady);delayPixels=false;observer.disconnect();
+ assert(!wrong.length&&pixelCorrect(),'Delayed responses never attach an old intensity to a new crop');
+ assert(pixelPeak===1&&pixelCalls===batchBefore+2,'Visible markers share one request, with only one pixel request in flight');
+ followSplitMarkerCursor(pos(202.2,202.2));await until(pixelReady);
  img.channels[1].color='#ff0000';refreshLayer(img);await until(rendered);
  const red=cards()[1].querySelector('canvas').getContext('2d').getImageData(20,20,1,1).data;
  assert(red[0]>0&&red[1]===0&&red[2]===0,'Tiles use the marker colour from Layers');
- panel().dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,clientX:400,clientY:300}));
+ await until(pixelReady);assert(pixelCorrect(),'Changing marker colour preserves source intensity values');
+ const zoomControl=panel().querySelector('[aria-label="Marker tile zoom"]');zoomControl.value='.25';zoomControl.dispatchEvent(new Event('change'));await until(pixelReady);
+ assert(pixelCorrect(),'Zoomed-out tiles still report full-resolution pixel values');
+ followSplitMarkerCursor(pos(-1,20));await until(pixelReady);
+ assert(cards().every(c=>c.querySelector('.split-marker-intensity').textContent==='—'),'Outside the image shows unavailable, rather than inventing a zero');
+ followSplitMarkerCursor(pos(202.2,202.2));await until(pixelReady);
+ panel().querySelector('.split-marker-grid').dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,clientX:400,clientY:300}));
  await until(()=>document.querySelector('#ctxmenu.split-marker-menu'));
  button(document.querySelector('#ctxmenu'),'100% (native)').click();
  assert(splitMarkerOptions().zoom===1&&panel().querySelector('[aria-label="Marker tile zoom"]').value==='1','Right-click changes tile zoom independently');
  const resize=panel().querySelector('[aria-label="Resize marker panel"]'),height=splitMarkerOptions().height;
  resize.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowUp',bubbles:true}));
  assert(splitMarkerOptions().height===height+24,'Panel height is resizable');
- button(panel(),'Float').click();assert(panel().parentElement===document.body&&panel().classList.contains('floating'),'Panel floats above Studio sidebars');
- button(panel(),'Dock').click();assert(panel().parentElement.id==='stage','Dock restores the bottom panel');
- button(panel(),'Hide ▾').click();const hiddenRequests=requests;followSplitMarkerCursor(pos(300,300));await delay(350);
+ button(panel(),'Float').click();const markerWindow=viewerPanelWindow('markers');
+ assert(markerWindow&&splitMarkers.grid.ownerDocument===markerWindow.document,'Marker tiles float in a separate browser window');
+ button(markerWindow.document,'Dock back').click();assert(splitMarkers.grid.ownerDocument===document&&panel().parentElement.id==='stage','Dock restores the bottom panel');
+ button(panel(),'Hide ▾').click();const hiddenRequests=requests,hiddenPixelCalls=pixelCalls;followSplitMarkerCursor(pos(300,300));await delay(350);
  assert(requests===hiddenRequests&&!splitMarkerOptions().floating&&!splitMarkerOptions().open,'Hidden panel stops image requests and returns to its bottom handle');
+ assert(pixelCalls===hiddenPixelCalls,'Hidden panels stop intensity requests too');
  document.querySelector('#split-marker-toggle').click();
  panel().querySelector('[aria-label="Marker tile scope"]').value='selected';panel().querySelector('[aria-label="Marker tile scope"]').dispatchEvent(new Event('change'));
  s.layerGroups.cells=true;buildPanel();
@@ -64,6 +87,7 @@ setTimeout(async()=>{try{
  assert(splitMarkers.pinned&&splitMarkers.selection===s.inspectedCell.result&&cards().length===1,'Cell Top markers updates split tiles and pins the selected cell');
  const pinned=JSON.stringify(splitMarkers.point);followSplitMarkerCursor(pos(350,350));
  assert(JSON.stringify(splitMarkers.point)===pinned,'Moving into the tile panel cannot lose the clicked cell');
+ await until(pixelReady);assert(pixelCorrect(),'Locked cells report the native pixel at their pinned crosshair');
  s.markersOpen=true;showCellCard(cells,s.inspectedCell.result);
  const transforms=document.querySelector('#cellcard .marker-transforms');button(transforms,'Z1').click();
  await until(()=>ready()&&cards()[0]?.dataset.marker===rankedCellMarkers(s.inspectedCell.result.profile)[0].marker);
@@ -114,4 +138,4 @@ setTimeout(async()=>{try{
 """
 
 if __name__ == '__main__':
-    main(DRIVER, studio=True, timeout=180, screenshot=False)
+    main(DRIVER, studio=True, timeout=180, screenshot=False, allow_popups=True)

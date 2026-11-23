@@ -20,12 +20,51 @@ function send(type, data) {
 function setFrameHeight(height) { send("streamlit:setFrameHeight", { height: height }); }
 function setComponentValue(value) { send("streamlit:setComponentValue", { value: value, dataType: "json" }); }
 
+function formatModelTime(value) {
+  if (!value) return 'Date unavailable';
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return 'Date unavailable';
+  return date.toLocaleString(undefined, {year:'numeric',month:'short',day:'numeric',
+    hour:'numeric',minute:'2-digit',second:'2-digit',timeZoneName:'short'});
+}
+
+function referenceModelLabel(model) {
+  return [model.method, model.name || model.column, formatModelTime(model.trained)].filter(Boolean).join(' · ');
+}
+
 const state = {
   spec: null, viewer: null, layers: [], infos: {}, base: null,
   tool: "off", undo: [], versions: {}, cardSeq: 0, selected: null,
 };
 const drawing = { points: null, start: null, hover: null, lastScreen: null };
 const $ = (id) => document.getElementById(id);
+
+// One window's open image, independent of checkboxes and review selection.
+// Observe inserted rows only; changing the highlight never rebuilds a list.
+function watchOpenImageRows(holder) {
+  const selector='[data-view-path],[data-view-paths],[data-view-token],[data-view-name]';
+  const path=value=>String(value||'').replace(/\/+$/,'');
+  const mark=row=>{
+    const image=state.spec?.layers?.find(l=>l.type==='image');
+    const opened=path(image?.path||state.spec?.path);
+    const open=!!image&&(row.hasAttribute('data-view-paths')
+      ? JSON.parse(row.dataset.viewPaths).some(value=>value&&path(value)===opened)
+      : row.hasAttribute('data-view-path')
+      ? !!row.dataset.viewPath&&path(row.dataset.viewPath)===opened
+      : row.hasAttribute('data-view-token') ? row.dataset.viewToken===image.token
+      : row.dataset.viewName===image.name);
+    row.classList.toggle('viewer-current-image',open);
+    // Older image lists used .selected for the last clicked row, which could
+    // become stale after opening an image elsewhere (or a failed request).
+    row.classList.remove('selected');
+    if(open)row.setAttribute('aria-current','true');else row.removeAttribute('aria-current');
+  };
+  const visit=node=>{if(node.nodeType!==1)return;if(node.matches(selector))mark(node);node.querySelectorAll(selector).forEach(mark);};
+  const sync=()=>visit(holder),observer=new MutationObserver(records=>records.forEach(r=>r.addedNodes.forEach(visit)));
+  observer.observe(holder,{childList:true,subtree:true});
+  document.addEventListener('spacemap-image-opened',sync);sync();
+  return ()=>{observer.disconnect();document.removeEventListener('spacemap-image-opened',sync);};
+}
 const DEFAULT_COLORS = ["#4f7dff", "#00e05a", "#ff3b3b", "#ffd400", "#ff00ff", "#00e5ff", "#ff8c00",
   "#ffffff", "#9b5de5", "#7cff6b", "#ff6f91", "#2ec4b6"];
 
@@ -51,7 +90,7 @@ async function followSession() {
   state.apiBase = location.pathname.split("/window/")[0];
   state.sessionVersion = null;
   if (new URLSearchParams(location.search).get('studio') === '1' && window.startSpacemapStudio) {
-    state.studio = window.startSpacemapStudio({session, get:getJSON, post:postJSON, stream:postStream, runCommand, captureView,
+    state.studio = window.startSpacemapStudio({session, apiUrl:api, get:getJSON, post:postJSON, stream:postStream, runCommand, captureView, watchOpenImageRows,
       setSelectionTool:(mode,shape) => setTool(shape || 'off',mode),
       // The polygons picked on the image now (one drawn layer): for "Selected polygons" in a step.
       pickedShapes: () => { const picked = pickedShapes();
@@ -132,6 +171,45 @@ async function followSession() {
       unmatchedImports: () => state.unmatchedImports || [],
       forgetUnmatched: item => { state.unmatchedImports = (state.unmatchedImports || []).filter(other => other !== item); },
       showShapesLayer: async spec => { await addLayerToView({ ...spec, visible: true }); buildPanel(); },
+      removeListedFiles: async paths => {
+        const removed = new Set(paths);
+        for (const layer of [...state.layers]) {
+          if (removed.has(layer.saved_file) || (layer.type === 'image' && removed.has(layer.path))) removeLayer(layer);
+        }
+        dataView.opened = (dataView.opened || []).filter(item => !removed.has(item.path));
+        state.annotationExport = null;
+        renderShapes(); buildPanel();
+      },
+      openListedTable: async item => {
+        const found = {file:item.file_token, name:item.name, path:item.path};
+        dataView.opened = [...(dataView.opened || []).filter(o=>o.file!==found.file), found];
+        showDataTab(); dataDrawHead(); await dataChoose('file|' + found.file);
+      },
+      openListedImage: async image => {
+        const result = await postJSON('/session/'+encodeURIComponent(session)+'/open', {id:image.id});
+        state.sessionVersion = result.version;
+        await init(result.spec);
+      },
+      showListedAnnotation: async (item, name) => {
+        let layer = state.layers.find(l=>l.saved_file===item.path);
+        if (!layer && item.annotation_layer) layer = await addLayerToView({...item.annotation_layer, visible:true});
+        if (!layer) return;
+        state.layerGroups.annotations = true;
+        state.annotationBlocksOpen ||= {};
+        state.annotationBlocksOpen[annotationFileKey(layer)] = true;
+        layer.open = true; setVisible(layer,true);
+        if(layer.type==='shapes') {
+          const names=namesOf(layer);
+          layer.hiddenNames=name?new Set([...names].filter(n=>n!==name)):null;
+          state.annotationRowsOpen ||= {};
+          if(name)state.annotationRowsOpen[annotationRowKey(layer,name)] = true;
+        } else if(name) {
+          const legend = await annotationLegend(layer);
+          layer.hidden = new Set((legend.items||[]).filter(c=>c.value!==name).map(c=>c.value));
+          refreshLayer(layer);
+        }
+        renderShapes();buildPanel();
+      },
       // Export's rules changed: Layers' Export ticks are read again.
       refreshExportTicks: () => { state.annotationExport = null; buildPanel(); },
       showTissuePreview,
@@ -319,19 +397,25 @@ async function followSession() {
       // Manual reference labelling lives in Studio's Phenotyping step, not in the layer list.
       renderLabels: holder => {
         const cells = state.layers.find(item => item.type === 'cells' && item.combinedTable);
-        holder.replaceChildren();
-        if (!cells) { holder.append(manualReferenceCard(null)); return; }
+        const table=cells?.combinedTable || dataView.combined?.path || '';
+        const existing=holder.querySelector('.manual-reference-card');
+        if(existing&&existing.referenceLayer===cells&&existing.referenceTable===table){
+          existing.refreshReference?.();return;
+        }
+        const card=()=>{const value=manualReferenceCard(cells||null);value.referenceLayer=cells;value.referenceTable=table;return value;};
+        if (!cells) { holder.replaceChildren(card()); return; }
         const place = () => {
           if (!holder.isConnected || !state.layers.includes(cells)) return;
           if (cells.table !== cells.combinedTable) { cells.table=cells.combinedTable;cells.columns=null;cells.live=null;bump(cells); }
-          holder.replaceChildren(manualReferenceCard(cells));
+          holder.replaceChildren(card());
         };
         if (state.imagesReady) place(); else state.whenImagesReady.then(place);
       },
       referenceColumn: () => state.labelColumn || 'phenotype_ref1',
       cellsState: () => {
-        const cells = state.layers.find(item => item.type === 'cells' && (item.tables || []).length);
-        return cells ? {color_by: cells.color_by || '', live: !!cells.live, resolve: !!cells.resolve} : null;
+        const cells = state.layers.find(item => item.type === 'cells' && item.id===state.cellDataLayer) || state.layers.find(item => item.type === 'cells' && (item.tables || []).length);
+        return cells ? {color_by: cells.color_by || '', live: !!cells.live, resolve: !!cells.resolve,
+          stagedRemovedColumns:cells.stagedRemovedColumns||[]} : null;
       },
       // What the viewer shows now, for the assistant: visible markers and their display range, the cells'
       // colouring and hidden groups, the other layers, and the area on screen (image pixels).
@@ -355,27 +439,11 @@ async function followSession() {
       },
       // Studio's heatmaps: colour the cells by a result column and show only the picked groups (all when none).
       // Answers false when no open cell layer has the column.
-      // Studio's Cellpose training: cells to correct, kept in this page only (never written to a file).
-      // New drawings go to this layer (it is the topmost editable one); Delete removes the selected cell.
-      editCells: (name, polygons) => {
-        let layer = state.layers.find((l) => l.type === "shapes" && l.local === name);
-        const features = polygons.map((ring, index) => {
-          const closed = ring.concat([ring[0]]).map((p) => [Number(p[0]), Number(p[1])]);
-          return { type: "Feature", geometry: { type: "Polygon", coordinates: [closed] },
-            properties: { id: newId(), name: "Cell " + (index + 1), label: "Cell " + (index + 1), classification: { name: "Cell", color: rgbOf("#00e5ff") } } };
-        });
-        if (!layer) {
-          // The image's information (the layer card reads it), not its token: the cells are not Auto regions.
-          const image = state.layers.find((l) => l.type === "image");
-          layer = { id: "training-" + Date.now().toString(36), type: "shapes", local: name, name, visible: true, opacity: 1,
-            editable: true, features: [], history: [], hidden: new Set(), open: true, info: image ? image.info : {},
-            classes: [{ name: "Cell", color: "#00e5ff" }] };
-          state.layers.push(layer);
-        } else pushHistory(layer);
-        layer.features = features;
-        renderShapes(); updateToolbar(); buildPanel();
-        return features.length;
-      },
+      // Studio's training cells stay local until Keep tile saves their masks.
+      // Current tile is the explicit drawing target; saved cells are read-only.
+      editCells: editTrainingCells,
+      configureTrainingCells,
+      showSavedTrainingCells,
       // The next click on the image, in image pixels (Studio places a training tile there); Esc gives null.
       pickPoint: () => new Promise((resolve) => {
         if (state.pointCallback) state.pointCallback(null);
@@ -387,30 +455,32 @@ async function followSession() {
         return layer ? layer.features.flatMap((f) => polygonsOf(f.geometry).map((rings) => rings[0])) : null;
       },
       dropCells: (name) => {
-        state.layers = state.layers.filter((l) => !(l.type === "shapes" && l.local === name));
-        if (state.selected && !state.layers.includes(state.selected.layer)) state.selected = null;
+        state.layers.filter(l => l.type === 'shapes' && l.local === name).forEach(dropTrainingCellLayer);
         renderShapes(); updateToolbar(); buildPanel();
       },
       // Studio's Segmentation step shows N and M toggles on each marker; null takes them away.
       setMarkerRoles: roles => { state.markerRoles = roles || null; buildPanel(); },
-      showCellGroups: async (column, shown, all) => {
-        // A command still running (a group's top markers, say) returns the view it was sent with: let it land
-        // first, so the groups asked for now are not put back to the earlier ones.
-        await (state.commandQueue || Promise.resolve()).catch(() => {});
-        await state.phenotypingLink;
-        const cells = state.layers.find(item => item.type === 'cells' && item.combinedTable) || (!dataView.combined && state.layers.find(item => item.type === 'cells' && (item.tables || []).length));
-        if (!cells || !(await cellTableWith(cells, [column], cells.combinedTable))) {
-          document.dispatchEvent(new CustomEvent('spacemap-groups-picked', {detail:{layer:null,column,values:shown || []}}));
-          return false;
+      clusterAppearance: review => {
+        if (JSON.stringify(state.clusterReview) === JSON.stringify(review)) return;
+        const previous = state.clusterReview;
+        state.clusterReview = review;
+        if (previous?.job !== review?.job && previous?.column === review?.column &&
+            previous?.table === review?.table) {
+          // Reruns can reuse the column and IDs with different memberships.
+          // An earlier cluster pick must not silently filter the new result.
+          state.groupPickSequence = (state.groupPickSequence || 0) + 1;
+          const layer = state.layers.find(item => item.type === 'cells' && cellGroupAppearance(item));
+          if (layer) {
+            layer.hidden = new Set();
+            document.dispatchEvent(new CustomEvent('spacemap-groups-picked',
+              {detail:{layer,column:review.column,values:[]}}));
+          }
         }
-        cells.live = null; cells.color_by = column;
-        cells.hidden = new Set(shown && shown.length ? all.filter(value => !shown.includes(value)) : []);
-        if (cells.mode === 'outline') cells.mode = 'both';
-        if (!cells.visible) setVisible(cells, true);
-        bump(cells);
-        document.dispatchEvent(new CustomEvent('spacemap-groups-picked', {detail:{layer:cells,column,values:shown || []}}));
-        return true;
+        state.layers.filter(layer => layer.type === 'cells' &&
+          [previous?.column, review?.column].includes(layer.color_by)).forEach(bump);
       },
+      showCellGroups: showViewerCellGroups,
+      showMarkerReviewCells: dataShowMarkerReview,
       refreshPhenotypingLinks: () => (state.phenotypingLink = dataRefreshCombined()),
       showCombinedData: async () => { await (state.phenotypingLink || dataRefreshCombined()); showDataTab(); await dataChoose('combined'); },
       // Studio's Background step: an image's saved levels, set as its markers' minimums when it opens.
@@ -431,6 +501,7 @@ async function followSession() {
         remember(image); buildPanel();
       },
       // Cell tagging's preview: colour the ROI's cells by a column computed in memory (with or without a cell table).
+      refreshTaggedCells,
       previewCells: column => {
         const cells = state.layers.find(item => item.type === 'cells');
         if (!cells) return false;
@@ -441,14 +512,17 @@ async function followSession() {
         return true;
       },
       colourCells: async column => {
+        const sequence=state.groupPickSequence=(state.groupPickSequence||0)+1,generation=state.initGeneration;
         await state.phenotypingLink;
-        const cells = state.layers.find(item => item.type === 'cells' && item.combinedTable) || (!dataView.combined && state.layers.find(item => item.type === 'cells' && (item.tables || []).length));
+        if(sequence!==state.groupPickSequence||generation!==state.initGeneration)return;
+        consolidateCellResults();
+        const cells = state.layers.find(item => item.type === 'cells' && item.id===state.cellDataLayer) || state.layers.find(item => item.type === 'cells' && item.combinedTable) || (!dataView.combined && state.layers.find(item => item.type === 'cells' && (item.tables || []).length));
         if (!cells) return;
-        if (column && !(await cellTableWith(cells,[column],cells.combinedTable))) { message('This cell layer has no linked ' + column + ' values.',true); return; }
-        cells.live = null; cells.color_by = column; cells.hidden = new Set();
-        if (column && cells.mode === 'outline') cells.mode = 'both';
-        if (!cells.visible) setVisible(cells, true);
-        bump(cells);
+        const table=column?await cellTableWith(cells,[column],cells.combinedTable,false):cells.table;
+        if(sequence!==state.groupPickSequence||generation!==state.initGeneration||!state.layers.includes(cells))return;
+        if (column&&!table) { message('This cell layer has no linked ' + column + ' values.',true); return; }
+        if(cells.table!==table){cells.table=table;invalidateCellColumns(cells);}
+        setCellColour(cells,column);
       },
       openImage: image => runCommand('open_image', {image:image.group + ' | ' + image.name})});
   }
@@ -549,7 +623,15 @@ async function applyCommandView(result, initiated = false) {
   const reopened = !state.spec || state.spec.id !== spec.id;
   const effects = result.effects || event.effects || [];
   const commandName = event.name || result.name;
-  const navigation = ['open_image','open_annotation_image','open_roi_image','open_background_image'].includes(commandName) ||
+  // Starting tagging changes no display settings. Replaying the server's
+  // normalized snapshot can replace decoded image tiles (and overwrite a
+  // marker choice made while the command was in flight).
+  if (!reopened && commandName === 'tag_cells' && !effects.length) {
+    state.spec = spec; state.sessionVersion = result.version; state.lastCommand = event.id;
+    state.studio?.viewChanged(spec);
+    return;
+  }
+  const navigation = ['open_image','open_annotation_image','open_roi_image','open_background_image','open_segmentation_image'].includes(commandName) ||
     (reopened && !commandName && !effects.length);  // saved opening commands from older Studio versions
   if (reopened) await init(spec);
   if (state.spec?.id !== spec.id) return;
@@ -596,6 +678,7 @@ async function applyCommandView(result, initiated = false) {
   }
   for (const effect of effects) {
     const layer = state.layers.find(item => item.id === effect.layer);
+    if (effect.type === 'remove_layer' && layer) removeLayer(layer);
     if (effect.type === 'restore_view') {
       state.layers.filter(item => item.added && !spec.layers.some(source => source.id === item.id)).forEach(removeLayer);
     }
@@ -616,6 +699,7 @@ async function applyCommandView(result, initiated = false) {
     if (effect.type === 'zoom_cell' && layer) inspectReviewedCell(layer, effect.cell);
     if (effect.type === 'save_image' && initiated && !result.replayed) saveImage();
   }
+  consolidateCellResults();
   if (!firstSessionView && spec.bounds && effects.some(effect => ['restore_view','zoom_cell'].includes(effect.type))) {
     const applyBounds = () => { const item = baseItem(); if (item) state.viewer.viewport.fitBounds(item.imageToViewportRectangle(...spec.bounds), true); };
     if (baseItem()) applyBounds(); else state.whenImagesReady?.then(applyBounds);
@@ -699,7 +783,7 @@ async function postJSON(path, payload, options = {}) {
     headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
   });
   const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(body.error || ("HTTP " + response.status));
+  if (!response.ok) throw Object.assign(new Error(body.error || ("HTTP " + response.status)), {code:body.code});
   if(body.workflow_warning)message(body.workflow_warning,true);
   return body;
 }
@@ -748,28 +832,29 @@ let messageTimer = null;
 // shows on hover or keyboard focus, as in classic SPACEMAP.
 // The (?) help text floats above every panel (a panel that scrolls would clip it), beside the (?) and kept inside
 // the window: below it when there is room, else above; never past the left or right edge.
-(() => {
+function installViewerHelp(doc=document) {
   let tip = null, owner = null;
   const place = target => {
-    if (!tip) { tip = document.createElement('div'); tip.id = 'floating-tip'; tip.setAttribute('role', 'tooltip'); }
-    (target.closest('dialog')||document.body).appendChild(tip);
+    if (!tip) { tip = doc.createElement('div'); tip.id = 'floating-tip'; tip.setAttribute('role', 'tooltip'); }
+    (target.closest('dialog')||doc.body).appendChild(tip);
     tip.textContent = target.dataset.tip || ''; tip.hidden = !tip.textContent; owner = target;
     if (tip.hidden) return;
-    const box = target.getBoundingClientRect(), width = Math.min(280, window.innerWidth - 16);
+    const box = target.getBoundingClientRect(), width = Math.min(280, doc.defaultView.innerWidth - 16);
     tip.style.width = width + 'px';
-    const left = Math.max(8, Math.min(box.right - width, window.innerWidth - width - 8));
+    const left = Math.max(8, Math.min(box.right - width, doc.defaultView.innerWidth - width - 8));
     tip.style.left = left + 'px'; tip.style.top = '0px';
     const height = tip.offsetHeight;
     const below = box.bottom + 6, above = box.top - 6 - height;
-    tip.style.top = (below + height <= window.innerHeight - 8 || above < 8 ? Math.min(below, window.innerHeight - height - 8) : above) + 'px';
+    tip.style.top = (below + height <= doc.defaultView.innerHeight - 8 || above < 8 ? Math.min(below, doc.defaultView.innerHeight - height - 8) : above) + 'px';
   };
   const hide = target => { if (tip && (!target || target === owner)) { tip.hidden = true; owner = null; } };
-  document.addEventListener('mouseover', event => { const target = event.target.closest?.('.help[data-tip]'); if (target) place(target); });
-  document.addEventListener('mouseout', event => { const target = event.target.closest?.('.help[data-tip]'); if (target && !target.contains(event.relatedTarget)) hide(target); });
-  document.addEventListener('focusin', event => { const target = event.target.closest?.('.help[data-tip]'); if (target) place(target); });
-  document.addEventListener('focusout', event => { const target = event.target.closest?.('.help[data-tip]'); if (target) hide(target); });
-  document.addEventListener('scroll', () => hide(), true);
-})();
+  doc.addEventListener('mouseover', event => { const target = event.target.closest?.('.help[data-tip]'); if (target) place(target); });
+  doc.addEventListener('mouseout', event => { const target = event.target.closest?.('.help[data-tip]'); if (target && !target.contains(event.relatedTarget)) hide(target); });
+  doc.addEventListener('focusin', event => { const target = event.target.closest?.('.help[data-tip]'); if (target) place(target); });
+  doc.addEventListener('focusout', event => { const target = event.target.closest?.('.help[data-tip]'); if (target) hide(target); });
+  doc.addEventListener('scroll', () => hide(), true);
+}
+installViewerHelp();
 
 function help(text) {
   return el("span", { class: "help", tabindex: "0", role: "note", "aria-label": text, "data-tip": text, text: "?" });
@@ -815,13 +900,13 @@ function recall(layer) {
 }
 
 // The first of a cell layer's tables (its current one first) that has every column in *names*; the layer switches to it.
-async function cellTableWith(cells, names, onlyTable) {
+async function cellTableWith(cells, names, onlyTable, commit = true) {
   const ids = (onlyTable ? [onlyTable] : [cells.table, ...(cells.tables || []).map(t => t.id)]).filter((id, i, all) => id && all.indexOf(id) === i);
   for (const id of ids) {
     try {
       const found = await getJSON("/cells/" + cells.token + "/columns?t=" + encodeURIComponent(id));
       if (names.every(name => (found.columns || []).includes(name))) {
-        if (cells.table !== id) { cells.table = id; cells.columns = null; }
+        if (commit && cells.table !== id) { cells.table = id; cells.columns = null; }
         return id;
       }
     } catch (_) { /* the next table */ }

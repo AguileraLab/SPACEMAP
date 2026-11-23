@@ -178,7 +178,7 @@ on personal repositories and returns "not found" on organisation ones.
 | Job | Checks |
 | --- | --- |
 | Lint | `ruff` over `src` and `scripts` |
-| Tests | Python 3.10 with and without AI extras |
+| Tests | Python 3.10 with base, AI and Flow extras |
 | Release wheel | archive contents, installed GUI startup and imports without AI packages |
 | Frontend | rebuild matches the bundled heatmap assets |
 | Docker CPU | build the image; validate installed GUI, compiled operators, HTTP health and persistent volumes |

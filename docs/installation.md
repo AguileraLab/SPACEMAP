@@ -211,6 +211,10 @@ those optional configurations.
 
 ## Remote server or cluster
 
+For a read-only code checkout used by several accounts, see
+[shared installation](shared-installation.md). Each user runs a separate process
+and keeps personal settings and projects outside the shared code.
+
 Choose persistent locations with enough disk space:
 
 ```bash
@@ -308,3 +312,13 @@ Tests create temporary data and need no study images or model downloads.
 Optional AI/GPU tests skip when their requirements are absent. CI also checks
 release archives. See [Contributing](../CONTRIBUTING.md) for frontend builds
 and publishing steps.
+
+## Flow analysis extras
+
+For logicle/biexponential transforms and SVG/PDF figure export, install the optional Flow tools in the same environment:
+
+```bash
+python -m pip install -e ".[flow]"
+```
+
+Other Flow transforms remain available without this extra. CairoSVG may require the native Cairo library supplied by your operating system.

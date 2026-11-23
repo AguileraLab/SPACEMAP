@@ -154,8 +154,8 @@ def test_bad_pictures_are_refused_and_a_blind_model_is_said(studio, monkeypatch)
 
 
 def _job(root, kind, result, settings=None):
+    import os
     import uuid
-    from datetime import datetime, timezone
 
     from spacemap_workflows.leiden_job import write_json
 
@@ -165,9 +165,13 @@ def _job(root, kind, result, settings=None):
     write_json(folder / "request.json", {"project": str(root), "kind": kind, "settings": settings or {}})
     write_json(
         folder / "status.json",
-        {"id": job_id, "kind": kind, "status": "done", "progress": 1, "message": "", "result": result,
-         "started": datetime.now(timezone.utc).isoformat()},
+        {"id": job_id, "kind": kind, "status": "done", "progress": 1, "message": "", "result": result},
     )
+    # Fixtures finish within one filesystem clock tick. Make their history order
+    # explicit; otherwise a name save can sort before the clustering it names.
+    previous = max((p.stat().st_mtime_ns for p in folder.parent.iterdir() if p != folder and p.is_dir()), default=0)
+    stamp = max(folder.stat().st_mtime_ns, previous + 1)
+    os.utime(folder, ns=(stamp, stamp))
     return job_id
 
 
@@ -196,7 +200,7 @@ def test_the_assistant_names_clusters_from_the_results_whether_on_screen_or_not(
         root,
         "name_clusters",
         {"column": "phenotype_leiden"},
-        {"clusters_col": "phenotype_leiden_clusters", "names": {"Cluster 0": "T"}},
+        {"table": str(table), "cluster_job_id": job_id, "clusters_col": "phenotype_leiden_clusters", "names": {"Cluster 0": "T"}},
     )
     proposing = FakeModel(
         json.dumps(
@@ -225,7 +229,7 @@ def test_the_assistant_names_clusters_from_the_results_whether_on_screen_or_not(
         '"saved_names": {"Cluster 0": "T"}' in system
         and '"studio_page"' in system
         and '"typed": {"Cluster 1": "B?"}' in system
-    )
+    ), system[system.rfind('RESULTS'):]
 
 
 class FakeStreamer(FakeModel):

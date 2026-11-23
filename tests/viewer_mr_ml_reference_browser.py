@@ -22,7 +22,7 @@ def setup(root):
     chosen = {**mr_ml.DEFAULTS, 'markers':['M0','M1'], 'n_estimators':20, 'cpu_workers':2, 'enable_filter':False,
               'feature_weights':{'markers':1.,'morphology':1.,'compartments':0.}}
     mr_ml.cache_path(root).write_text(json.dumps(chosen))
-    train = {'table':str(table),'roi_column':'batch_id','label_column':'label','markers':['M0','M1'],
+    train = {'project_root':str(root),'table':str(table),'roi_column':'batch_id','label_column':'label','markers':['M0','M1'],
              'training_column':'phenotype_ref1','checked_only':False}
     train['revision'] = tasks.source_revision(train)
     reference_models.train(train,root/'model-training',lambda *args:None)
@@ -36,6 +36,7 @@ def setup(root):
             'kept':bool((values.loc[frame.phenotype_ref1.notna(), 'phenotype_checked'] == frame.loc[frame.phenotype_ref1.notna(), 'phenotype_ref1']).all()) if 'phenotype_checked' in values else None,
             'csv_columns':list(pd.read_csv(table, nrows=0).columns),
             'saved_scored':int(values['saved_model_score'].notna().sum()) if 'saved_model_score' in values else None,
+            'saved_labels':sorted(values['phenotype_saved_model'].dropna().unique().tolist()) if 'phenotype_saved_model' in values else [],
             'models':len(reference_models.available(table))})
     api.app.router.routes.append(Route('/mr-reference-test', check))
 
@@ -88,17 +89,29 @@ setTimeout(async()=>{try{
  assert(true,'Show result uses the filtered label column');
  await until(()=>button(jobs,'Write into the CSV'));
  window.confirm=()=>true;button(jobs,'Write into the CSV').click();
- await until(async()=>{check=await read();return check.csv_columns.includes('my_cell_score');});
+ // The CSV appears before its cached Parquet copy is published. Wait for both.
+ await until(async()=>{check=await read();return check.csv_columns.includes('my_cell_score')&&check.pending.length===0&&check.scored===10&&check.kept;});
  assert(check.csv_columns.includes('phenotype_predicted')&&check.csv_columns.includes('phenotype_checked'),'Jobs writes all three named columns into the CSV on request');
  assert(check.scored===10&&check.kept,'CSV commit preserves numeric scores and reference labels');
  input('MR-ML workflow').value='saved_model';input('MR-ML workflow').dispatchEvent(new Event('change'));
  const savedModel=input('Saved reference model');savedModel.value=savedModel.options[1].value;savedModel.dispatchEvent(new Event('change'));
+ await until(()=>input('Output name for A')&&input('Output name for B'));
+ for(const name of ['A','B']){const output=input('Output name for '+name);output.closest('details').open=true;output.value='Broad type';output.dispatchEvent(new Event('change'));}
  input('Keep existing reference labels').checked=false;
  input('MR-ML result column').value='phenotype_saved_model';input('MR-ML result column').dispatchEvent(new Event('input'));
  input('MR-ML score column').value='saved_model_score';input('MR-ML filtered column').value='phenotype_saved_filtered';
  button(document.querySelector('.studio-runbar'),'Run MR-ML').click();
  await until(async()=>{check=await read();return check.saved_scored===40;});
  assert(check.saved_scored===40&&check.models===2,'Saved-model workflow predicts every cohort cell without creating another model');
+ assert(check.saved_labels.join(',')==='Broad type','Fine model types are grouped only in the prediction output');
+ const scope=input('Phenotypes to predict');scope.closest('details').open=true;
+ await until(()=>input('Include in output A')&&input('Include in output B'));
+ assert(input('Include in output A').parentElement.title.includes('Saved validation F1'),'MR-ML lists phenotype support on the available features');
+ scope.value='selected';scope.dispatchEvent(new Event('change'));
+ input('Include in output B').click();
+ button(document.querySelector('.studio-runbar'),'Save settings').click();
+ await until(async()=>{const v=await(await fetch(api('/studio/browser-check/mrml_settings'))).json();return v.values.limit_phenotypes&&v.values.prediction_phenotypes.join(',')==='A';});
+ assert(true,'Phenotype selection persists without modifying the original model');
  const chosenModel=savedModel.value;
  window.dispatchEvent(new CustomEvent('studio-reference-method',{detail:{method:'mr_ml',column:'phenotype_ref1',model_id:chosenModel}}));
  await until(()=>document.querySelector('#studio-training')!==form&&document.querySelector('[aria-label="MR-ML workflow"]')?.value==='saved_model');

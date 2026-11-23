@@ -18,6 +18,7 @@ from .settings import read_config
 # Existing directory keys, with the usual layout as a fallback. No recursive
 # scans: large image/segmentation contents are never read to build the sidebar.
 LAYOUT = {
+    "review": ([], []),
     "tab0": ([], [("Project settings", (), ".")]),
     "tab1": (
         [("CODEX", ("batch_codex_dir",), "data/codex"), ("H&E", ("batch_he_dir",), "data/he")],
@@ -67,7 +68,8 @@ LAYOUT = {
         [("Phenotyping results", ("phenotyping_output_dir",), "outputs/phenotyping")],
     ),
     "tab8": (
-        [("Measurements", ("spatial_input_dir", "bc_output_dir"), "outputs/batch_corrected")],
+        [("Images", ("viz_roi_dir", "tab3_output_dir", "roi_output_dir"), "outputs/rois"),
+         ("Measurements", ("global_pheno_dir", "spatial_input_dir", "bc_output_dir"), "outputs/batch_corrected")],
         [("Spatial results", ("spatial_output_dir",), "outputs/spatial_analysis")],
     ),
     "tab9": (
@@ -152,7 +154,7 @@ def _files(folder, limit=10000):
 
 
 @lru_cache(maxsize=4)
-def _phenotyped(table: str, stamp: str) -> dict[str, list[str]]:
+def _phenotyped(table: str, stamp: str, roi_column="batch_id", single_image="") -> dict[str, list[str]]:
     """ROI name -> method columns (phenotype_*, not reference columns) with values for its cells.
 
     Phenotyping run in the classic tab leaves no Studio job, so without this
@@ -167,21 +169,17 @@ def _phenotyped(table: str, stamp: str) -> dict[str, list[str]]:
     columns = [c for c in dataio.columns(table) if c.casefold().startswith("phenotype_") and not is_reference_column(c)]
     if not columns:
         return {}
-    # With the labels applied, the result columns Studio's jobs saved beside the table are read too.
-    frame = dataio.load(table, columns=["batch_id", *columns])
-    rois, names = pd.factorize(frame["batch_id"].astype(str))
-    found = {str(name): [] for name in names}
+    if not roi_column and not single_image:
+        return {}
+    from . import phenotyping_overview
+    coverage = phenotyping_overview.results(table, suffix=None, roi_column=roi_column,
+                                            extra_columns=columns, single_roi=single_image)
+    found = {}
     for column in columns:
-        if column not in frame.columns:
-            continue
-        codes, values = pd.factorize(frame[column])  # blanks (NaN) get -1
-        blank = np.array([not str(value).strip() for value in values], dtype=bool)
-        filled = codes >= 0
-        if blank.any():
-            filled &= ~blank[np.clip(codes, 0, None)]
-        for roi in np.flatnonzero(np.bincount(rois[filled], minlength=len(names))):
-            found[str(names[roi])].append(column)
-    return {roi: methods for roi, methods in found.items() if methods}
+        for roi, count in coverage.get(column, {}).items():
+            if count:
+                found.setdefault(roi, []).append(column)
+    return found
 
 
 def _table_stamp(table):
@@ -315,7 +313,10 @@ def work_list(channel, step):
             row["image"] = (listed or candidates)[-1]
     if step == "tab7" and project.get("unified") and Path(project["unified"]).is_file():
         try:
-            methods = _phenotyped(str(project["unified"]), _table_stamp(project["unified"]))
+            from . import phenotyping_inputs
+            table = str(project["unified"])
+            roles = phenotyping_inputs.column_roles(root, table)
+            methods = _phenotyped(table, _table_stamp(table), roles["roi"], phenotyping_inputs.single_image(root, table))
         except (OSError, ValueError, KeyError):
             methods = {}
         for row in rows.values():
@@ -422,6 +423,12 @@ def overview(channel):
     """One state per step for the Studio rail: done, partial or none."""
     states = {}
     for step, *_ in STEPS:
+        if step == 'review':
+            from .review_store import step_state
+            from spacemap_gui.viewer import registry
+            root = (registry.session_project(channel) or {}).get('root')
+            states[step] = step_state(root) if root else 'none'
+            continue
         try:
             items = work_list(channel, step)["items"]
         except (ValueError, OSError):

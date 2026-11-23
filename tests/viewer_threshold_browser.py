@@ -63,7 +63,7 @@ setTimeout(async () => {
       'Annotation settings and Auto share one class request');
     change(selects()[0], 'Otsu');
     change(selects()[1], Array.from(selects()[1].options).find(o => o.textContent.endsWith(': tissue')).value);
-    image.inputs[0].row.querySelector('button').click();
+    image.inputs[0].row.querySelector('[aria-label="Auto levels for M0"]').click();
     await until(() => !image.autoRun);
     assert(channel.low !== original, 'Auto changed minimum');
     assert(image.autoMessage.includes('pixels'), 'Measurement provenance visible');
@@ -433,7 +433,7 @@ setTimeout(async () => {
 # The viewer's parts share their names on the page; this hands the checks what they need.
 EXPOSE = "<script>performance.setResourceTimingBufferSize(100000);window.__state=state;window.__labelSaves=labelSaves;window.__restoreLabelDrafts=restoreLabelDrafts;window.__init=init;</script>"
 
-def main(driver=DRIVER, studio=False, timeout=75, setup=None, screenshot=True, pixel_ratio=None, compress=False):
+def main(driver=DRIVER, studio=False, timeout=75, setup=None, screenshot=True, pixel_ratio=None, compress=False, browser_host="127.0.0.1", allow_popups=False, capture=None, clipboard=False, headless=True):
     if not shutil.which("firefox"):
         raise SystemExit("Firefox is required for this browser check.")
     with tempfile.TemporaryDirectory(prefix="spacemap-browser-") as folder:
@@ -593,7 +593,10 @@ def main(driver=DRIVER, studio=False, timeout=75, setup=None, screenshot=True, p
             return Response()
 
         async def slow(request):
-            await asyncio.sleep(max(55, timeout - 10))
+            if capture:
+                await asyncio.to_thread(done.wait, timeout)
+            else:
+                await asyncio.sleep(max(55, timeout - 10))
             return Response(b"", media_type="image/gif")
 
         app = Starlette(
@@ -618,20 +621,23 @@ def main(driver=DRIVER, studio=False, timeout=75, setup=None, screenshot=True, p
         profile.mkdir()
         (profile / "user.js").write_text(
             'user_pref("network.proxy.type", 0);\nuser_pref("browser.shell.checkDefaultBrowser", false);\n'
+            + ('user_pref("dom.disable_open_during_load", false);\n' if allow_popups else '')
+            + ('user_pref("dom.events.testing.asyncClipboard", true);\n' if clipboard else '')
+            + (f'user_pref("network.dns.localDomains", {json.dumps(browser_host)});\n' if browser_host != '127.0.0.1' else '')
             + (f'user_pref("layout.css.devPixelsPerPx", "{float(pixel_ratio)}");\n' if pixel_ratio is not None else '')
         )
         with (root / "firefox.log").open("w") as log:
             process = subprocess.Popen(
                 [
                     "firefox",
-                    "--headless",
+                    *(["--headless"] if headless else []),
                     "--no-remote",
                     "--profile",
                     str(root / "firefox"),
                     *(["--screenshot", str(root / "viewer.png")] if screenshot else []),
                     "--window-size",
                     "1600,1100",
-                    f"http://127.0.0.1:{port}{api.MOUNT_PATH}/window/index.html?session=browser-check"
+                    f"http://{browser_host}:{port}{api.MOUNT_PATH}/window/index.html?session=browser-check"
                     + ("&studio=1&step=tab7" if studio else ""),
                 ],
                 stdout=log,
@@ -642,6 +648,9 @@ def main(driver=DRIVER, studio=False, timeout=75, setup=None, screenshot=True, p
                     raise AssertionError("Browser timed out: " + (root / "firefox.log").read_text())
                 assert results and "ok" in results[0], results
                 print(json.dumps(results), flush=True)
+                if capture:
+                    process.wait(timeout=30)
+                    shutil.copyfile(root / "viewer.png", capture)
             finally:
                 process.terminate()
                 try:

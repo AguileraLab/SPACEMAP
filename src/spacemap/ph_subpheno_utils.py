@@ -323,32 +323,51 @@ def build_feature_matrix(
     *,
     batch_col: str | None = None,
     clip: float | None = 5.0,
+    normalization: str = "zscore",
+    return_info: bool = False,
 ) -> np.ndarray:
     """Standardise the chosen markers for clustering.
 
-    Values are z-scored within batch when a batch column is given, so a residual
-    per-batch offset cannot masquerade as a subcluster. No inverse-arcsinh is
-    applied: re-expanding to the raw scale restores the heavy tail and lets a
-    handful of bright cells dominate the distance metric, which is a display
-    choice rather than a modelling one.
+    Scale transformed measurements by mean/SD or median/IQR, optionally within
+    a metadata group. Group scaling removes between-group shifts, which can
+    include biology. Missing values use the group center. With no scaling,
+    impute the group median and do not clip. ``return_info`` includes fitted
+    centers/scales for reproducibility.
     """
-    values = subset[marker_cols].astype("float32")
-
-    if batch_col and batch_col in subset.columns:
+    if normalization not in ("zscore", "robust", "none"):
+        raise ValueError("Choose Z-score, median/IQR or no normalization.")
+    values = subset[marker_cols].astype("float64").replace([np.inf, -np.inf], np.nan)
+    if batch_col and normalization != "none":
+        if batch_col not in subset or subset[batch_col].isna().any() or subset[batch_col].astype(str).str.strip().eq('').any():
+            raise ValueError("Selected cells have missing normalization groups. Choose another column or All selected cells.")
         keys = subset[batch_col].astype(str).values
-        grouped = values.groupby(keys)
-        centred = values - grouped.transform("mean")
-        spread = grouped.transform("std").replace(0, np.nan)
-        scaled = centred / spread
+        if len(set(keys)) > 500:
+            raise ValueError("Too many normalization groups. Choose Slide or ROI, not cell IDs.")
     else:
-        spread = values.std().replace(0, np.nan)
-        scaled = (values - values.mean()) / spread
-
-    matrix = scaled.to_numpy(dtype=np.float32)
-    matrix = np.nan_to_num(matrix, nan=0.0, posinf=0.0, neginf=0.0)
-    if clip:
+        keys = np.repeat("All selected cells", len(values))
+    matrix = np.zeros(values.shape, dtype=np.float32)
+    fitted = []
+    for key, positions in values.groupby(keys, sort=False).indices.items():
+        part = values.iloc[positions]
+        center = part.mean() if normalization == "zscore" else part.median()
+        spread = part.std() if normalization == "zscore" else part.quantile(.75) - part.quantile(.25)
+        # An IQR of zero can still contain a rare, bright subset; retain it using SD.
+        fallback = spread.le(0) | spread.isna()
+        if normalization == "robust":
+            spread = spread.mask(fallback, part.std())
+        spread = spread.where(spread.gt(0), 1.)
+        scaled = (part - center) / spread if normalization != "none" else part.fillna(center)
+        matrix[positions] = scaled.fillna(0).to_numpy(dtype=np.float32)
+        if return_info:
+            for marker in marker_cols:
+                fitted.append({"group": str(key), "marker": marker,
+                    "center": float(center[marker]) if np.isfinite(center[marker]) else None,
+                    "scale": float(spread[marker]) if normalization != "none" else None,
+                    "finite": int(part[marker].notna().sum()), "missing": int(part[marker].isna().sum()),
+                    "iqr_fallback": bool(normalization == "robust" and fallback[marker])})
+    if clip and normalization != "none":
         np.clip(matrix, -abs(clip), abs(clip), out=matrix)
-    return matrix
+    return (matrix, fitted) if return_info else matrix
 
 
 def _pca(matrix: np.ndarray, n_components: int, use_gpu: bool, seed: int) -> np.ndarray:

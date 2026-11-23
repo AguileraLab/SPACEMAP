@@ -40,7 +40,7 @@ DEFAULTS = {
     "min_training_cells": 50,
     "use_z_normalization": False,
     "batch_normalization_col": "batch_id",
-    "enable_filter": True,
+    "enable_filter": False,
     "filter_col": "tissue",
     "filter_val": "1",
     "validation_ground_truth_col": "",

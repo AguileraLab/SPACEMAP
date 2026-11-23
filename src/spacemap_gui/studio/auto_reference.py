@@ -12,7 +12,7 @@ import time
 from spacemap.viewer import reference
 from spacemap.viewer.sources import fingerprint
 from spacemap_workflows.leiden_job import write_json
-from . import jobs, manual_reference, tasks
+from . import jobs, manual_reference, reference_setup, tasks
 from .settings import project_lock
 
 QUIET_SECONDS = 15
@@ -31,8 +31,11 @@ def _read(root):
 def _context(channel):
     from spacemap_gui.viewer import registry
     project = registry.session_project(channel) or {}
-    table, _, _ = manual_reference.context(channel)
-    key = hashlib.sha256(str(Path(table).resolve()).encode()).hexdigest()
+    table, keys, _ = manual_reference.context(channel)
+    scope = str(Path(table).resolve())
+    if keys['roi_column']:
+        scope += '\nimage:' + manual_reference.training_image(channel)
+    key = hashlib.sha256(scope.encode()).hexdigest()
     return project, key
 
 
@@ -71,6 +74,19 @@ def configure(channel, column, enabled, checked_only=False):
         return _view(item)
 
 
+def pause_for_folder(root):
+    """Do not let an old image's automatic job restore a discarded model."""
+    if not _path(root).exists():
+        return
+    with project_lock(root):
+        values = _read(root)
+        for item in values.values():
+            item.update(enabled=False, state='off', message='Models folder changed. Auto-train is off.')
+            item.pop('completed', None)
+            item.pop('job_id', None)
+        write_json(_path(root), values)
+
+
 def status(channel):
     project, key = _context(channel)
     return _view(_read(project["root"]).get(key, {}))
@@ -78,7 +94,9 @@ def status(channel):
 
 def _stamp(settings):
     reviews = reference.path_for(settings["table"])
-    return tasks.source_revision(settings) + ":" + (fingerprint(reviews) if reviews.exists() else "")
+    policy = reference_setup.phenotype_policy(settings['project_root']) if settings.get('project_root') else settings
+    return (tasks.source_revision(settings) + ":" + (fingerprint(reviews) if reviews.exists() else "") +
+            ':' + json.dumps(policy.get('excluded_training_phenotypes', []), sort_keys=True))
 
 
 def tick(channel, now=None):
@@ -109,7 +127,10 @@ def tick(channel, now=None):
         elif stamp == item.get("attempted"):
             if own and own["status"] == "done":
                 waiting = (own.get("result") or {}).get("waiting")
-                item.update(state="waiting" if waiting else "ready", message=waiting or "Suggestions are up to date.")
+                errors = [model['export_error'] for model in (own.get('result') or {}).get('models', [])
+                          if model.get('export_error')]
+                item.update(state="waiting" if waiting else "error" if errors else "ready",
+                            message=waiting or (errors[0] if errors else "Model saved. Suggestions are up to date."))
             elif own and own["status"] in {"failed", "cancelled", "stopped"}:
                 item.update(state="error", message=own.get("message") or "Training stopped. Edit labels or switch Auto-train off and on to retry.")
         elif now - item.get("dirty_since", now) < QUIET_SECONDS or now - item.get("started", 0) < MIN_INTERVAL:
@@ -117,8 +138,16 @@ def tick(channel, now=None):
         else:
             # No full cell-table scan in the polling path. The isolated worker
             # checks example counts, flags and missing values before fitting.
+            # Use the project's CURRENT model: manual training on other images
+            # or an earlier automatic update may have extended the original.
+            # This is read at launch, not used as a trigger; saving a model alone
+            # must not launch an endless sequence of automatic fits.
+            settings.update(reference_setup.training(root))
             settings.update(revision=tasks.source_revision(settings), auto_train=True)
+            item['settings'] = settings
             try:
+                from . import reference_examples
+                reference_examples.require_reusable(settings)
                 job = jobs.start(root, "train_reference_model", settings)
                 item.update(job_id=job["id"], attempted=stamp, started=now, state="training", message="Updating suggestions…")
             except ValueError as exc:
