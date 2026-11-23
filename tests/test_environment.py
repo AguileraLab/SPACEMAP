@@ -7,9 +7,22 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from importlib.util import find_spec
 from pathlib import Path
 
+import pytest
+
 SOURCE = Path(__file__).resolve().parents[1] / "src"
+
+# Only these two checks start the optional model server. The other environment
+# checks must still run for base and Flow installs. Check presence without
+# importing the model libraries, so the subprocess still tests import order.
+# An installed but broken dependency must fail, rather than silently skip.
+_MODEL_SERVER_MODULES = ("torch", "transformers", "fastapi", "uvicorn", "pydantic")
+_requires_model_server = pytest.mark.skipif(
+    any(find_spec(name) is None for name in _MODEL_SERVER_MODULES),
+    reason="Local model-server checks require the optional 'ai' extra",
+)
 
 
 def test_spacemap_keeps_the_built_in_pairwise():
@@ -19,6 +32,7 @@ def test_spacemap_keeps_the_built_in_pairwise():
     assert itertools.pairwise is built_in
 
 
+@_requires_model_server
 def test_the_model_server_loads_after_spacemap():
     # Replacing itertools.pairwise made torch's compiler refuse to load, and with
     # it transformers 5 and the assistant's model server. Run in a fresh process,
@@ -82,6 +96,7 @@ def test_the_chat_asks_for_the_model_under_the_name_the_server_was_started_with(
     assert model_client.local_model_id() == command[command.index("--model-id") + 1]
 
 
+@_requires_model_server
 def test_thinking_markers_never_reach_the_answer():
     from spacemap_assistant.model_service.server import _AnswerFilter, clean_answer
 
