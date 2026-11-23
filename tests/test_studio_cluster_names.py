@@ -93,3 +93,37 @@ def test_reference_model_reads_marker_rows_only_for_its_sample(table, monkeypatc
     monkeypatch.setattr(measured, "take", track_take)
     found = cluster_names.suggest(table, "phenotype_leiden_clusters", "phenotype_ref1", ["CD3", "PanCK", "CD68"])
     assert found["by_markers"] and reads and reads[0][0] <= 45
+
+
+def test_name_recovery_stops_at_latest_writer_without_preparing_old_profiles(tmp_path, monkeypatch):
+    import json
+    import os
+    from spacemap_gui.studio import cluster_profiles, jobs
+
+    def record(number, kind, result, settings=None):
+        folder = jobs.root(tmp_path) / f"{number:032x}"
+        folder.mkdir(parents=True)
+        (folder / "status.json").write_text(json.dumps({
+            "id": folder.name, "kind": kind, "status": "done", "result": result,
+        }))
+        (folder / "request.json").write_text(json.dumps({"settings": settings or {}}))
+        os.utime(folder, (number, number))
+        return folder
+
+    table, column = str(tmp_path / "cells.parquet"), "phenotype_sub_clusters"
+    old = record(1, "leiden", {})
+    # Unrelated older history is not read at all once the owner is found.
+    (old / "status.json").write_text("unreadable unrelated history")
+    run = record(2, "subphenotype", {"table": table, "column": column, "clusters": [{"name": "T_0"}]})
+    named = record(3, "name_clusters", {"column": "phenotype_sub"}, {
+        "table": table, "clusters_col": column, "cluster_job_id": run.name, "names": {"T_0": "CD8"},
+    })
+    def unexpected(*args, **kwargs):
+        pytest.fail("Restoring names must not calculate heatmaps from historical jobs")
+    monkeypatch.setattr(cluster_profiles, "for_job", unexpected)
+    assert cluster_names.saved_names(tmp_path, table, column, cluster_job_id=run.name) == {
+        "names": {"T_0": "CD8"}, "column": "phenotype_sub", "job_id": named.name,
+    }
+    assert cluster_names.owns_output(tmp_path, table, run.name, "phenotype_sub")
+    rerun = record(4, "subphenotype", {"table": table, "column": column, "clusters": [{"name": "T_0"}]})
+    assert cluster_names.saved_names(tmp_path, table, column, cluster_job_id=rerun.name)["names"] == {}

@@ -1,5 +1,8 @@
 """Match ROI images to measurement tables without turning table suffixes into samples."""
 
+from . import project_files
+
+
 from pathlib import Path
 
 from spacemap.viewer.catalog import sample_of
@@ -20,7 +23,7 @@ def images(root, mappings):
     folder = image_folder(root, mappings)
     found = {}
     for path in sorted(folder.iterdir()) if folder.is_dir() else []:
-        if path.is_file() and not path.name.startswith(".") and path.name.lower().endswith(IMAGE_SUFFIXES):
+        if path.is_file() and not project_files.excluded(path, root) and not path.name.startswith(".") and path.name.lower().endswith(IMAGE_SUFFIXES):
             roi = sample_of(path.name)
             if roi in found:
                 raise ValueError(f"Two ROI images have the same name {roi}. Choose a folder with one image per ROI.")
@@ -33,7 +36,7 @@ def table_index(folder):
     folder = Path(folder)
     logical = {}
     for path in sorted(folder.iterdir()) if folder.is_dir() else []:
-        if not path.is_file() or path.name.startswith(".") or path.suffix.lower() not in (".csv", ".parquet"):
+        if not path.is_file() or project_files.excluded(path) or path.name.startswith(".") or path.suffix.lower() not in (".csv", ".parquet"):
             continue
         if path.name.lower().endswith(".csv.parquet"):
             if path.with_suffix("").is_file():

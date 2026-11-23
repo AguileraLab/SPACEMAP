@@ -18,8 +18,8 @@ acquisitions through to spatial statistics and publication figures.
 
 Built by the Aguilera Lab at UT Southwestern. The accompanying manuscript,
 *"Resolving phenotyping discordance with SPACEMAP, an integrated machine
-learning framework"*, is on bioRxiv (`10.1101/2025.11.27.690631`) and was
-submitted to Nature Communications.
+learning framework"*, is available as a bioRxiv preprint
+(`10.1101/2025.11.27.690631`).
 
 ### The pipeline, tab by tab
 

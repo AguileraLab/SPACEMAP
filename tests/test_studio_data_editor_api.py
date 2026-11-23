@@ -5,6 +5,33 @@ from spacemap_gui.viewer import api
 from test_studio_commands import setup  # noqa: F401
 
 
+def test_delete_reference_column_affects_every_image_but_keeps_other_results(setup):
+    from spacemap import dataio, labels, pending_columns
+
+    channel, table, _, _ = setup
+    frame = pd.read_csv(table)
+    frame['cell_id'] = range(len(frame))
+    frame.to_csv(table, index=False)
+    labels.append(table, [{'row':0, 'column':'phenotype_ref2', 'value':'A'},
+                          {'row':4, 'column':'phenotype_ref2', 'value':'B'}])
+    pending_columns.save(table, {'phenotype_keep':['Kept'] * len(frame)},
+                         anchor_column='cell_id', anchor_values=frame.cell_id)
+    route = f'/studio/{channel}/data/'
+    one_image = {'source':{'combined':True}, 'rows':{'this_image':True,'column':'batch_id','value':'P11_roi_2'}}
+    with TestClient(api.app) as client:
+        before = client.post(route+'query', json=one_image).json()
+        assert before['matched'] == 4
+        result = client.post(route+'mutate', json={**one_image, 'operation':{'kind':'delete_columns', 'columns':['phenotype_ref2']}})
+        assert result.status_code == 200, result.text
+        whole = client.post(route+'query', json={**one_image, 'rows':{'this_image':False}}).json()
+        assert whole['matched'] == 5 and 'phenotype_ref2' not in whole['columns']
+        saved = client.post(route+'save', json={**one_image, 'mode':'overwrite', 'revision':whole['revision']})
+        assert saved.status_code == 200, saved.text
+    result = dataio.load(table)
+    assert len(result) == 5 and 'phenotype_ref2' not in dataio.columns(table)
+    assert result.phenotype_keep.eq('Kept').all()
+
+
 def test_combined_table_edit_save_and_identity_guard(setup):
     channel, table, _, _ = setup
     base = {'source': {'combined': True}, 'rows': {'this_image': False}}

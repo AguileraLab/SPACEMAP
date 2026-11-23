@@ -46,7 +46,7 @@ FOLDERS = {
         ("Phenotyping results", "out", ("phenotyping_output_dir",), ("phenotyping_output_dir",), "outputs/phenotyping", ""),
     ],
     "tab8": [
-        ("Measurements", "in", ("spatial_input_dir",), ("spatial_input_dir", "bc_output_dir"), "outputs/batch_corrected", ""),
+        ("Measurements", "in", (), ("global_pheno_dir", "bc_output_dir"), "outputs/batch_corrected", "Uses the cell tables selected and paired in Phenotyping."),
         ("Spatial results", "out", ("spatial_output_dir",), ("spatial_output_dir",), "outputs/spatial_analysis", ""),
     ],
     "tab9": [

@@ -18,6 +18,7 @@ import base64
 import binascii
 import io
 import json
+import queue
 import re
 import threading
 import time
@@ -38,6 +39,8 @@ from transformers import (
     AutoTokenizer,
     BitsAndBytesConfig,
     TextIteratorStreamer,
+    StoppingCriteria,
+    StoppingCriteriaList,
 )
 
 try:  # Present only in transformers builds that ship the unified multimodal API.
@@ -55,6 +58,8 @@ MAX_IMAGE_BYTES = 20 * 1024 * 1024
 MAX_NEW_TOKENS = 8192
 LOAD_LOCK = threading.Lock()
 GENERATE_LOCK = threading.Lock()
+STREAM_IDLE_SECONDS = 120.0
+STREAM_POLL_SECONDS = 1.0
 
 
 class Message(BaseModel):
@@ -406,58 +411,97 @@ def _complete(request: ChatRequest) -> tuple[str, int, int]:
         return text, input_len, completion_tokens
 
 
+class _StopRequested(StoppingCriteria):
+    def __init__(self, event: threading.Event):
+        self.event = event
+
+    def __call__(self, input_ids, scores, **kwargs):
+        return self.event.is_set()
+
+
 def _stream(request: ChatRequest, completion_id: str, created: int) -> Iterator[str]:
-    with GENERATE_LOCK, torch.inference_mode():
-        inputs, _ = _generation_inputs(request)
-        handler = _input_handler()
-        streamer = TextIteratorStreamer(
-            getattr(handler, "tokenizer", handler),
-            skip_prompt=True,
-            skip_special_tokens=True,
-            timeout=120.0,
-        )
-        kwargs = _generation_kwargs(request, inputs)
-        kwargs["streamer"] = streamer
-        error: list[BaseException] = []
+    handler = _input_handler()
+    streamer = TextIteratorStreamer(getattr(handler, "tokenizer", handler),
+        skip_prompt=True, skip_special_tokens=True, timeout=STREAM_POLL_SECONDS)
+    cancelled = threading.Event()
+    error: list[BaseException] = []
 
-        def generate() -> None:
-            try:
+    def generate() -> None:
+        acquired = False
+        try:
+            # A timed-out generation retains ownership until it actually exits.
+            # A following request must never run concurrently on the same model.
+            while not cancelled.is_set():
+                if GENERATE_LOCK.acquire(timeout=STREAM_POLL_SECONDS):
+                    acquired = True
+                    break
+            if cancelled.is_set():
+                return
+            with torch.inference_mode():
+                inputs, _ = _generation_inputs(request)
+                if cancelled.is_set():
+                    return
+                kwargs = _generation_kwargs(request, inputs)
+                kwargs['streamer'] = streamer
+                kwargs['stopping_criteria'] = StoppingCriteriaList([
+                    *(kwargs.get('stopping_criteria') or []), _StopRequested(cancelled)])
                 STATE.model.generate(**kwargs)
-            except BaseException as exc:  # relayed through the stream
-                error.append(exc)
+        except BaseException as exc:
+            error.append(exc)
+        finally:
+            if acquired:
+                GENERATE_LOCK.release()
+            streamer.end()  # Wake the reader even when generation raises before producing a token.
 
-        thread = threading.Thread(target=generate, daemon=True)
-        thread.start()
-        answer = _AnswerFilter()
+    threading.Thread(target=generate, daemon=True).start()
+    answer = _AnswerFilter()
+    last_token = time.monotonic()
+    last_heartbeat = last_token
 
-        def pieces() -> Iterator[str]:
-            for piece in streamer:
-                yield answer.feed(piece)
-            yield answer.flush()
+    def event(text: str) -> str:
+        return "data: " + json.dumps({'id': completion_id, 'object': 'chat.completion.chunk',
+            'created': created, 'model': MODEL_ID,
+            'choices': [{'index': 0, 'delta': {'content': text}, 'finish_reason': None}]}, ensure_ascii=False) + "\n\n"
 
-        for token in pieces():
-            if not token:
+    try:
+        while True:
+            try:
+                piece = next(streamer)
+            except queue.Empty:
+                if time.monotonic() - last_token >= STREAM_IDLE_SECONDS:
+                    cancelled.set()
+                    yield 'data: ' + json.dumps({'error':
+                        f'The local model produced no new tokens for {STREAM_IDLE_SECONDS:g} seconds. '
+                        'Cancellation requested. Try fewer clusters; if this repeats, stop and restart the model in AI setup.'}) + '\n\n'
+                    yield 'data: [DONE]\n\n'
+                    return
+                # Keep the connection responsive while queued or preparing inputs.
+                yield ': waiting for model tokens\n\n'
                 continue
-            chunk = {
-                "id": completion_id,
-                "object": "chat.completion.chunk",
-                "created": created,
-                "model": MODEL_ID,
-                "choices": [{"index": 0, "delta": {"content": token}, "finish_reason": None}],
-            }
-            yield "data: " + json.dumps(chunk, ensure_ascii=False) + "\n\n"
-        thread.join()
+            except StopIteration:
+                break
+            last_token = time.monotonic()
+            token = answer.feed(piece)
+            if token:
+                yield event(token)
+            elif last_token - last_heartbeat >= STREAM_POLL_SECONDS:
+                yield ': generating model tokens\n\n'
+                last_heartbeat = last_token
         if error:
-            yield "data: " + json.dumps({"error": str(error[0])}) + "\n\n"
-        final = {
-            "id": completion_id,
-            "object": "chat.completion.chunk",
-            "created": created,
-            "model": MODEL_ID,
-            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
-        }
-        yield "data: " + json.dumps(final) + "\n\n"
-        yield "data: [DONE]\n\n"
+            detail = ('The GPU ran out of memory. Stop the model and use a lower-memory mode in AI setup.'
+                      if isinstance(error[0], torch.cuda.OutOfMemoryError) else
+                      'Local model generation failed: ' + str(error[0])[:500])
+            yield 'data: ' + json.dumps({'error': detail}) + '\n\n'
+        else:
+            text = answer.flush()
+            if text:
+                yield event(text)
+            yield 'data: ' + json.dumps({'id': completion_id, 'object': 'chat.completion.chunk',
+                'created': created, 'model': MODEL_ID,
+                'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}]}) + '\n\n'
+        yield 'data: [DONE]\n\n'
+    finally:
+        cancelled.set()
 
 
 def create_app(precision: str) -> FastAPI:

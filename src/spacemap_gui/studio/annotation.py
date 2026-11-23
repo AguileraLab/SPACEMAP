@@ -9,6 +9,9 @@ annotation the later steps build on) and
 session; tests pin the names.
 """
 
+from . import project_files
+
+
 from pathlib import Path
 from functools import lru_cache
 import math
@@ -99,7 +102,7 @@ def legacy_files(main):
         exports = set(json.loads((main / "studio_export" / "named.json").read_text()))
     except (OSError, ValueError, TypeError):
         exports = set()
-    found = [p for p in main.iterdir() if p.is_file() and p.name.endswith((".geojson", ".json")) and not p.name.startswith(".")
+    found = [p for p in main.iterdir() if p.is_file() and not project_files.excluded(p) and p.name.endswith((".geojson", ".json")) and not p.name.startswith(".")
              and p.name not in exports]
     found += [main / name for name in (INTERMEDIATE, "studio_history") if (main / name).is_dir()]
     return sorted(found)
@@ -355,7 +358,7 @@ def images_plan(root, mappings, config):
     from . import pieces, artifact_learning
 
     places = all_folders(root, mappings)
-    names = sorted(p.name for p in places["images"].iterdir() if p.is_file() and p.name.lower().endswith(IMAGE_EXTENSIONS)) \
+    names = sorted(p.name for p in places["images"].iterdir() if p.is_file() and not project_files.excluded(p, root) and p.name.lower().endswith(IMAGE_EXTENSIONS)) \
         if places["images"].is_dir() else []
     output, rows = places["output"], []
     for name in names:

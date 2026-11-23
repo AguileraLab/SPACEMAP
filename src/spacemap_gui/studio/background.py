@@ -6,6 +6,9 @@ Levels are saved in the file and layout Tab 2 writes and RESOLVE reads
 ``subtract_background_image``.
 """
 
+from . import project_files
+
+
 from pathlib import Path
 
 IMAGE_SUFFIXES = (".ome.tiff", ".ome.tif", ".tiff", ".tif")
@@ -219,7 +222,7 @@ def images_plan(root, mappings, config):
     matches = _saved(config, MATCHES_KEY, {}) or {}
     chosen_classes = _saved(config, CLASSES_KEY, {}) or {}
     rows = []
-    names = sorted(p.name for p in places["images"].iterdir() if p.is_file() and _is_image(p.name)) if places["images"].is_dir() else []
+    names = sorted(p.name for p in places["images"].iterdir() if p.is_file() and not project_files.excluded(p, root) and _is_image(p.name)) if places["images"].is_dir() else []
     for name in names:
         annotation = annotation_for(places["annotations"], name, matches.get(name))
         classes = classes_of(annotation) if annotation else []

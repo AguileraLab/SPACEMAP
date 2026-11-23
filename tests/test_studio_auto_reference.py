@@ -108,6 +108,61 @@ def test_switching_training_source_does_not_activate_an_old_run(queue):
     assert runs[-1]["settings"]["training_column"] == "phenotype_leiden"
 
 
+def test_next_auto_update_extends_current_project_model_without_looping(queue, monkeypatch):
+    from spacemap_gui.studio import reference_examples
+    monkeypatch.setattr(reference_examples, 'require_reusable', lambda settings: None)
+    _, stamp, runs, _ = queue
+    active = ['original']
+    monkeypatch.setattr(auto.reference_setup, 'training', lambda root: {
+        'base_model_id': active[0], 'include_saved_examples': True})
+    auto.configure('x', 'phenotype_ref1', True)
+    auto.tick('x', 100)
+    auto.tick('x', 116)
+    assert runs[0]['settings']['base_model_id'] == 'original'
+    runs[0].update(status='done', result={'models': [{'model_id': 'updated'}]})
+    active[0] = 'updated'
+    auto.tick('x', 180)
+    assert len(runs) == 1  # Finishing training alone does not retrain again.
+    # A different image or manual multi-image training can advance the model.
+    active[0] = 'four-image-version'
+    stamp[0] = 'new-labels'
+    auto.tick('x', 181)
+    auto.tick('x', 197)
+    assert len(runs) == 2
+    assert runs[-1]['settings']['base_model_id'] == 'four-image-version'
+    assert runs[-1]['settings']['include_saved_examples']
+
+
+def test_auto_preflight_does_not_launch_failed_jobs_and_recovers(queue, monkeypatch):
+    from spacemap_gui.studio import reference_examples
+    _, stamp, runs, _ = queue
+    def unavailable(settings):
+        raise reference_examples.MissingTrainingExamples(reference_examples.MISSING_EXAMPLES)
+    monkeypatch.setattr(reference_examples, 'require_reusable', unavailable)
+    auto.configure('x', 'phenotype_ref1', True)
+    auto.tick('x', 100)
+    assert 'Old training examples unavailable' in auto.tick('x', 116)['message']
+    stamp[0] = 'more-labels'
+    auto.tick('x', 120)
+    auto.tick('x', 140)
+    assert not runs
+    monkeypatch.setattr(reference_examples, 'require_reusable', lambda settings: None)
+    assert auto.tick('x', 150)['state'] == 'training'
+    assert len(runs) == 1
+
+
+def test_auto_reports_export_failure_instead_of_claiming_model_is_saved(queue):
+    _, _, runs, _ = queue
+    auto.configure('x', 'phenotype_ref1', True)
+    auto.tick('x', 100)
+    auto.tick('x', 116)
+    runs[0].update(status='done', result={'models': [{'model_id': 'local',
+        'export_error': 'Model saved locally. Could not copy to Models folder: quota exceeded'}]})
+    view = auto.tick('x', 200)
+    assert view['state'] == 'error' and 'quota exceeded' in view['message']
+    assert len(runs) == 1
+
+
 def test_auto_model_survives_new_labels_during_fit(training):  # noqa: F811
     from spacemap.viewer import reference
     table, settings, root = training

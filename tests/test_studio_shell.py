@@ -22,7 +22,8 @@ def session(tmp_path, monkeypatch):
 def test_shell_metadata_is_safe_and_does_not_mark_a_window_open(session):
     result = shell.context(session, "/prefix")
     assert result["project"] == "study" and result["step"] == "tab7"
-    assert len(result["steps"]) == 11
+    assert len(result["steps"]) == 12
+    assert result["steps"][-1]["id"] == "review"
     assert result["steps"][8]["classic"] == "/prefix/phenotyping"  # Cell tagging (6) comes before Batch correction (7)
     assert not registry.window_open(session)
     assert "root" not in result and "mappings" not in result
@@ -64,5 +65,8 @@ def test_launcher_preserves_existing_view_and_follows_project_changes(session, m
 
 def test_every_classic_step_still_exists():
     app = (Path(__file__).resolve().parents[1] / "src/spacemap_gui/app.py").read_text()
-    for _, _, route, _ in shell.STEPS:
+    for key, _, route, _ in shell.STEPS:
+        if key == "review":
+            assert route == ""  # Studio-only review workspace.
+            continue
         assert f'url_path="{route}"' in app

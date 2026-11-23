@@ -79,7 +79,7 @@ setTimeout(async()=>{try{
  image.inputs[0].row.querySelector('.cname').click();
  await until(()=>image.histogramHolder.querySelector('.hist canvas')&&image.histogramHolder.textContent.includes('full intensity range'));
  assert(image.histogramHolder.querySelector('[aria-label="Image histogram display scale"]').value==='Log10','Image Layer reuses the benchmark X axis');
- assert(image.histogramHolder.querySelector('[aria-label="Image histogram population"]').value===image.autoScope,'Image Layer starts with the same annotation population as Auto and the benchmark');
+ assert(image.histogramHolder.querySelector('[aria-label="Image histogram population"]').value==='', 'Image histogram starts on Whole image independently of Auto and the benchmark');
  change(image.histogramHolder.querySelector('[aria-label="Image histogram display scale"]'),'Linear');
  await until(()=>box.querySelector('svg')?.textContent.includes('Linear intensity (raw)')&&!button(box,'Compare thresholds').disabled);
  assert(box.querySelector('[aria-label="Benchmark display scale"]').value==='Linear','Changing Image Layer scale synchronizes the benchmark');

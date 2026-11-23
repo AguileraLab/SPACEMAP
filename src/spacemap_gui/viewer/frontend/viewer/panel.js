@@ -4,6 +4,7 @@
 
 // ---------------------------------------------------------------- panel
 function buildPanel() {
+  syncAnnotationOpacity();
   syncSplitMarkers();
   updateToolbar();
   const panel = $("panel");
@@ -20,12 +21,13 @@ function buildPanel() {
     help("Tick to show a layer on the image. Open a group or click a layer name for its settings; folding never hides the image. " +
       "All includes hidden layers; Shown lists only visible ones. Arrows change which layer overlaps another. Saved files are in Outputs."), filters]));
   // Keep the image controls first. Grouping changes the list, never the drawing order.
-  const ordered = state.layers.slice().reverse().filter((layer) => !mergedHE(layer));
+  const ordered = state.layers.slice().reverse().filter((layer) => !mergedHE(layer) && !layer.densityDormant);
   const listed = layer => !state.layersShownOnly || layer.visible;
   ordered.filter(layer => layer.type === 'image' && listed(layer)).forEach(layer => panel.appendChild(layerCard(layer)));
   const groups = state.layerGroups || (state.layerGroups = {});
-  [['cells', 'Cells and maps', ['cells','density']], ['annotations', 'Annotations', ['shapes','annotations']]].forEach(([key, title, types]) => {
-    const members = ordered.filter(layer => types.includes(layer.type));
+  [['cells', 'Cells', ['cells','density']], ['annotations', 'Annotations', ['shapes','annotations']]].forEach(([key, title, types]) => {
+    const members = ordered.filter(layer => types.includes(layer.type) && !isTrainingCellLayer(layer));
+    const training = key === 'cells' && trainingCellsAvailable();
     if (!members.length && !(key === 'cells' && state.studio)) return;  // Studio: Import cells is there
     const group = el('details', {class:'layer-group', 'data-layer-group':key});
     group.open = !!groups[key];
@@ -33,22 +35,43 @@ function buildPanel() {
     group.appendChild(el('summary', {onclick:event => {
       event.preventDefault(); group.open = !group.open; groups[key] = group.open; saveView();
     }}, [el('span', {class:'name', text:title}),
-      el('span', {class:'group-count', text:members.filter(l => l.visible).length + ' shown / ' + members.length})]));
+      el('span', {class:'group-count', text:(members.filter(l => l.visible).length + (training && trainingCellsVisible() ? 1 : 0)) + ' shown / ' + (members.length + (training ? 1 : 0))})]));
     const shown = members.filter(listed);
-    if (key === 'annotations') group.appendChild(annotationMarkerControls());
-    if (key === 'cells' && members.some(layer => layer.type === 'cells')) group.appendChild(cellMarkerControls());
-    if (key === 'annotations' && state.studio) {
+    if (key === 'annotations') {
+      if(group.open)ensureImageReviewPolygons();
+      const controls = annotationMarkerControls();
+      // Header controls must not toggle the surrounding disclosure.
+      controls.addEventListener('click', event => event.stopPropagation());
+      controls.addEventListener('keydown', event => event.stopPropagation());
+      group.querySelector('summary .name').after(controls);
+      const appearance=select([['outline','Outlines'],['fill','Filled'],['both','Filled + outlines']],state.annotationMode||'both',value=>{
+        state.annotationMode=value;
+        state.layers.filter(l=>l.type==='annotations').forEach(l=>bump(l));
+        renderShapes();saveView();
+      });
+      appearance.classList.add('annotation-appearance');appearance.setAttribute('aria-label','Annotation appearance');
+      appearance.addEventListener('click',event=>event.stopPropagation());appearance.addEventListener('keydown',event=>event.stopPropagation());
+      controls.after(appearance);
+      const opacity=el('input',{type:'range',min:0,max:100,value:Math.round((state.annotationOpacity ?? 1)*100),'aria-label':'Annotation opacity'});
+      const amount=el('span',{class:'muted',text:opacity.value+'%'});
+      opacity.addEventListener('input',()=>{amount.textContent=opacity.value+'%';setAnnotationOpacity(opacity.value/100);});
+      group.append(el('div',{class:'row annotation-opacity'},[el('label',{class:'lbl',text:'Opacity'}),opacity,amount]));
+      group.addEventListener('toggle',()=>{if(group.open&&group.isConnected)ensureImageReviewPolygons();});
+    }
+    if(key==='cells'&&!state.studio&&members.some(layer=>layer.type==='cells'))group.appendChild(cellMarkerControls());
+    if (key === 'cells' && state.studio) cellWorkspaceHeader(group);
+    if (key === 'annotations' && (state.studio||state.reviewer)) {
       annotationBlocks(group, shown);  // by image or file, then by name (annotation-rows.js)
     } else if (key === 'cells' && state.studio) {
       cellBlocks(group, shown);  // outlines, colours and maps as rows (cell-rows.js)
     } else shown.forEach(layer => group.appendChild(layerCard(layer)));
-    if (!shown.length && members.length) group.appendChild(el('p', {class:'hint', text:'These layers are hidden. Choose All above to show their controls.'}));
+    if (!shown.length && members.length && !(training && trainingCellsVisible())) group.appendChild(el('p', {class:'hint', text:'These layers are hidden. Choose All above to show their controls.'}));
     if (key === 'annotations' && state.studio) group.appendChild(annotationImportControls());
     panel.appendChild(group);
   });
-  panel.appendChild(addCard());
+  if(!state.reviewer)panel.appendChild(addCard());
   const cells = state.layers.find((l) => l.type === "cells" && (l.tables || []).length);
-  if (cells && !state.studio) {
+  if (cells && !state.studio && !state.reviewer) {
     const anchor = el("div");
     panel.appendChild(anchor);
     const showLabels = () => {
@@ -103,19 +126,31 @@ function heCompare(options) {
     codexRotation: state.viewer ? state.viewer.viewport.getRotation() : 0 };
 }
 
-function heControls(he) {
-  const on = el("input", { type: "checkbox", "aria-label": "Show the registered H&E" });
-  on.checked = !!he.visible;
-  on.addEventListener("change", () => setVisible(he, on.checked));
-  const opacity = el("input", { type: "range", min: "0", max: "100", value: String(Math.round(he.opacity * 100)),
-    "aria-label": "H&E opacity" });
-  opacity.addEventListener("input", () => { setOpacity(he, opacity.value / 100); if (!he.visible) { on.checked = true; setVisible(he, true); } });
-  return field("H&E", el("div", { class: "inline" }, [on, opacity]),
-    "The registered H&E stored in this image, in true colour over the markers. Tick to show it; the slider sets how much it covers them.");
+// Image controls share the same compact section frame as the rest of Layers.
+function imageControlSection(key, title, tip, actions = []) {
+  const head = el('div', {class:'image-section-head'}, [el('strong', {text:title}), ...actions, tip ? help(tip) : null]);
+  const body = el('div', {class:'image-section-body'});
+  return {box:el('section', {class:'image-control-section', 'data-image-section':key}, [head, body]), head, body};
+}
+
+function imageOpacityRow(layer, label, toggle = false) {
+  const check = toggle ? el('input', {type:'checkbox', 'aria-label':'Show the registered H&E'}) : null;
+  if (check) {check.checked = !!layer.visible; check.onchange = () => setVisible(layer, check.checked);}
+  const slider = el('input', {type:'range', min:0, max:100, value:Math.round(layer.opacity * 100), 'aria-label':label + ' opacity'});
+  const value = el('input', {type:'number', min:0, max:100, step:1, value:slider.value, 'aria-label':label + ' opacity percent'});
+  const change = source => {
+    if (!source.checkValidity() || source.value === '') {value.value = slider.value; return;}
+    slider.value = value.value = String(Number(source.value));
+    setOpacity(layer, Number(source.value) / 100);
+    if (check && !layer.visible) {check.checked = true; setVisible(layer, true);}
+  };
+  slider.oninput = () => change(slider); value.onchange = () => change(value);
+  return el('div', {class:'image-opacity-row'}, [el('label', {class:'inline'}, [check, el('span', {text:toggle ? label : 'Opacity'})]),
+    slider, el('span', {class:'image-percent'}, [value, el('span', {text:'%'})])]);
 }
 
 function layerCard(layer) {
-  const card = el("div", { class: "layer" + (layer.open ? "" : " collapsed"), 'data-layer-id':layer.id });
+  const card = el("div", { class: "layer" + (layer.type === 'image' ? ' image-layer' : '') + (layer.open ? "" : " collapsed"), 'data-layer-id':layer.id });
   const check = el("input", { type: "checkbox", title: "Show or hide this layer", 'aria-label':'Show ' + layer.name });
   check.checked = layer.visible;
   check.addEventListener("click", (e) => e.stopPropagation());
@@ -141,21 +176,23 @@ function layerCard(layer) {
       onclick: (e) => { e.stopPropagation(); removeLayer(layer); } }));
   }
   const body = el("div", { class: "layer-body", "data-layer-controls":"right" });
-  const opacity = el("input", { type: "range", min: "0", max: "100", value: String(Math.round(layer.opacity * 100)) });
-  opacity.addEventListener("input", () => setOpacity(layer, opacity.value / 100));
-  body.appendChild(el("div", { class: "row" }, [el("label", { class: "lbl", text: "Opacity" }), opacity]));
   const he = layer.type === "image" && layer.id !== "he" && state.layers.find((l) => l.id === "he" && l !== layer && l.token === layer.token);
-  if (he) body.appendChild(heControls(he));
+  if (layer.type === 'image') {
+    const display = imageControlSection('display', 'Image display', 'Opacity controls the image overlay. H&E shows the registered colour image when available. These settings do not change measurements.');
+    display.body.append(imageOpacityRow(layer, 'Image'));
+    if (he) display.body.append(imageOpacityRow(he, 'H&E', true));
+    body.append(display.box);
+  } else if (!isAnnotationDisplayLayer(layer)) {
+    const opacity = el("input", { type: "range", min: "0", max: "100", value: String(Math.round(layer.opacity * 100)) });
+    opacity.addEventListener("input", () => setOpacity(layer, opacity.value / 100));
+    body.appendChild(el("div", { class: "row" }, [el("label", { class: "lbl", text: "Opacity" }), opacity]));
+  }
   if (layer.type === "image" && !layer.info.rgb) body.appendChild(channelList(layer));
   let legendLoaded = false;
   function loadAnnotationLegend() {
     if (layer.type !== "annotations" || legendLoaded) return;
     legendLoaded = true;
-    const showLegend = () => legendInto(layer, body, "/annotations/" + layer.token + "/legend");
-    if (state.imagesReady) showLegend();
-    else state.whenImagesReady.then(() => {
-      if (body.isConnected && state.layers.includes(layer)) showLegend();
-    });
+    legendInto(layer, body, "/annotations/" + layer.token + "/legend");
   }
   if (layer.open) loadAnnotationLegend();
   if (layer.type === "annotations" && state.studio) body.appendChild(el('button', {class:'btn small',text:'Edit a copy',
@@ -184,7 +221,8 @@ function layerCard(layer) {
 
 function channelList(layer) {
   const wrap = el("div");
-  const filter = el("input", { type: "text", placeholder: "Find a marker..." });
+  const filter = el("input", { type: "search", placeholder: "Find a marker…", value:layer.markerSearch || '' });
+  const markers = imageControlSection('markers', 'Markers', 'Tick markers to show them. Low sets the black level; High sets full colour. N selects nuclear markers and M selects cell-border markers in Segmentation. Click a marker name for its histogram.', [filter]);
   const list = el("div", { class: "channels" });
   const shownNow = () => {
     const query = filter.value.trim().toLowerCase();
@@ -201,19 +239,24 @@ function channelList(layer) {
   layer.syncAllMarkers = () => all.sync(shownNow().map((c) => c.visible));
   const draw = () => {
     list.innerHTML = "";
+    const roles = !!state.markerRoles, columns = markerColumns();
+    list.className = 'channels' + (roles ? ' with-roles' : '') + ' with-meta-' + (Number(!!columns.dye) + Number(!!columns.exposure));
+    const headings = [['✓','Visibility'], ['Colour','Marker colour'], ['Name','Marker name'],
+      ...(roles ? [['N','Nuclear marker'], ['M','Cell-border marker']] : []),
+      ...(columns.dye ? [['Dye','Dye']] : []), ...(columns.exposure ? [['Exposure','Exposure']] : []),
+      ['Low','Black level'], ['High','Full-colour level'], ...(!roles ? [['Auto','Automatic display levels']] : [])];
+    list.append(el('div', {class:'channel-columns'}, headings.map(([text,title]) => el('span', {text,title}))));
     shownNow().forEach((channel) => list.appendChild(channelRow(layer, channel)));
     layer.syncAllMarkers();
   };
-  filter.addEventListener("input", draw);
+  filter.addEventListener("input", () => {layer.markerSearch = filter.value; draw();});
   if (layer.display_token) wrap.appendChild(markerSets(layer));
-  wrap.appendChild(autoControls(layer, {displayRange:true}));
+  const levels = imageControlSection('auto', 'Auto levels', 'Choose a method and measurement area, then adjust all markers or only their upper brightness. Undo restores the previous display levels.');
+  levels.body.append(autoControls(layer, {displayRange:true})); wrap.append(levels.box);
   filter.setAttribute("aria-label", "Find a marker");
-  wrap.appendChild(field("Markers", filter, "Tick markers to show them. Min is the background level (values at or " +
-    "below it are black), max the brightness. Auto sets one marker's min from the image. Click a marker's name " +
-    "for its histogram and to rename it."));
   // The All box, then the extra columns and the file's colours beside it (outside its label, so a click there is not a tick).
   const top = el("div", { class: "row all-top" }, [all.row]);
-  wrap.appendChild(top);
+  markers.body.appendChild(top);
   // Dye and exposure columns, when the image file records them.
   if ((layer.info.meta || []).some((m) => m && (m.dye || m.exposure_ms !== null && m.exposure_ms !== undefined))) {
     [["dye", "Dye"], ["exposure", "Exposure"]].forEach(([key, text]) => {
@@ -226,14 +269,14 @@ function channelList(layer) {
   // The colours the image file records (as QuPath shows them), in place of colours chosen or saved here.
   const fileColours = (layer.info.colors || []).filter(Boolean).length;
   if (fileColours) {
-    top.appendChild(el("button", { class: "btn tiny", text: "Colours from the image", title: "Use each marker's colour as the image file records it (as QuPath shows it)",
+    top.appendChild(el("button", { class: "btn tiny", text: "Image colours", title: "Use each marker's colour as recorded in the image file",
       onclick: () => {
         layer.channels.forEach((c) => { const colour = layer.info.colors[c.index]; if (colour) { c.color = colour; c.custom = false; } });
         remember(layer); refreshLayer(layer); draw(); buildPanel();
         message("Each marker has its colour from the image file.");
       } }));
   }
-  wrap.appendChild(list);
+  markers.body.appendChild(list); wrap.append(markers.box);
   layer.histogramHolder = el("div");
   wrap.appendChild(layer.histogramHolder);
   draw();
@@ -359,7 +402,7 @@ function thresholdParameterControls(layer, method) {
   }
   const resolution=select([['preview','Preview resolution'],['native','Full resolution']],layer.autoNative?'native':'preview',value=>{layer.autoNative=value==='native';remember(layer);syncThresholdParameterWidgets(layer);});
   resolution.setAttribute('aria-label','Threshold sampling resolution'); resolution.disabled=!!layer.autoRun;resolution.dataset.thresholdToken=layer.token;resolution.dataset.thresholdParameter='native';
-  box.append(resolution,help('Preview uses the image pyramid for speed. Full resolution streams original integer pixels in bounded windows. The benchmark reports the actual resolution. All Auto controls use this same choice.'));
+  box.append(field('Resolution', resolution, 'Preview uses the image pyramid for speed. Full resolution reads original pixels. All Auto controls use this same choice.'));
   return box;
 }
 
@@ -428,7 +471,7 @@ function autoControls(layer, {displayRange=false}={}) {
   scope.addEventListener("pointerdown", loadSelectedClasses);
   method.setAttribute("aria-label", "Auto method");
   scope.setAttribute("aria-label", "Measure within");
-  box.appendChild(field("Auto", el("div", { class: "inline" }, [method, el("span", { class: "muted", text: "in" }), scope]),
+  box.appendChild(displayRange ? el('div', {class:'image-auto-choices'}, [field('Method', method), field('Scope', scope)]) : field("Auto", el("div", { class: "inline" }, [method, el("span", { class: "muted", text: "in" }), scope]),
     "Auto sets each marker's min to its background level, measured on the image's pixels with the chosen method " +
     "(the Background step's methods). Choose where to measure: a drawn layer counts all its polygons together (a tissue " +
     "in many pieces is measured once), a name counts every polygon with that name, and Selected polygons counts the ones " +
@@ -461,7 +504,11 @@ function autoControls(layer, {displayRange=false}={}) {
     const adjust=select([['both','Lower + upper'],['lower','Lower only'],['upper','Upper only']],settings.adjust,v=>{settings.adjust=v;refreshSummary();});adjust.setAttribute('aria-label','Auto display adjustment');adjust.disabled=!!layer.autoRun;
     const percentile=el('input',{type:'number',value:settings.upper_percentile,min:.001,max:100,step:'any',required:true,'aria-label':'Upper display percentile'});percentile.disabled=!!layer.autoRun;
     percentile.onchange=()=>{if(!percentile.checkValidity()){percentile.value=settings.upper_percentile;return;}settings.upper_percentile=Number(percentile.value);refreshSummary();};
-    box.append(el('details',{class:'display-auto-options'},[summary,field('Auto adjusts',adjust),field('Upper %',percentile),el('p',{class:'hint',text:'Upper = this percentile of pixels above the lower cutoff, in the selected area. 99.8 leaves only the brightest 0.2% at full colour. Use 100 to retain the maximum. This upper level changes visualization only.'})]));
+    const options=el('details',{class:'display-auto-options'},[summary,field('Auto adjusts',adjust),field('Upper %',percentile,
+      'Percentile of pixels above the lower cutoff in the selected area. 99.8 leaves the brightest 0.2% at full colour; 100 keeps the maximum. This changes display brightness only.')]);
+    options.open=!!layer.autoOptionsOpen;
+    options.ontoggle=()=>{if(options.isConnected&&layer.autoOptionsOpen!==options.open){layer.autoOptionsOpen=options.open;saveView();}};
+    box.append(options);
   }
   box.appendChild(buttons);
   const status = el("div", { class: "hint", role: "status", "aria-live": "polite" });

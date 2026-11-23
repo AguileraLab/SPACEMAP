@@ -31,12 +31,21 @@ setTimeout(async()=>{
   assert(method.value==='cycombine' && method.selectedOptions[0].textContent==='cyCombine','cyCombine’s method is suggested when the project never chose one');
   const somSteps=()=>tools().querySelector('[aria-label="SOM iterations"]').closest('.field');
   assert(tools().querySelector('.studio-step-body > .studio-sec .studio-sec-h').textContent.includes('Folders and tables'), 'Folders and tables are first');
+  const sectionNames=Array.from(tools().querySelectorAll('.studio-step-body > .studio-sec')).map(s=>s.querySelector('.studio-sec-h')?.textContent);
+  assert(sectionNames[1].startsWith('Samples') && sectionNames[2].startsWith('Settings'), 'Samples is directly below the list, before Settings');
   const inputFolder=tools().querySelector('[aria-label="Cell tables folder"]'), outputFolder=tools().querySelector('[aria-label="Output folder"]');
   assert(inputFolder?.value.startsWith('/') && outputFolder?.value.startsWith('/'), 'Full directory paths at the top');
   assert(tools().querySelector('[aria-label="Images folder"]')?.value.startsWith('/'), 'ROI images have their own directory');
   assert(inputFolder.compareDocumentPosition(tools().querySelector('tr[data-roi]')) & Node.DOCUMENT_POSITION_FOLLOWING, 'Directories precede the selectable table list');
   assert(somSteps().hidden && !!tools().querySelector('[data-tip^="Python port of cyCombine"]'),'cyCombine hides the settings it does not use and says what it does');
   assert(tools().querySelector('[aria-label="Correct M0"]').checked && tools().querySelector('[aria-label="Correct M1"]').checked && !tools().querySelector('[aria-label="Correct area"]').checked,'The markers are picked, not the cell size');
+  assert(!tools().querySelector('[aria-label="Correct tissue"]').checked, 'Tissue flags are not proposed as intensity markers when tissue filtering is off');
+  const markerSearch=tools().querySelector('[aria-label="Find correction markers"]');markerSearch.closest('details').open=true;
+  markerSearch.value='M0';markerSearch.dispatchEvent(new Event('input'));
+  tools().querySelector('[aria-label="Select matching correction markers"]').click();
+  markerSearch.value='';markerSearch.dispatchEvent(new Event('input'));
+  assert(!tools().querySelector('[aria-label="Correct M0"]').checked && tools().querySelector('[aria-label="Correct M1"]').checked,'Select-all affects search matches only');
+  tools().querySelector('[aria-label="Correct M0"]').click();markerSearch.closest('details').open=false;
   method.value='monotonic';method.dispatchEvent(new Event('change'));
   assert(!somSteps().hidden && !!tools().querySelector('[data-tip*="no cell changes place"]'),'Monotonic shows its own settings and what it keeps');
   const steps=tools().querySelector('[aria-label="SOM iterations"]');steps.value='2000';steps.dispatchEvent(new Event('change'));
@@ -63,20 +72,46 @@ setTimeout(async()=>{
   const norm=tools().querySelector('[aria-label="SOM normalization"]'); norm.value='rank'; norm.dispatchEvent(new Event('change',{bubbles:true}));
   await until(async()=> (await (await fetch('/spacemap-viewer/api/studio/browser-check/correction')).json()).settings.norm_method==='rank');
   assert(true, 'Normalization autosaves before running');
+  const input=label=>tools().querySelector('[aria-label="'+label+'"]');
+  const change=(label,value)=>{const node=input(label);node.value=String(value);node.dispatchEvent(new Event('change',{bubbles:true}));};
+  const filters=tools().querySelector('.studio-correction-filters');
+  assert(filters && !filters.open && !/Edit these in classic/.test(filters.textContent),'Editable cell filters start folded'); filters.open=true;
+  change('Filter column','tissue'); change('Keep filter value',1);
+  change('Area lower percentile',0); change('Area upper percentile',100);
+  change('Marker lower percentile',0); change('Marker upper percentile',100);
+  input('Add corrected indicator').click(); change('Corrected indicator column','was_corrected');
+  input('Post-correction QC').click(); input('Exclude above distance percentile').click(); change('Correction distance percentile',98);
+  input('Exclude above distance limit').click(); change('Maximum correction distance',15);
+  assert(!input('Maximum correction distance').disabled && !input('Correction distance percentile').disabled,'Enabled QC exposes both thresholds');
+  input('Post-correction QC').click();
+  assert(input('Maximum correction distance').disabled && input('Exclude above distance percentile').disabled,'Turning QC off disables both restrictions');
+  change('Output file name','reviewed_browser'); input('Save CSV too').click();
+  await until(async()=>{const p=await(await fetch('/spacemap-viewer/api/studio/browser-check/correction')).json();return p.settings.output_name==='reviewed_browser' && p.settings.export_csv && p.settings.area_max_pct===100;});
+  // Invalid pairs must not silently save or launch a correction.
+  change('Area lower percentile',100);
+  await until(()=>/lower percentile must be less/.test(tools().textContent));
+  assert((await(await fetch('/spacemap-viewer/api/studio/browser-check/correction')).json()).settings.area_min_pct===0,'Invalid percentile pair leaves the saved configuration unchanged');
+  change('Area lower percentile',0);
+  await until(()=>tools().querySelector('.chip.ok')?.textContent==='Saved');
+  for(const width of [355,850]){
+    document.querySelector('#app').style.setProperty('--studio-tools',width+'px'); await delay(150);
+    for(const row of filters.querySelectorAll('.field'))assert(row.scrollWidth<=row.clientWidth+1,'Filter controls fit at '+width+' px: '+row.textContent);
+  }
   run.click();
   await until(()=>run.disabled);await until(()=>!run.disabled);
-  assert(/saved as batch_corrected_merged_/.test(tools().textContent) && /2 slides/.test(tools().textContent),'The correction runs as a job between the slides: '+document.querySelector('.studio-runbar').textContent);
+  assert(/saved as reviewed_browser_/.test(tools().textContent) && /2 slides/.test(tools().textContent) && /\+ CSV/.test(tools().textContent),'The named correction and CSV run together between the slides: '+document.querySelector('.studio-runbar').textContent);
   const plan=await (await fetch('/spacemap-viewer/api/studio/browser-check/correction')).json();
   assert(plan.unit==='slide' && plan.settings.correction_mode==='cycombine' && plan.settings.som_iterations===2000,'The choices are saved in Tab 6’s settings');
+  assert(plan.settings.tissue_col==='tissue' && plan.settings.tissue_val===1 && plan.settings.add_corrected_indicator && !plan.settings.enable_post_qc && plan.settings.qc_percentile_threshold===98, 'Filters and inactive QC thresholds persist with classic settings');
   assert(rows().every(row=>/✓ Corrected/.test(row.textContent)), 'Saved results turn green before adoption');
   const previousMethod=tools().querySelector('[aria-label="Method"]');
   button(tools(),'Use this table in Studio').click();
   await until(()=>tools().querySelector('[aria-label="Method"]') && tools().querySelector('[aria-label="Method"]')!==previousMethod);
   const combined=Array.from(tools().querySelectorAll('.studio-sec > details')).find(d=>d.querySelector('summary').textContent.startsWith('Combined table'));
   assert(combined && !combined.open, 'Saved result checks start folded'); combined.open=true;
-  await until(()=>tools().querySelector('.studio-value') && /batch_corrected_merged_/.test(tools().textContent) && /Measured between/.test(tools().textContent) && /slides \(2\)/.test(tools().textContent));
+  await until(()=>tools().querySelector('.studio-value') && /reviewed_browser_/.test(tools().textContent) && /Measured between/.test(tools().textContent) && /slides \(2\)/.test(tools().textContent));
   assert(true,'The new table is Studio’s combined table, measured between slides');
-  await until(()=>tools().querySelectorAll('tr[data-roi] .chip.ok').length>=3 && !!tools().querySelector('[title^="batch_corrected_merged_"]'));
+  await until(()=>tools().querySelectorAll('tr[data-roi] .chip.ok').length>=3 && !!tools().querySelector('[title^="reviewed_browser_"]'));
   assert(rows().every(row=>/Corrected/.test(row.textContent)),'Each table in the combined table shows Corrected');
   // Each marker's histograms per slide, before and after, beside the image.
   const figure=()=>document.querySelector('#studio-figures [data-figure="batches-histograms"]');
@@ -88,7 +123,7 @@ setTimeout(async()=>{
   const row=Array.from(tools().querySelectorAll('.studio-measures .studio-measure')).find(b=>/^M1/.test(b.textContent));row.click();
   assert(figure().querySelector('[aria-label="Histogram marker"]').value==='M1' && /arcsinh\(M1/.test(figure().textContent),'Clicking a marker in How well it worked shows its histograms');
   const oldInput=tools().querySelector('[aria-label="Cell tables folder"]').value;
-  const input=tools().querySelector('[aria-label="Cell tables folder"]'); input.value=oldInput+'/empty'; input.dispatchEvent(new Event('change'));
+  const folderInput=tools().querySelector('[aria-label="Cell tables folder"]'); folderInput.value=oldInput+'/empty'; folderInput.dispatchEvent(new Event('change'));
   await until(()=>tools().querySelector('[aria-label="Cell tables folder"]')?.value.endsWith('/empty') && tools().textContent.includes('No table'));
   assert(rows().length===3 && rows().every(row=>row.querySelector('input').disabled) && button(document.querySelector('.studio-runbar'),'Selected').disabled, 'Unmatched images stay visible and cannot run');
   fetch('/result?ok='+encodeURIComponent(JSON.stringify({checks})));
@@ -127,6 +162,7 @@ def setup(root):
             {
                 "label": np.arange(1, n + 1),
                 "area": rng.uniform(40, 60, n),
+                "tissue": np.arange(n) % 2,
                 "M0": bright * np.where(kind, 400, 40) * rng.lognormal(0, 0.2, n),
                 "M1": bright * np.where(kind, 30, 300) * rng.lognormal(0, 0.2, n),
             }

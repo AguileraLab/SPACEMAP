@@ -27,7 +27,7 @@ function keepRegionLabelFocus(container) {
 }
 
 function regionLayers() { return state.layers.filter((l) => l.type === "shapes" && l.regions && l.visible); }
-function isPicked(layer, id) { return !!(state.picks && state.picks.layer === layer && state.picks.ids.has(id)); }
+function isPicked(layer, id) { return !!(state.annotationSelections?.get(layer)?.has(String(id)) || state.picks && state.picks.layer === layer && state.picks.ids.has(id)); }
 function pickedFeatures() {
   const picks = state.picks;
   return picks ? (picks.layer.features || []).filter((f) => picks.ids.has(f.properties.id)) : [];
@@ -60,13 +60,14 @@ function annotationMarkerControls() {
     count.setCustomValidity(Number.isInteger(options.count) && options.count > 0 ? '' : 'Enter a whole number of 1 or more.');
     state.annotationMarkerRequest = (state.annotationMarkerRequest || 0) + 1;
     try { localStorage.setItem('spacemap-viewer-annotation-markers', JSON.stringify(options)); } catch (_) { /* private mode */ }
+    saveView();
     applyAnnotationMarkers(state.inspectedAnnotation);
   };
   on.addEventListener('change', change);
   count.addEventListener('input', change);
   return el('div', {class:'row annotation-marker-controls'}, [
     el('label', {class:'inline'}, [on, el('span', {text:'Top markers'})]),
-    el('label', {class:'inline'}, [el('span', {text:'Number'}), count]),
+    count,
     help('When on, clicking any annotation shows only its top markers from High here. Number sets how many. Colours and contrast stay as set; new channels get their usual display range. When off, annotation clicks leave channels unchanged. Turning it off keeps the current view.')]);
 }
 
@@ -125,7 +126,7 @@ function annotationProfile(layer, feature) {
   let stored = cache.get(feature);
   if (!stored || stored.geometry !== feature.geometry || stored.token !== layer.token) {
     const imported = layer.type === 'annotations';
-    const request = postJSON('/' + (imported ? 'annotations' : 'shapes') + '/' + layer.token + '/profile',
+    const request = imported && feature.componentRevision ? getJSON(componentQuery(layer,{id:feature.properties.id,profile:1,revision:feature.componentRevision})) : postJSON('/' + (imported ? 'annotations' : 'shapes') + '/' + layer.token + '/profile',
       imported ? {index:feature.annotationIndex, stamp:feature.annotationStamp} : {geometry:feature.geometry});
     stored = {geometry:feature.geometry, token:layer.token, request};
     cache.set(feature, stored);
@@ -173,7 +174,7 @@ function annotationRole(layer) { return layer.training_part ? 'good' : layer.art
 // Where a layer's polygons come from: the open image, or an imported file (by its name).
 function annotationSource(layer) { return layer.annotation_group === 'imported' ? (layer.source_name || layer.name) : ''; }
 function annotationKey(layer, name) { return annotationSource(layer) + '::' + name + '::' + annotationRole(layer); }
-function featureShown(layer, feature) { return !(layer.hiddenNames && layer.hiddenNames.has(annotationName(layer, feature))); }
+function featureShown(layer, feature) { return !layer.hiddenReviewIds?.has(feature.properties.id) && !(layer.hiddenNames && layer.hiddenNames.has(annotationName(layer, feature))); }
 
 // The project's names given by hand, with their colours (Studio, newest first): every image offers them, so a name
 // such as Tumor is typed and coloured once (outputs/studio/annotation_names.json).
@@ -209,7 +210,7 @@ function nameColour(layer, name) {
   // The colour this name already has on this image (another layer), so a renamed polygon joins its group's colour.
   for (const other of shapeLayers()) {
     if (other.image_token !== layer?.image_token) continue;
-    const found = (other.features || []).find(f => f.properties.named && f.properties.name === name && (f.properties.classification || {}).color);
+    const found = (other.features || []).find(f => (f.properties.classification?.name||f.properties.name) === name && (f.properties.classification || {}).color);
     if (found) return shapeColor(found);
   }
   const kept = paletteColour(name);
@@ -281,10 +282,12 @@ function nameRegions(layer, ids, name, {clear=false}={}) {
     if (value) {
       p.name = p.label = value; p.named = true;
       p.classification = { name: value, color: rgbOf(nameColour(layer, value)) };
+      p.colour = nameColour(layer,value);
     } else {
       delete p.named;
       p.name = p.label = p.cluster !== undefined && p.cluster !== null ? "Cluster " + p.cluster : "Region " + (p.number || "");
       p.classification = { name: p.name, color: rgbOf(p.cluster_colour || "#ffd600") };
+      p.colour = p.cluster_colour || '#ffd600';
     }
   });
   afterRegionChange(layer, (value ? "Named " : "Name taken from ") + ids.size + (ids.size === 1 ? " region" : " regions") + (value ? " " + value + "." : "."));
@@ -300,6 +303,7 @@ function deleteRegions(layer, ids) {
   pushHistory(layer);
   layer.features = layer.features.filter((f) => !ids.has(f.properties.id));
   if (state.picks && state.picks.layer === layer) state.picks = null;
+  const selected=state.annotationSelections?.get(layer);if(selected)for(const id of ids)selected.delete(id);
   if (state.selected && ids.has(state.selected.id)) state.selected = null;
   $("cellcard").hidden = true;
   state.cardSeq += 1;
@@ -322,22 +326,25 @@ function regionClick(point, additive) {
 
 // Select: every region whose middle lies inside the outline drawn (rectangle, polygon or freehand).
 function regionCentre(feature) {
+  const memo = geometryMemo(feature.geometry);
+  if (memo.centre) return memo.centre;
   const rings = polygonsOf(feature.geometry)[0];
-  if (!rings || !rings[0] || !rings[0].length) { const b = featureBounds(feature); return [(b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2]; }
+  if (!rings || !rings[0] || !rings[0].length) { const b = featureBounds(feature); return memo.centre = [(b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2]; }
   let x = 0, y = 0, a = 0;
   const ring = rings[0];
   for (let i = 0; i < ring.length - 1; i++) {
     const cross = ring[i][0] * ring[i + 1][1] - ring[i + 1][0] * ring[i][1];
     a += cross; x += (ring[i][0] + ring[i + 1][0]) * cross; y += (ring[i][1] + ring[i + 1][1]) * cross;
   }
-  if (Math.abs(a) < 1e-9) { const b = featureBounds(feature); return [(b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2]; }
-  return [x / (3 * a), y / (3 * a)];
+  if (Math.abs(a) < 1e-9) { const b = featureBounds(feature); return memo.centre = [(b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2]; }
+  return memo.centre = [x / (3 * a), y / (3 * a)];
 }
 function selectInside(points, additive) {
+  if(state.studio||state.reviewer)return selectVisibleArea(points,additive);
   const outline = { geometry: { type: "Polygon", coordinates: [points.map((p) => [p.x, p.y]).concat([[points[0].x, points[0].y]])] } };
   let best = null;
   regionLayers().forEach((layer) => {
-    const ids = (layer.features || []).filter((f) => { const [x, y] = regionCentre(f); return contains(outline, x, y); }).map((f) => f.properties.id);
+    const ids = (layer.features || []).filter((f) => featureShown(layer,f)).filter((f) => { const [x, y] = regionCentre(f); return contains(outline, x, y); }).map((f) => f.properties.id);
     const preferred = layer.id === state.drawInto;  // the current stage's layer first
     if (ids.length && (!best || preferred && !best.preferred || preferred === best.preferred && ids.length > best.ids.length)) best = { layer, ids, preferred };
   });
@@ -375,6 +382,7 @@ function regionMenuItems(point, act) {
     el("div", { class: "ctx-title", text: "Name " + what + " as" }),
     ...names.slice(0, 20).map(named),
     act("New name…", typed),
+    ...(state.studio && !state.reviewer ? [act('Flag for review…',()=>flagAnnotationReview(layer,Array.from(ids)))] : []),
     act("Take the name away", () => nameRegions(layer, ids, "", {clear:true})),
     act("Zoom to " + (ids.size === 1 ? "it" : "them"), () => zoomTo({ geometry: { type: "MultiPolygon", coordinates:
       (layer.features || []).filter((f) => ids.has(f.properties.id)).flatMap((f) => polygonsOf(f.geometry)) } })),
@@ -441,22 +449,24 @@ async function showRegionCard(layer, feature) {
 
 // A region layer's list in Studio: sort by place or size, name the selected, drop the small ones.
 function regionsControls(layer, body) {
-  if (layer.artifact_part && body.dataset.layerControls === "right") state.studio?.renderArtifactControls?.(layer, body);
+  body.classList.add('region-controls');
   const onlyClass=body.id==='studio-tissue-polygons' ? layer.working_class : '';
   const onlyName = body.dataset.onlyName;  // a name row in Layers lists only its own polygons
   const features = (layer.features || []).filter(f=>(!onlyClass || f.properties.classification?.name===onlyClass) &&
     (onlyName === undefined || annotationName(layer, f) === onlyName));
   const sort = layer.sortBy || "place";
-  const band = Math.max(1, ...features.map((f) => { const b = featureBounds(f); return b.y1 - b.y0; })) || 1;
+  const band = features.reduce((max, f) => { const b = featureBounds(f); return Math.max(max, b.y1-b.y0); }, 1);
   const ordered = features.slice().sort(sort === "size" ? (a, b) => featureArea(b) - featureArea(a) : (a, b) => {
     const [ax, ay] = regionCentre(a), [bx, by] = regionCentre(b);
     const rowA = Math.floor(ay / band), rowB = Math.floor(by / band);
     return rowA - rowB || ax - bx;
   });
   const existing = new Set(features.map(f => f.properties.id));
-  const picked = state.picks && state.picks.layer === layer ? new Set(Array.from(state.picks.ids).filter(id => existing.has(id))) : new Set();
+  const picked = new Set(Array.from(annotationSelection(layer)).filter(id=>existing.has(id)));
   const pick = ids => {
-    state.picks = {layer, ids};
+    const selection=annotationSelection(layer);
+    for(const id of existing)selection.delete(id);
+    selectAnnotations(layer,ids);
     if (state.selected?.layer === layer && !ids.has(state.selected.id)) state.selected = null;
     renderShapes(); buildPanel(); refreshRegionList();
   };
@@ -473,8 +483,11 @@ function regionsControls(layer, body) {
     title:'Move every selected polygon to the other training class. Ctrl+Z brings them back.',
     onclick:()=>convertArtifactSelection(layer,Array.from(picked),layer.training_part?'positive':'negative')}):null;
   body.appendChild(el('div', {class:'row wrap region-selection'}, [el('label', {class:'inline'}, [all, el('span', {text:'All polygons'})]),
-    el('span', {class:'grow muted', text:picked.size + ' selected'}), ...(convert?[convert]:[]), remove]));
-  const order = select([["place", "By place (top left first)"], ["size", "By size (largest first)"]], sort, (v) => { layer.sortBy = v; buildPanel(); refreshRegionList(); });
+    el('span', {class:'grow muted', text:picked.size + ' selected'}), ...(convert?[convert]:[]),
+    ...(state.studio && !state.reviewer ? [el('button',{class:'btn small',text:'Flag for review',disabled:picked.size?null:'',onclick:()=>flagAnnotationReview(layer,Array.from(picked))})] : []), remove]));
+  const order = select([["place", "By place"], ["size", "By size"]], sort, (v) => { layer.sortBy = v; buildPanel(); refreshRegionList(); });
+  order.setAttribute('aria-label', 'Sort polygons');
+  order.title = 'By place: top left first. By size: largest first.';
   const list = "region-names-list-" + layer.id + '-' + newId();
   const nameBox = el("input", { type: "text", list, value:layer.regionLabelDraft||'', placeholder: "Label selected polygons…", maxlength: "60", "aria-label": "Name the selected regions", 'data-region-label':layer.id });
   const names = el("datalist", { id: list }, regionNames(layer).map((name) => el("option", { value: name })));
@@ -489,13 +502,20 @@ function regionsControls(layer, body) {
     const limit = size ? layer.minArea / (size * size) : layer.minArea;
     deleteRegions(layer, new Set(features.filter((f) => featureArea(f) < limit).map((f) => f.properties.id)));
   } });
-  body.appendChild(el("div", { class: "row wrap" }, [order, el("span", { class: "muted grow", text: features.length + " regions" + (picked.size ? " · " + picked.size + " selected" : "") }),
+  const tools = el('div', {class:'region-tools'});
+  tools.appendChild(el("div", { class: "region-order" }, [order, el("span", { class: "muted", text: features.length.toLocaleString() + " regions" }),
     el("button", { class: "btn small", text: "Undo", title: "Ctrl+Z", onclick: () => { state.lastEdited = layer; undoShapes(layer); } })]));
   if (layer.editable) {
-    if (!layer.training_part && !layer.tlsDraft) body.appendChild(el("div", { class: "row wrap" }, [nameBox, names, nameButton, el("span", { class: "grow" }), smallest, el("span", { class: "muted", text: "µm²" }), drop]));
+    if (!layer.training_part && !layer.tlsDraft) tools.append(
+      el('div', {class:'region-label'}, [nameBox, names, nameButton]),
+      el('div', {class:'region-minimum'}, [smallest, el('span', {class:'muted', text:'µm²'}), drop]));
   }
+  body.appendChild(tools);
   const rows = el("div", { class: "shape-list region-list" });
-  const shown = ordered.slice(0, layer.showAll ? ordered.length : 300);
+  const pageKey=onlyName || onlyClass || '*';
+  const pages=layer.regionPages||(layer.regionPages={});
+  const pageStart=Math.min(pages[pageKey]||0,Math.max(0,Math.floor((ordered.length-1)/100)*100));
+  const shown = ordered.slice(pageStart, pageStart+100);
   shown.forEach((feature) => {
     const p = feature.properties;
     const row = el("div", { class: "shape-row" + (picked.has(p.id) ? " on" : ""), "data-id": p.id });
@@ -504,26 +524,33 @@ function regionsControls(layer, body) {
     tick.addEventListener('click', event => event.stopPropagation());
     tick.addEventListener('change', () => { const ids = new Set(picked); if (tick.checked) ids.add(p.id); else ids.delete(p.id); pick(ids); });
     row.append(tick, el("span", { class: "swatch", style: "background:" + shapeColor(feature) }),
-      el("span", { class: "grow region-name", text: regionTitle(feature), title: regionTitle(feature) }),
+      el("span", { class: "grow region-name", text: annotationName(layer,feature), title: annotationName(layer,feature) }),
       el("span", { class: "area", text: layer.tlsDraft ? (featureArea(feature)*layer.tlsMpp**2).toLocaleString(undefined,{maximumFractionDigits:1})+' µm²' : areaText(featureArea(feature)) }),
       el("button", { class: "btn small", text: "Go", title: "Zoom to it", onclick: (event) => { event.stopPropagation(); row.click(); } }));
     row.addEventListener("click", (event) => {
       const additive = event.ctrlKey || event.metaKey || event.shiftKey;
-      if (additive && state.picks && state.picks.layer === layer) { if (state.picks.ids.has(p.id)) state.picks.ids.delete(p.id); else state.picks.ids.add(p.id); }
-      else { state.picks = { layer, ids: new Set([p.id]) }; zoomTo(feature); }
+      selectAnnotations(layer,[p.id],{replace:!additive,toggle:additive});
+      if(!additive)zoomTo(feature);
       state.selected = { layer, id: p.id };
       renderShapes(); buildPanel(); refreshRegionList();
       showRegionCard(layer, feature);
     });
     rows.appendChild(row);
+    row.addEventListener('contextmenu',event=>{event.preventDefault();event.stopPropagation();
+      const value=prompt('Annotation name:',annotationName(layer,feature));if(value?.trim())nameRegions(layer,new Set([p.id]),value.trim());});
   });
-  if (ordered.length > shown.length) rows.appendChild(el("button", { class: "btn small ghost", text: "Show all " + ordered.length, onclick: () => { layer.showAll = true; refreshRegionList(); } }));
+  if (ordered.length > 100) rows.appendChild(el('div',{class:'row'},[
+    el('button',{class:'btn tiny',text:'←',disabled:pageStart?null:'',onclick:()=>{pages[pageKey]=Math.max(0,pageStart-100);buildPanel();refreshRegionList();}}),
+    el('span',{class:'muted',text:(pageStart+1)+'–'+(pageStart+shown.length)+' / '+ordered.length}),
+    el('button',{class:'btn tiny',text:'→',disabled:pageStart+100<ordered.length?null:'',onclick:()=>{pages[pageKey]=pageStart+100;buildPanel();refreshRegionList();}})]));
   if (!features.length) rows.appendChild(el("div", { class: "hint", text: "No regions yet." }));
   body.appendChild(rows);
   keepListScroll(rows, layer, "regionScroll");
-  shapeStorageControls(layer, body);
-  body.appendChild(el("button", {class:"btn small", text:"Download", title:"Download these polygons as GeoJSON", onclick:()=>downloadShapes(layer)}));
-  if (layer.annotation_kind) annotationHistory(layer, body);
+  const footer = el('div', {class:'region-storage', 'data-save-in-footer':body.dataset.saveInFooter || 'false'});
+  shapeStorageControls(layer, footer);
+  footer.appendChild(el("button", {class:"btn small", text:"Download", title:"Download these polygons as GeoJSON", onclick:()=>downloadShapes(layer)}));
+  if (layer.annotation_kind) annotationHistory(layer, footer);
+  body.appendChild(footer);
 }
 
 function annotationHistory(layer, body) {

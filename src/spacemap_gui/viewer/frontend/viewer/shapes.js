@@ -22,16 +22,19 @@ function setTool(tool,selectionMode=null) {
 
 function updateToolbar() {
   const tools = $("drawtools");
-  const target = toolbarDrawTarget(), selectable = regionLayers().length > 0;
-  tools.hidden = !target && !state.layers.some(l => l.type === 'shapes' || l.type === 'annotations');
+  const target = state.reviewer?null:toolbarDrawTarget(), selectable = areaSelectionAvailable();
+  tools.hidden = !target && !state.layers.some(l => ['shapes','annotations','cells'].includes(l.type));
   if (state.selectMode && !selectable) state.selectMode = false;
   if (!drawTarget() && !state.selectMode && ['rect','polygon','freehand','merge','split'].includes(state.tool)) state.tool = 'off';
   tools.querySelectorAll("button").forEach((button) => {
     const select = button.getAttribute('data-mode') === 'select', tool = button.getAttribute('data-tool');
-    button.hidden = false;
-    button.disabled = select ? !selectable : tool !== 'off' && !target && !(state.selectMode && selectable && ['rect','polygon','freehand'].includes(tool));
+    button.hidden = !!state.reviewer&&['merge','split'].includes(tool);
+    button.disabled = select ? !selectable : tool !== 'off' && !target && !((state.selectMode||state.reviewer) && selectable && ['rect','polygon','freehand'].includes(tool));
     button.classList.toggle("on", button.getAttribute("data-mode") === "select" ? !!state.selectMode : button.getAttribute("data-tool") === state.tool);
   });
+  const choice=$('area-select-target');choice.hidden=!state.selectMode;
+  choice.value=state.areaSelectTarget||'annotations';
+  choice.onchange=()=>{state.areaSelectTarget=choice.value;state.areaSelectionEpoch=(state.areaSelectionEpoch||0)+1;updateToolbar();};
   updatePolygonToolOptions();
 }
 
@@ -46,7 +49,7 @@ function toolbarDrawTarget() {
 }
 
 function canEditPolygons(layer) {
-  return layer && layer.visible && state.layers.includes(layer) && (layer.editable || layer.preview?.editable);
+  return !state.reviewer && layer && layer.visible && state.layers.includes(layer) && (layer.editable || layer.preview?.editable);
 }
 
 // Red detections and green examples belong to the same active artifact review.
@@ -180,6 +183,9 @@ function drawTarget() {
 }
 
 async function loadShapes(layer) {
+  if (layer.review_inline && layer.editable === false && Array.isArray(layer.features)) {
+    layer.history = []; layer.future = []; layer.status = layer.features.length + ' selected for review'; return true;
+  }
   layer.loadingShapes = true;
   layer.status = "Loading polygons…";
   shapeStatus(layer);
@@ -346,6 +352,7 @@ function placeOverlay() {
   const unit = item.imageToViewerElementCoordinates(new OpenSeadragon.Point(1000, 0));
   state.overlayScale = (unit.x - origin.x) / 1000;
   state.svgRoot.setAttribute("transform", "translate(" + origin.x + "," + origin.y + ") scale(" + state.overlayScale + ")");
+  updateShapeViewport();
   drawLabelPreview();
   drawCellOutline();
   drawSegPreview();
@@ -485,10 +492,33 @@ function linesOf(geometry) {
   if (geometry.type === "GeometryCollection") return [].concat(...(geometry.geometries || []).map(linesOf));
   return [];
 }
+// Geometry objects are replaced by edits, reload and undo. Weak keys keep caches
+// out of saved GeoJSON and release them when an old geometry is no longer used.
+const shapeGeometryCache = new WeakMap();
+function geometryMemo(geometry) {
+  if (!geometry) return {};
+  let memo = shapeGeometryCache.get(geometry);
+  if (!memo) { memo = {}; shapeGeometryCache.set(geometry, memo); }
+  return memo;
+}
 function pathOf(geometry) {
+  const memo = geometryMemo(geometry);
+  if (memo.path !== undefined) return memo.path;
   const line = (points) => points.map((p, i) => (i ? "L" : "M") + p[0] + " " + p[1]).join("");
-  return polygonsOf(geometry).map((rings) => rings.map((ring) => line(ring) + "Z").join("")).join("") +
+  return memo.path = polygonsOf(geometry).map((rings) => rings.map((ring) => line(ring) + "Z").join("")).join("") +
     linesOf(geometry).map(line).join("");
+}
+// Compound display paths keep every boundary. Consistent ring winding makes
+// nonzero fill preserve holes and same-class overlaps; the source stays separate.
+function groupedPathOf(geometry) {
+  const memo = geometryMemo(geometry);
+  if (memo.groupPath !== undefined) return memo.groupPath;
+  const line = points => points.map((p,i)=>(i?'L':'M')+p[0]+' '+p[1]).join('');
+  return memo.groupPath = polygonsOf(geometry).map(rings => rings.map((ring,index) => {
+    let area = 0;
+    for (let i=0,j=ring.length-1;i<ring.length;j=i++) area += ring[j][0]*ring[i][1]-ring[i][0]*ring[j][1];
+    return line((area<0)===(index===0) ? ring.slice().reverse() : ring)+'Z';
+  }).join('')).join('') + linesOf(geometry).map(line).join('');
 }
 function shapeColor(feature) {
   const chosen = (feature.properties || {}).colour;  // a name's colour chosen in Layers (tissue keeps its class)
@@ -498,31 +528,147 @@ function shapeColor(feature) {
 }
 function rgbOf(color) { const h = hex(color); return [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16)); }
 
+const shapeRenderCache = new WeakMap();
+function shapeViewport() {
+  const item = baseItem(), viewer = state.viewer;
+  if (!item || !viewer) return null;
+  const size = viewer.viewport.getContainerSize();
+  const points = [[0,0],[size.x,0],[0,size.y],[size.x,size.y]].map(([x,y]) =>
+    item.viewerElementToImageCoordinates(new OpenSeadragon.Point(x,y)));
+  return {x0:Math.min(...points.map(p=>p.x)), y0:Math.min(...points.map(p=>p.y)),
+    x1:Math.max(...points.map(p=>p.x)), y1:Math.max(...points.map(p=>p.y))};
+}
+function shapeAttribute(node, name, value) {
+  value = String(value);
+  if (node.getAttribute(name) !== value) node.setAttribute(name, value);
+}
+function styleAnnotationPath(path,selected=false){
+  const mode=state.annotationMode||'both';
+  path.style.fillOpacity=mode==='outline'||selected?'0':'1';
+  path.style.strokeOpacity=selected||mode!=='fill'?'1':'0';
+}
+function syncShapePaths(layer, cache, view) {
+  const features = layer.features || [];
+  if (cache.features !== features || cache.length !== features.length) {
+    const retained = new Set(features);
+    cache.nodes.forEach((node, feature) => { if (!retained.has(feature)) { node.remove(); cache.nodes.delete(feature); } });
+    cache.features = features; cache.length = features.length;
+  }
+  // A margin avoids touching the DOM on each pan frame. Bounds include all rings,
+  // not just centroids, so long polygons and holes remain accurate at the edges.
+  const dx = view ? Math.max(1, (view.x1-view.x0)*.25) : 0, dy = view ? Math.max(1, (view.y1-view.y0)*.25) : 0;
+  const bounds = cache.bounds = view ? {x0:view.x0-dx,y0:view.y0-dy,x1:view.x1+dx,y1:view.y1+dy} : null;
+  let next = cache.group.firstChild;
+  const place = path => {
+    if (path === next) next = next.nextSibling;
+    else cache.group.insertBefore(path, next);
+  };
+  const batches = cache.batches || (cache.batches = new Map()), used = new Set(), selectedPaths = [];
+  let run = null, runIndex = 0;
+  const flush = () => {
+    if (!run) return;
+    const key = runIndex++ + ':' + run.name + ':' + run.color;
+    used.add(key);
+    let batch = batches.get(key);
+    if (!batch) { batch = {path:document.createElementNS(SVG_NS,'path'), parts:[]}; batches.set(key,batch); }
+    if (batch.parts.length !== run.parts.length || run.parts.some((part,i)=>part!==batch.parts[i])) {
+      batch.parts = run.parts;
+      shapeAttribute(batch.path, 'd', run.parts.join(''));
+    }
+    shapeAttribute(batch.path,'class','shape annotation-group');
+    shapeAttribute(batch.path,'data-annotation',run.name);
+    shapeAttribute(batch.path,'data-polygons',run.parts.length);
+    shapeAttribute(batch.path,'stroke',run.color); shapeAttribute(batch.path,'fill',run.color);
+    batch.path.style.fillRule = 'nonzero';
+    styleAnnotationPath(batch.path);
+    if (run.selected.length) {
+      if (!batch.selection) batch.selection = document.createElementNS(SVG_NS,'path');
+      if (!batch.selected || batch.selected.length !== run.selected.length || run.selected.some((part,i)=>part!==batch.selected[i])) {
+        batch.selected = run.selected; shapeAttribute(batch.selection,'d',run.selected.join(''));
+      }
+      shapeAttribute(batch.selection,'class','shape selected');
+      shapeAttribute(batch.selection,'fill',run.color);
+      batch.selection.style.fillRule = 'nonzero';
+      styleAnnotationPath(batch.selection,true);
+      selectedPaths.push(batch.selection);
+    }
+    place(batch.path); run = null;
+  };
+  for (const feature of features) {
+    if (!featureShown(layer, feature)) continue;
+    const b = featureBounds(feature);
+    if (bounds && (b.x1<bounds.x0 || b.x0>bounds.x1 || b.y1<bounds.y0 || b.y0>bounds.y1)) continue;
+    const color = shapeColor(feature);
+    const selected = (state.selected?.layer === layer && state.selected.id === feature.properties.id) || isPicked(layer, feature.properties.id);
+    const grouped = groupAnnotationDisplay(layer, feature);
+    if (grouped) {
+      const name = annotationName(layer, feature);
+      if (run && (run.name !== name || run.color !== color)) flush();
+      if (!run) run = {name,color,parts:[],selected:[]};
+      const part = groupedPathOf(feature.geometry);
+      run.parts.push(part);
+      if (selected) run.selected.push(part);
+      continue;
+    } else flush();
+    let path = cache.nodes.get(feature);
+    if (!path) { path = document.createElementNS(SVG_NS, 'path'); cache.nodes.set(feature, path); }
+    shapeAttribute(path, 'd', pathOf(feature.geometry));
+    shapeAttribute(path, 'stroke', color); shapeAttribute(path, 'fill', color);
+    if (layer.training_part || layer.artifact_part) path.style.stroke = color;
+    shapeAttribute(path, 'class', 'shape' + (selected ? ' selected' : ''));
+    if (isTrainingCellLayer(layer)) styleTrainingCellPath(path, selected);
+    else {styleAnnotationPath(path);if(selected)path.style.strokeOpacity='1';}
+    place(path);
+  }
+  flush();
+  selectedPaths.forEach(place);
+  while (next) { const old = next; next = next.nextSibling; old.remove(); }
+  batches.forEach((batch,key) => { if (!used.has(key)) batches.delete(key); });
+}
+function updateShapeViewport() {
+  const view = shapeViewport();
+  if (!view) return;
+  for (const layer of shapeLayers()) {
+    const cache = shapeRenderCache.get(layer);
+    if (!layer.visible || !cache || layer.cell_training === 'saved') continue;
+    const b = cache.bounds;
+    if (!b || view.x0<b.x0 || view.x1>b.x1 || view.y0<b.y0 || view.y1>b.y1 ||
+        b.x1-b.x0>2*(view.x1-view.x0) || b.y1-b.y0>2*(view.y1-view.y0)) syncShapePaths(layer, cache, view);
+  }
+}
 function renderShapes() {
   if (!state.svgRoot) return;
-  state.svgRoot.innerHTML = "";
-  shapeLayers().forEach((layer) => {
-    if (!layer.visible) return;
-    const group = document.createElementNS(SVG_NS, "g");
-    group.setAttribute("data-layer", layer.id);
-    group.setAttribute("opacity", String(layer.opacity));
-    (layer.features || []).forEach((feature) => {
-      if (layer.hiddenNames && !featureShown(layer, feature)) return;  // a name row hidden in Layers
-      const path = document.createElementNS(SVG_NS, "path");
-      path.setAttribute("d", pathOf(feature.geometry));
-      const color = shapeColor(feature);
-      path.setAttribute("stroke", color);
-      path.setAttribute("fill", color);
-      if (layer.training_part || layer.artifact_part) path.style.stroke = color;
-      const selected = (state.selected && state.selected.id === feature.properties.id) || isPicked(layer, feature.properties.id);
-      path.setAttribute("class", "shape" + (selected ? " selected" : ""));
-      group.appendChild(path);
-    });
-    state.svgRoot.appendChild(group);
+  const layers = shapeLayers().filter(layer => layer.visible), groups = new Set();
+  const view = shapeViewport();
+  let next = state.svgRoot.firstChild;
+  layers.forEach((layer) => {
+    let cache = shapeRenderCache.get(layer);
+    if (!cache) {
+      const group = document.createElementNS(SVG_NS, 'g');
+      group.setAttribute('data-layer', layer.id);
+      cache = {group, nodes:new Map()}; shapeRenderCache.set(layer, cache);
+    }
+    const group = cache.group;
+    groups.add(group);
+    layer.opacity = displayOpacity(layer);
+    shapeAttribute(group, 'opacity', layer.opacity);
+    if (layer.cell_training === 'saved') {
+      const path = cache.savedPath || (cache.savedPath = document.createElementNS(SVG_NS, 'path'));
+      path.setAttribute('class', 'shape training-cell-overlay');
+      shapeAttribute(path, 'd', layer.cellPath || '');
+      path.style.pointerEvents = 'none';
+      styleTrainingCellPath(path);
+      if (path.parentNode !== group) group.appendChild(path);
+    } else syncShapePaths(layer, cache, view);
+    if (group === next) next = next.nextSibling;
+    else state.svgRoot.insertBefore(group, next);
   });
-  state.preview = document.createElementNS(SVG_NS, "path");
-  state.preview.setAttribute("class", "shape preview");
-  state.svgRoot.appendChild(state.preview);
+  Array.from(state.svgRoot.children).filter(node => node.hasAttribute('data-layer') && !groups.has(node)).forEach(node => node.remove());
+  if (!state.preview || state.preview.parentNode !== state.svgRoot) {
+    state.preview = document.createElementNS(SVG_NS, "path");
+    state.preview.setAttribute("class", "shape preview");
+    state.svgRoot.appendChild(state.preview);
+  }
   drawPreview();
   placeOverlay();
 }
@@ -547,7 +693,7 @@ function screenOf(point) {
 
 function polygonClick(position) {
   const point = toImage(position);
-  if (!point || !(drawTarget() || state.selectMode && regionLayers().length)) return;
+  if (!point || !(drawTarget() || state.selectMode && areaSelectionAvailable())) return;
   drawing.points = drawing.points || [];
   const points = drawing.points;
   if (points.length) {
@@ -945,7 +1091,9 @@ function ringArea(ring) {
   return Math.abs(total) / 2;
 }
 function featureArea(feature) {
-  return polygonsOf(feature.geometry).reduce((sum, rings) =>
+  const memo = geometryMemo(feature.geometry);
+  if (memo.area !== undefined) return memo.area;
+  return memo.area = polygonsOf(feature.geometry).reduce((sum, rings) =>
     sum + rings.slice(1).reduce((a, ring) => a - ringArea(ring), ringArea(rings[0] || [])), 0);
 }
 function areaText(pixels) {
@@ -955,13 +1103,17 @@ function areaText(pixels) {
   return square >= 1e6 ? (square / 1e6).toFixed(2) + " mm²" : Math.round(square).toLocaleString() + " µm²";
 }
 function featureBounds(feature) {
+  const memo = geometryMemo(feature.geometry);
+  if (memo.bounds) return memo.bounds;
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
   const visit = (p) => { x0 = Math.min(x0, p[0]); y0 = Math.min(y0, p[1]); x1 = Math.max(x1, p[0]); y1 = Math.max(y1, p[1]); };
   polygonsOf(feature.geometry).forEach((rings) => rings.forEach((ring) => ring.forEach(visit)));
   linesOf(feature.geometry).forEach((line) => line.forEach(visit));
-  return { x0: x0, y0: y0, x1: x1, y1: y1 };
+  return memo.bounds = { x0: x0, y0: y0, x1: x1, y1: y1 };
 }
 function contains(feature, x, y) {
+  const b = featureBounds(feature);
+  if (x<b.x0 || x>b.x1 || y<b.y0 || y>b.y1) return false;
   return polygonsOf(feature.geometry).some((rings) => {
     let inside = false;
     rings.forEach((ring) => {
@@ -980,6 +1132,7 @@ function editableShapeAt(point) {
   shapeLayers().forEach((layer) => {
     if (!canEditPolygons(layer)) return;
     (layer.features || []).forEach((feature) => {
+      if (!featureShown(layer, feature)) return;
       if (!contains(feature, point.x, point.y)) return;
       const area = featureArea(feature);
       const preferred = artifactPickPriority(layer);
@@ -995,6 +1148,7 @@ function selectShapeAt(point) {
   shapeLayers().forEach((layer) => {
     if (!layer.visible) return;
     (layer.features || []).forEach((feature) => {
+      if (!featureShown(layer, feature)) return;
       if (!contains(feature, point.x, point.y)) return;
       const area = featureArea(feature);
       const preferred = artifactPickPriority(layer);
@@ -1017,26 +1171,37 @@ function zoomTo(feature) {
 }
 
 function drawShapesOnCanvas(context, toCanvas, ratio) {
+  const origin = toCanvas(0,0), x = toCanvas(1,0), y = toCanvas(0,1);
+  const matrix = new DOMMatrix([x[0]-origin[0],x[1]-origin[1],y[0]-origin[0],y[1]-origin[1],origin[0],origin[1]]);
   shapeLayers().forEach((layer) => {
     if (!layer.visible) return;
-    (layer.features || []).forEach((feature) => {
-      const color = shapeColor(feature);
-      context.beginPath();
-      polygonsOf(feature.geometry).forEach((rings) => rings.forEach((ring) => {
-        ring.forEach((p, i) => { const [x, y] = toCanvas(p[0], p[1]); if (i) context.lineTo(x, y); else context.moveTo(x, y); });
-        context.closePath();
-      }));
-      context.globalAlpha = layer.opacity * 0.12;
-      context.fillStyle = color;
-      context.fill("evenodd");
-      linesOf(feature.geometry).forEach((line) => line.forEach((p, i) => {
-        const [x, y] = toCanvas(p[0], p[1]); if (i) context.lineTo(x, y); else context.moveTo(x, y);
-      }));
-      context.globalAlpha = layer.opacity;
+    let path = null, key = null, color = null, grouped = false;
+    const flush = () => {
+      if (!path) return;
+      const mode=state.annotationMode||'both',training=layer.training_part||layer.cell_training;
+      if(training||mode!=='outline'){
+        context.globalAlpha = displayOpacity(layer) * (training ? 0.12 : 1);
+        context.fillStyle = color;
+        context.fill(path, grouped ? 'nonzero' : 'evenodd');
+      }
+      context.globalAlpha = displayOpacity(layer);
       context.strokeStyle = color;
       context.lineWidth = 2 * ratio;
-      context.stroke();
+      if(training||mode!=='fill')context.stroke(path);
+      path = null;
+    };
+    (layer.features || []).forEach((feature) => {
+      if (!featureShown(layer, feature)) return;
+      const mode = groupAnnotationDisplay(layer,feature), colour = shapeColor(feature);
+      const nextKey = mode ? annotationName(layer,feature)+'::'+colour : null;
+      if (path && (!mode || nextKey !== key)) flush();
+      if (!path) { path = new Path2D(); key = nextKey; color = colour; grouped = mode; }
+      const memo = geometryMemo(feature.geometry), slot = mode ? 'groupCanvas' : 'canvas';
+      if (!memo[slot]) memo[slot] = new Path2D(mode ? groupedPathOf(feature.geometry) : pathOf(feature.geometry));
+      path.addPath(memo[slot], matrix);
+      if (!mode) flush();
     });
+    flush();
   });
   context.globalAlpha = 1;
 }

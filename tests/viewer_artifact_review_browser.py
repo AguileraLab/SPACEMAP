@@ -67,7 +67,8 @@ setTimeout(async()=>{try{
  assert(true,'Artifact scale stays saved across stage changes');
  clot().open=true;buildPanel();
  assert(clot().visible&&drawTarget()===clot(),'Drawing targets the selected artifact, never original Tissue');
- assert(document.querySelector('[data-layer-id=artifact-clot] .artifact-layer-settings'),'The artifact layer also offers matching detection controls');
+ assert(!document.querySelector('#studio-layers .artifact-layer-settings')&&!document.querySelector('#studio-layers [aria-label="Artifact scale"]'),'Layers has no duplicate artifact prediction settings');
+ assert(tools().querySelector('[aria-label="Artifact scale"]')?.value==='4','Prediction settings remain available in the left Annotation panel');
  const training=tools().querySelector('[data-artifact-training=clot]');training.open=true;
  assert(!training.querySelector('[aria-label="Use reviewed polygons"]'),'Train uses the corrected artifact list without a second include checkbox');
  await until(()=>!button(tools(),'Train model').disabled);button(tools(),'Train model').click();

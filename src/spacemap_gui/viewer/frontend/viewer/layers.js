@@ -3,6 +3,17 @@
 "use strict";
 
 // ---------------------------------------------------------------- layer order and added layers
+function consolidateCellResults() {
+  // Older Show result commands cloned the segmentation. Keep its original
+  // layer; otherwise a second overlay makes cluster filtering look broken.
+  for (const copy of [...state.layers]) {
+    if (copy.type !== 'cells' || !copy.id.startsWith('result-')) continue;
+    const original = state.layers.find(layer => layer.type === 'cells' && !layer.id.startsWith('result-') &&
+      layer.token === copy.token && layer.image_token === copy.image_token);
+    if (original) removeLayer(copy);
+  }
+}
+
 function moveLayer(layer, step) {
   const tiles = state.layers.filter((l) => l.type !== "shapes");
   const at = tiles.indexOf(layer), to = at + step;
@@ -17,6 +28,7 @@ function moveLayer(layer, step) {
 
 // gone: the layer was deleted from the project (not only from this view), so the view does not remember hiding it.
 function removeLayer(layer, gone = false) {
+  removeAnnotationOutline(layer);state.annotationSelections?.delete(layer);
   if (gone) state.removedLayers?.delete(viewLayerKey(layer));
   else if (state.spec?.layers?.some(source => source.id === layer.id)) state.removedLayers?.add(viewLayerKey(layer));
   retire(layer);
@@ -41,6 +53,10 @@ async function addLayerToView(layer, below) {
 }
 
 async function insertLayerToView(layer, below, generation) {
+  if (layer.type === 'annotations' && layer.saved_file) {
+    const working = state.layers.find(other => other.type === 'shapes' && other.saved_file === layer.saved_file);
+    if (working) return working;
+  }
   for (const old of state.layers.filter(item => item.id === layer.id && item.type === 'shapes')) await flushShapeSave(old);
   if (generation !== state.initGeneration) return;
   const token = layer.type === "image" ? layer.token : layer.image_token;  // an image layer is its own image
@@ -49,6 +65,7 @@ async function insertLayerToView(layer, below, generation) {
   if (layer.type === "image" && !layer.info.rgb) await prepareChannels(layer);
   layer.visible = layer.visible !== false;
   layer.opacity = layer.opacity === undefined ? 0.8 : layer.opacity;
+  layer.opacity = displayOpacity(layer);
   layer.hidden = new Set(layer.hidden || []);
   layer.added = true;
   layer.open = layer.open ?? !layer.annotation_kind;
@@ -59,11 +76,22 @@ async function insertLayerToView(layer, below, generation) {
   if (generation !== state.initGeneration) return;
   // Replacing a layer keeps a single entry; requests for the same ID are queued.
   const existing = state.layers.filter(item => item.id === layer.id);
+  if (layer.type === 'shapes' && layer.saved_file) existing.push(...state.layers.filter(item =>
+    item.type === 'annotations' && item.saved_file === layer.saved_file && !existing.includes(item)));
   for (const old of existing) {
     removeLayer(old);
   }
   index = Math.min(index, state.layers.length);
   state.layers.splice(index, 0, layer);
+  // Reviewer image rows initially load the image. Its annotation source arrives
+  // when an item is opened, after init's normal display-transfer pass.
+  if (state.reviewer && layer.type === 'annotations') {
+    const matches = (state.displayTransfer?.layers || []).filter(old => old.family === displayFamily(layer));
+    if (matches.length === 1) {
+      applyDisplayLayout(layer, matches[0].layout);
+      applyAnnotationDisplayTransfer(layer, matches[0]);
+    }
+  }
   state.removedLayers?.delete(viewLayerKey(layer));
   if (layer.type === "shapes") { renderShapes(); updateToolbar(); }
   else if (layer.visible) addLayer(layer);
@@ -78,12 +106,12 @@ function addCard() {
   const body = el("div", { class: "layer-body" });
   const cells = state.layers.find((l) => l.type === "cells" && (l.tables || []).length);
   const row = el("div", { class: "row wrap" });
-  if (cells) {
+  if (cells && !state.studio) {
     row.appendChild(el("button", { class: "btn small", text: "Density map", title: "How crowded the cells are (all cells or chosen phenotypes), or the local average of a column such as a marker",
       onclick: () => {
         const count = state.layers.filter((l) => l.type === "density").length + 1;
         addLayerToView({ id: "density" + count + "-" + Date.now().toString(36), type: "density", name: "Density map " + count,
-          token: cells.token, image_token: cells.image_token, tables: cells.density_tables || cells.tables, table: cells.table,
+          token: cells.token, image_token: cells.image_token, cellsId: cells.id, dataMode: "viewer", cellScope: "all", tables: cells.tables, table: cells.table,
           fcol: "", fvals: [], vcol: "", radius: 50, weighted: false, cmap: "#ff3b3b", cmapAuto: true, opacity: 0.75 }, cells);
       } }));
   }
@@ -130,25 +158,35 @@ function addCard() {
 
 // ---------------------------------------------------------------- density maps (as in Tab 9)
 function densityControls(layer, body) {
-  const tables = layer.tables || [];
-  if (tables.length > 1) {
-    body.appendChild(el("div", { class: "row" }, [el("label", { class: "lbl", text: "Table" }),
-      select(tables.map((t) => [t.id, t.name]), layer.table, (v) => { layer.table = v; layer.fcol = ""; layer.fvals = []; layer.vcol = ""; layer.columns = null; bump(layer); })]));
-  }
-  const cellsRow = el("div", { class: "row" }, [el("label", { class: "lbl", text: "Cells" })]);
-  const showRow = el("div", { class: "row" }, [el("label", { class: "lbl", text: "Show" })]);
-  body.append(cellsRow);
+  const owner=resolveDensityData(layer),tables=layer.tables || [];
+  if(!layer.table || layer.dataMissing){body.append(el('div',{class:'row'},[
+    el('span',{class:'hint grow',text:'No cell data'}),
+    el('button',{class:'btn small',text:owner?.table?'Use current cell data':'Choose cell data',onclick:()=>{
+      if(owner?.table)setDensityScope(layer,'viewer');
+      else document.querySelector('select[aria-label="Cell data"]')?.focus();
+    }}),
+    help('Choose Cell data at the top of Cells, or import cell data below.')]));return;}
+  const grid=el('div',{class:'density-control-grid'}),more=el('details',{class:'density-more'});
+  const blocks=state.annotationBlocksOpen||(state.annotationBlocksOpen={});more.open=!!blocks['density-more::'+layer.id];
+  more.ontoggle=()=>{if(more.isConnected){blocks['density-more::'+layer.id]=more.open;saveView();}};
+  more.append(el('summary',{text:'More'}));body.append(grid);
+  const scope=select([['all',layer.dataMode==='fixed'?'All points in this image':'All cells in this image'],
+    ...(owner&&layer.dataMode!=='fixed'?[['viewer','Follow shown cells'],['snapshot','Keep this selection']]:[])],layer.cellScope||'all',v=>setDensityScope(layer,v));
+  scope.setAttribute('aria-label','Density cells included');
+  more.append(cellControlRow('Cells included',[scope],
+    'Follow shown cells updates the map with the viewer selection, independently of cell visibility. Keep this selection preserves this table, filters and selected groups while you explore another set. All cells ignores viewer filters. Uses '+cellDataInfo(layer).name+'.'));
+  const cellsRow=cellControlRow('Filter by',[]),showRow=cellControlRow('Map value',[]);
+  more.append(cellsRow);
   const values = el("div", { class: "legend" });
-  body.appendChild(values);
-  body.append(showRow);
+  more.appendChild(values);
+  grid.append(showRow);
   columnsFor(layer).then((columns) => {
     const sorted = sortColumns(columns);
-    const triads = /triad/i.test(((layer.tables || []).find((t) => t.id === layer.table) || {}).name || "");
-    cellsRow.firstChild.textContent = triads ? "Triads" : "Cells";
-    cellsRow.appendChild(select([["", triads ? "All triads" : "All cells"]].concat(sorted.map((c) => [c, "Some, by " + c])), layer.fcol || "",
-      (v) => { layer.fcol = v; layer.fvals = []; bump(layer); }));
-    showRow.appendChild(select([["", "Cell density (cells/mm²)"]].concat(sorted.map((c) => [c, "Average of " + c])), layer.vcol || "",
-      (v) => { layer.vcol = v; bump(layer); }));
+    if(!body.isConnected)return;
+    const filter=select([["", "No additional group filter"]].concat(sorted.map((c) => [c, c])), layer.fcol || "",
+      (v) => { layer.fcol = v; layer.fvals = []; bump(layer); });filter.setAttribute("aria-label","Density group column");cellsRow.querySelector(".inline").append(filter);
+    const metric=select([["", "Cell density (cells/mm²)"]].concat(sorted.filter(c=>layer.columnKinds?.[c]!=="group").map((c) => [c, "Mean " + c])), layer.vcol || "",
+      (v) => { layer.vcol = v; bump(layer); });metric.setAttribute("aria-label","Density map value");showRow.querySelector(".inline").append(metric);
   }).catch((error) => cellsRow.appendChild(el("span", { class: "hint", text: error.message })));
   if (layer.fcol) {
     getJSON("/cells/" + layer.token + "/density/groups?t=" + encodeURIComponent(layer.table) + "&col=" + encodeURIComponent(layer.fcol))
@@ -191,7 +229,7 @@ function densityControls(layer, body) {
               for (const value of layer.fvals) {
                 const item = (legend.items || []).find((i) => i.value === value) || {};
                 await addLayerToView({ id: "density-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 5), type: "density",
-                  name: "Density: " + value, token: layer.token, image_token: layer.image_token, tables: layer.tables, table: layer.table,
+                  name: "Density: " + value, token: layer.token, image_token: layer.image_token, tables: layer.tables, table: layer.table, cellsId:layer.cellsId, dataMode:layer.dataMode, cellScope:layer.cellScope, cellDensity:layer.cellDensity, densitySnapshot:layer.densitySnapshot,
                   fcol: layer.fcol, fvals: [value], vcol: layer.vcol, radius: layer.radius, weighted: layer.weighted,
                   cmap: item.color || "#ff3b3b", cmapAuto: true, opacity: layer.opacity }, layer);
               }
@@ -204,16 +242,15 @@ function densityControls(layer, body) {
     const weighted = el("input", { type: "checkbox" });
     weighted.checked = !!layer.weighted;
     weighted.addEventListener("change", () => { layer.weighted = weighted.checked; bump(layer); });
-    body.appendChild(el("div", { class: "row" }, [el("label", { class: "lbl", text: "Weight" }), weighted,
-      el("span", { class: "hint", text: "fade where cells are sparse (as Tab 9's density weighting)" })]));
+    more.appendChild(cellControlRow("Fade sparse areas",[weighted]));
   }
   const radius = el("input", { type: "range", min: "5", max: "500", step: "5", value: String(layer.radius || 50) });
   const radiusText = el("span", { class: "hint", text: (layer.radius || 50) + " µm" });
   radius.addEventListener("input", () => { radiusText.textContent = radius.value + " µm"; });
   radius.addEventListener("change", () => { layer.radius = Number(radius.value); bump(layer); });
-  body.appendChild(el("div", { class: "row" }, [el("label", { class: "lbl", text: "Radius" }), radius, radiusText]));
+  const radiusRow=cellControlRow("Radius",[radius,radiusText]);
   const single = String(layer.cmap || "").startsWith("#");
-  const colourRow = el("div", { class: "row" }, [el("label", { class: "lbl", text: "Colours" }),
+  const colourRow = cellControlRow('Colours',[
     select([["single", "One colour"], ["inferno", "Inferno"], ["magma", "Magma"], ["viridis", "Viridis"], ["plasma", "Plasma"],
       ["turbo", "Turbo"], ["hot", "Hot"], ["Reds", "Reds"], ["Blues", "Blues"]],
       single ? "single" : (layer.cmap || "inferno"),
@@ -221,13 +258,19 @@ function densityControls(layer, body) {
   if (single) {
     const picker = el("input", { type: "color", value: layer.cmap, title: "The map's colour; the more cells, the stronger" });
     picker.addEventListener("change", () => { layer.cmapAuto = false; layer.cmap = picker.value; bump(layer); });
-    colourRow.appendChild(picker);
+    colourRow.querySelector('.inline').appendChild(picker);
   }
-  body.appendChild(colourRow);
+  grid.appendChild(colourRow);
+  const opacity=el('input',{type:'range',min:'0',max:'100',value:String(Math.round((layer.opacity??.75)*100)),'aria-label':'Density opacity'});
+  const opacityText=el('span',{class:'hint',text:opacity.value+'%'});
+  opacity.oninput=()=>{opacityText.textContent=opacity.value+'%';setOpacity(layer,opacity.value/100);};
+  grid.append(cellControlRow('Opacity',[opacity,opacityText]),radiusRow);
+  radius.setAttribute('aria-label','Density radius');
   const legend = el("div", { class: "legend", text: "Computing..." });
   body.appendChild(legend);
+  body.append(more);
   getJSON("/cells/" + layer.token + "/density/legend?" + densityQuery(layer)).then((result) => {
-    legend.textContent = "";
+    if(!legend.isConnected)return;legend.textContent = "";
     const stops = String(result.colormap).startsWith("#") ? "rgba(0,0,0,0)," + result.colormap : gradientStops(result.colormap);
     legend.appendChild(el("div", { class: "gradient", style: "background: linear-gradient(90deg," + stops + ")" }));
     legend.appendChild(el("div", { class: "range" }, [el("span", { text: number(result.min) }), el("span", { text: number(result.max) + " " + result.units })]));

@@ -202,11 +202,8 @@ def save_example(
     if predicted is not None and (not isinstance(predicted, list) or len(predicted) > 20000):
         raise ValueError("The prediction could not be read.")
     folder, _ = folders(root, training_set)
-    nuclear, membranes = segmentation.channels(names, settings)
-    planes = segmentation.read_crop(image, names, [nuclear, *membranes], bounds)
-    nucleus = planes[0].astype(np.float32)
-    borders = np.max(np.stack(planes[1:]), axis=0).astype(np.float32)
-    picture = np.stack((borders, np.zeros_like(borders), nucleus))  # (3, h, w), as Cellpose is given it
+    picture, nuclear, membranes = segmentation.read_segmentation_crop(image, names, bounds, settings)
+    picture = np.moveaxis(picture, -1, 0)  # (3, h, w), as Cellpose is given it
     masks = masks_from(polygons, bounds)
     cells = int(masks.max())
     if not cells:
@@ -223,6 +220,7 @@ def save_example(
         {
             "name": name,
             "image": Path(image).name,
+            "image_path": str(Path(image).resolve()),
             "bounds": list(bounds),
             "role": role,
             "model": str(model or ""),
@@ -321,6 +319,107 @@ def _load(folder, entries):
     return pictures, labels
 
 
+def retrain_settings(root, names, config, mappings, epochs=100, training_set="studio", missing_markers=False):
+    """Snapshot a selected round; legacy tiles resolve in Segmentation's Images folder.
+
+    Reuse corrected masks, rebuilding inputs in memory without replacing the
+    saved pictures, predictions or labels. Validation is refreshed the same way
+    and is never added to the training selection.
+    """
+    from spacemap.viewer.sources import fingerprint
+    from . import segmentation
+
+    source, _ = folders(root, training_set)
+    current = session(root, training_set)
+    if not current:
+        raise ValueError("Start a training session first.")
+    if isinstance(epochs, bool) or not isinstance(epochs, int) or not 1 <= epochs <= 2000:
+        raise ValueError("Epochs must be 1 to 2000.")
+    if not isinstance(missing_markers, bool):
+        raise ValueError("Choose on or off for Train for missing markers.")
+    if not isinstance(names, list) or not names or not all(isinstance(name, str) for name in names):
+        raise ValueError("Select at least one training tile.")
+    entries = _read(source / "examples.json", [])
+    available = {item["name"] for item in entries if item.get("role", "train") == "train"}
+    if not set(names) <= available:
+        raise ValueError("Select saved training tiles only; validation tiles are kept for scoring.")
+    inputs = segmentation.values(root, config)
+    if missing_markers:
+        from spacemap.segmentation_inputs import dapi_anchor
+        if not dapi_anchor(inputs['tab4_last_nuclear_names']):
+            raise ValueError('Train for missing markers requires DAPI selected as a Nucleus marker.')
+    images = segmentation.step_folders(root, config, mappings)["images"]
+    tiles = []
+    for item in entries:
+        if item["name"] not in names and item.get("role") != "validate":
+            continue
+        if Path(item["name"]).name != item["name"] or Path(item["image"]).name != item["image"]:
+            raise ValueError("Invalid saved tile name.")
+        image = Path(item["image_path"]) if item.get("image_path") else images / item["image"]
+        if not image.is_file():
+            raise ValueError(f"Source image missing: {image}. Check Segmentation's Images folder.")
+        mask = source / f"{item['name']}_masks.tif"
+        if not mask.is_file():
+            raise ValueError(f"Corrected cells missing: {mask}")
+        tiles.append({**item, "image_path": str(image.resolve()), "image_stamp": fingerprint(image),
+                      "mask_stamp": fingerprint(mask)})
+    return {"project_root": str(root), "set": training_set, "n_epochs": epochs,
+            "gpu": bool(inputs["tab4_gpu"]), "refresh_inputs": True,
+            "input_settings": inputs, "tiles": tiles,
+            "training_session": current, "missing_markers": missing_markers}
+
+
+def _refreshed_load(source, entries, settings, report, missing_markers=False):
+    """Read original full-resolution pixels and unchanged masks; fail on missing features."""
+    import hashlib
+    import tifffile
+    from spacemap.viewer.sources import fingerprint, open_source
+    from spacemap.segmentation_inputs import cellpose_input, dapi_anchor, marker_subsets
+    from . import segmentation
+
+    pictures, labels, provenance, variants = [], [], [], {}
+    for index, item in enumerate(entries):
+        image, mask = Path(item["image_path"]), source / f"{item['name']}_masks.tif"
+        if fingerprint(image) != item["image_stamp"] or fingerprint(mask) != item["mask_stamp"]:
+            raise ValueError(f"{item['name']}: source or corrected cells changed. Select the tiles again.")
+        info = open_source(image).info
+        names = list(info.channel_names)
+        wanted = settings["tab4_last_nuclear_names"] + settings["tab4_last_membrane_names"]
+        missing = sorted(set(wanted) - set(names))
+        if missing and not missing_markers:
+            raise ValueError(f"{image}: selected input channels missing: {', '.join(missing)}")
+        anchor = dapi_anchor(settings['tab4_last_nuclear_names']) if missing_markers else None
+        if missing_markers and (not anchor or anchor not in names):
+            raise ValueError(f'{image}: required DAPI channel missing: {anchor or "select DAPI"}')
+        bounds = check_region(item["bounds"], info.width, info.height)
+        report(f"Refreshing {item['role'] if 'role' in item else 'train'} tile {item['name']} from {image}",
+               0.02 + 0.02 * index / max(1, len(entries)))
+        recipes = {}
+        if missing_markers:
+            nuclear, borders = segmentation.channels(names, settings)
+            wanted = list(dict.fromkeys(nuclear + borders))
+            planes = dict(zip(wanted, segmentation.read_crop(str(image), names, wanted, bounds)))
+            seed = int.from_bytes(hashlib.sha256(item['name'].encode()).digest()[:4], 'little')
+            recipes = marker_subsets(nuclear, borders, seed)
+            for mode, (nuc, border) in recipes.items():
+                value = cellpose_input((planes[n] for n in nuc), (planes[n] for n in border))
+                variants.setdefault(mode, []).append(np.moveaxis(value, -1, 0))
+            picture = np.moveaxis(variants['full'][-1], 0, -1)
+        else:
+            picture, nuclear, borders = segmentation.read_segmentation_crop(str(image), names, bounds, settings)
+        truth = tifffile.imread(mask)
+        if truth.shape != picture.shape[:2] or truth.ndim != 2 or not np.issubdtype(truth.dtype, np.integer):
+            raise ValueError(f"{item['name']}: corrected cells do not match the image crop.")
+        if fingerprint(image) != item["image_stamp"] or fingerprint(mask) != item["mask_stamp"]:
+            raise ValueError(f"{item['name']}: source changed while reading. Select the tiles again.")
+        pictures.append(np.moveaxis(picture, -1, 0))
+        labels.append(truth)
+        provenance.append({**item, "nuclear": nuclear, "membranes": borders,
+                           "missing_optional": missing if missing_markers else [], "variants": recipes,
+                           "mask_sha256": hashlib.sha256(truth.tobytes()).hexdigest()})
+    return pictures, labels, provenance, variants
+
+
 def _model(base, gpu):
     """A Cellpose model to train or score; on the CPU without MKLDNN, which cannot train."""
     from cellpose import models
@@ -411,7 +510,10 @@ def train(settings, folder, report):
     current = session(root, training_set)
     if not current:
         raise ValueError("Start a training session first.")
-    entries = sorted(_read(source / "examples.json", []), key=lambda item: item["name"])
+    refresh = bool(settings.get("refresh_inputs"))
+    if refresh and settings.get("training_session") != current:
+        raise ValueError("The training model changed. Select the tiles again to use the current model.")
+    entries = sorted(settings["tiles"] if refresh else _read(source / "examples.json", []), key=lambda item: item["name"])
     fit = [item for item in entries if item.get("role", "train") == "train"]
     check = [item for item in entries if item.get("role") == "validate"]
     if not fit:
@@ -421,14 +523,30 @@ def train(settings, folder, report):
     if (models_folder / "models" / name).exists():
         raise ValueError(f"{name} exists already. Start a session with a new name.")
     report(f"Reading {len(fit)} training and {len(check)} validation tiles…", 0.02)
-    pictures, labels = _load(source, fit)
-    checks, truths = _load(source, check) if check else ([], [])
+    provenance = []
+    robust = refresh and bool(settings.get('missing_markers'))
+    fit_variants, check_variants = {}, {}
+    if refresh:
+        pictures, labels, provenance, fit_variants = _refreshed_load(source, fit, settings["input_settings"], report, robust)
+        checks, truths, validation_provenance, check_variants = _refreshed_load(source, check, settings["input_settings"], report, robust)
+        provenance += validation_provenance
+    else:
+        pictures, labels = _load(source, fit)
+        checks, truths = _load(source, check) if check else ([], [])
     gpu = bool(settings.get("gpu", True)) and torch.cuda.is_available()
     report(f"Loading {Path(current['current']).name} on {'GPU' if gpu else 'CPU'}…", 0.05)
     model = _model(current["current"], gpu)
     before = score(model, checks, truths) if checks else None
+    subset_scores = {}
+    if robust:
+        subset_scores = {mode: {'before': before if mode == 'full' else score(model, values, truths)}
+                         for mode, values in check_variants.items()}
+        # Equal exposure to the full panel, no H&E, fewer markers, and DAPI only.
+        # Arrays/labels are reused, not written as duplicate tile files.
+        pictures = [picture for group in fit_variants.values() for picture in group]
+        labels = labels * len(fit_variants)
     epochs = int(settings.get("n_epochs", TRAINING["n_epochs"]))
-    report(f"Training {name} for {epochs} epochs on {len(fit)} tiles…", 0.1)
+    report(f"Training {name} for {epochs} epochs on {len(fit)} tiles ({len(pictures)} input examples)…", 0.1)
     models_folder.mkdir(parents=True, exist_ok=True)
     path, losses = cellpose_train.train_seg(
         model.net,
@@ -439,7 +557,7 @@ def train(settings, folder, report):
         normalize=True,
         min_train_masks=0,
         save_path=str(models_folder),
-        nimg_per_epoch=max(8, len(fit)),
+        nimg_per_epoch=max(8, len(pictures)),
         learning_rate=TRAINING["learning_rate"],
         weight_decay=TRAINING["weight_decay"],
         n_epochs=epochs,
@@ -451,6 +569,9 @@ def train(settings, folder, report):
     if checks:
         report("Scoring it on the validation tiles…", 0.93)
         after = score(trained, checks, truths)
+        if robust:
+            for mode, values in check_variants.items():
+                subset_scores[mode]['after'] = after if mode == 'full' else score(trained, values, truths)
     note = {
         "version": version,
         "from": current["current"],
@@ -465,12 +586,28 @@ def train(settings, folder, report):
         "final_loss": round(float(losses[-1]), 4) if len(losses) else None,
         "created": _now(),
         "set": training_set,
+        "refreshed_inputs": refresh,
+        "missing_marker_training": robust,
+        "input_examples": len(pictures),
+        "training_tile_names": [item["name"] for item in fit],
+        "validation_tile_names": [item["name"] for item in check],
     }
+    if refresh:
+        manifest = Path(str(path) + ".inputs.json")
+        _write(manifest, {"settings": settings["input_settings"], "tiles": provenance})
+        note.update(input_manifest=str(manifest), input_settings={
+            key: settings["input_settings"][key] for key in ("tab4_last_nuclear_names", "tab4_last_membrane_names")})
+    if robust:
+        from spacemap.segmentation_inputs import dapi_anchor
+        note.update(required_nuclear=dapi_anchor(settings['input_settings']['tab4_last_nuclear_names']),
+                    subset_validation=subset_scores)
     _write(Path(str(path) + ".json"), note)
     latest = session(root, training_set) or current
-    latest["current"] = str(path)
-    latest["versions"] = [*latest.get("versions", []), {"name": name, "path": str(path), **note}]
-    _write(source / "session.json", latest)
+    # A newly started series must not be overwritten by an older running job.
+    if latest == current:
+        latest["current"] = str(path)
+        latest["versions"] = [*latest.get("versions", []), {"name": name, "path": str(path), **note}]
+        _write(source / "session.json", latest)
     return {"model": str(path), "name": name, **note}
 
 

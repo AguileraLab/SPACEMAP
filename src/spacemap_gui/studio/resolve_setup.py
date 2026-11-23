@@ -150,10 +150,13 @@ def filtered(frame, options):
 
 
 def _rois(root, table):
-    from .phenotyping_inputs import column_roles
+    from .phenotyping_inputs import column_roles, single_image
+    from spacemap.viewer.catalog import sample_of
     roi = column_roles(root, table)["roi"]
     if not roi:
-        raise ValueError("Choose the ROI column at the top of Phenotyping.")
+        anchor = column_roles(root, table)["cell_id"] or dataio.columns(table)[0]
+        count = len(dataio.load(table, columns=[anchor]))
+        return "", pd.Series(single_image(root, table) or sample_of(table), index=range(count))
     names = dataio.load(table, columns=[roi])[roi]
     if names.isna().any() or names.astype(str).str.strip().eq("").any():
         raise ValueError("Every cell needs an ROI name.")
@@ -215,8 +218,9 @@ def calculate(root, table, options, *, background_folder=None):
         if method in (None, "predefined"):
             raise ValueError("Choose a threshold method to calculate gates.")
         # Read measurements once (Parquet column projection), not one entire table per ROI.
-        frame = dataio.load(table, columns=list(dict.fromkeys([roi, *markers, *([options["filter_col"]] if options.get("enable_filter") else [])])))
-        frame[roi] = frame[roi].astype(str)
+        frame = dataio.load(table, columns=list(dict.fromkeys([*([roi] if roi else []), *markers, *([options["filter_col"]] if options.get("enable_filter") else [])])))
+        roi = roi or "__spacemap_image__"
+        frame[roi] = names.to_numpy()
         frame = filtered(frame, options)
         if frame.empty:
             raise ValueError("No cells match the filter.")
@@ -235,8 +239,8 @@ def save(root, table, body):
     payload = rules_payload(body.get("rules", ""), markers)
     roi, rois = _rois(root, table)
     if options.get("enable_filter"):
-        scope = dataio.load(table, columns=list(dict.fromkeys([roi, options["filter_col"]])))
-        rois = filtered(scope, options)[roi].astype(str)
+        scope = dataio.load(table, columns=[options["filter_col"]])
+        rois = rois.loc[filtered(scope, options).index]
     rows = body.get("thresholds", [])
     threshold = threshold_frame(rows, markers, rois) if options["threshold_mode"] == "Predefined (CSV)" else pd.DataFrame()
     options["batch_col"] = roi
@@ -345,7 +349,7 @@ def draft_reference(root, table, body):
 
 
 def job_settings(root, table, args):
-    from .phenotyping_inputs import column_roles, segmentation_column
+    from .phenotyping_inputs import column_roles, segmentation_column, single_image
     from .tasks import source_revision, validate_table
     saved = get(root, table)
     options = saved["values"]
@@ -357,13 +361,14 @@ def job_settings(root, table, args):
     result = {**paths(root, table), "table": table, "markers": markers, "options": options,
               "output_col": args["column"], "overwrite_columns": [args["column"]] if args.get("overwrite") else [],
               "cell_id_col": roles["cell_id"], "roi_column": roles["roi"],
+              "single_image": single_image(root, table) if not roles["roi"] else "",
               "label_column": segmentation_column(root, table)}
     validate_table(result)
     if options["threshold_mode"] == "Predefined (CSV)":
         rois = _rois(root, table)[1]
         if options.get("enable_filter"):
-            frame = dataio.load(table, columns=list(dict.fromkeys([roles["roi"], options["filter_col"]])))
-            rois = filtered(frame, options)[roles["roi"]].astype(str)
+            frame = dataio.load(table, columns=[options["filter_col"]])
+            rois = rois.loc[filtered(frame, options).index]
         threshold_frame(saved["thresholds"], markers, rois)
     result["revision"] = source_revision(result)
     return result

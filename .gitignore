@@ -91,3 +91,10 @@ SPACEMAP_stage_*/
 *.pem
 *.key
 release-artifacts/
+
+# Local research results and internal development records.
+analysis/
+docs/validation/
+docs/codex/
+skills/
+AGENTS.md

@@ -94,14 +94,20 @@ def run(settings, folder, report):
     validate_table(settings)
     chosen = settings["values"]
     anchor_column = settings.get("cell_id_col", "cell_id")
+    from spacemap import table_collection
+    from . import spatial_sources
     grouping = [chosen[name] for name in ("batch_col", "roi_col") if chosen[name]]
-    report("Reading the combined table…", 0.05)
+    if table_collection.is_collection(settings['table']):
+        grouping.append('batch_id')
+        table_collection.validate(settings['table'], [chosen['phenotype_col'], *grouping], settings.get('images'))
+    report("Reading cell tables…", 0.05)
     images = settings.get("images") or []
     frame = dataio.load(
         settings["table"],
         columns=list(dict.fromkeys([anchor_column, "x_centroid", "y_centroid", chosen["phenotype_col"], *grouping,
                                     *([settings["image_col"]] if images else [])])),
     )
+    chosen = spatial_sources.isolate_images(frame, chosen, settings['table'])
     work = frame
     if images:  # only the chosen images' cells; the others get no neighbourhood (the column still covers every row)
         work = frame[frame[settings["image_col"]].astype(str).isin(images)]

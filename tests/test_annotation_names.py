@@ -365,11 +365,12 @@ def test_a_folder_of_geojson_is_imported_listed_and_removed(tmp_path):
     (folder / "A_roi_2_old.geojson").write_text(json.dumps({"type": "FeatureCollection", "features": [feature("tissue", (0, 0, 20, 20))]}))
     (folder / "B_roi_9.geojson").write_text(json.dumps({"type": "FeatureCollection", "features": [feature("tissue", (0, 0, 20, 20))]}))
     result = names.import_directory(root, config, folder)
-    assert sorted((d["file"], d["image"]) for d in result["imported"]) == [("A-ROI1 old.geojson", "A_roi_1.ome.tiff"), ("A_roi_2_old.geojson", "A_roi_2.ome.tiff")]
+    assert sorted((d["file"], d["image"]) for d in result["imported"]) == [("A-ROI1 old.geojson", "A_roi_1.ome.tiff"), ("A_roi_2_old.geojson", "A_roi_2.ome.tiff"), ("B_roi_9.geojson", "")]
     assert result["unmatched"] == ["B_roi_9.geojson"]
-    assert names.import_directory(root, config, folder)["count"] == 0  # already imported: skipped
+    assert names.import_directory(root, config, folder)["count"] == 3  # Separate references; no geometry copies.
     listed = names.imports(root, config)
-    assert sorted(r["image"] for r in listed) == ["A_roi_1.ome.tiff", "A_roi_2.ome.tiff"] and all(r["names"] == ["tissue"] for r in listed)
+    assert sorted(r["image"] for r in listed) == ["", "", "A_roi_1.ome.tiff", "A_roi_1.ome.tiff", "A_roi_2.ome.tiff", "A_roi_2.ome.tiff"] and all(r["names"] == ["tissue"] for r in listed)
+    assert not list((root / 'outputs/studio/imported_annotations').glob('*/*.geojson'))
 
     saved = segmentation.saved_annotations(root, config, {}, [i.name for i in images])
     assert all("imported:tissue" in saved[i.name] and "local:tissue" in saved[i.name] for i in images)
@@ -377,5 +378,5 @@ def test_a_folder_of_geojson_is_imported_listed_and_removed(tmp_path):
     assert [g for g, _ in groups] == ["Local", "Imported"] and ["imported:tissue", "tissue"] in groups[1][1]
     assert segmentation._shown("tissue") == "local:tissue" and segmentation._shown("__whole__") == "__whole__"
 
-    assert names.remove_imports(root, config, [{"image": listed[0]["image"], "path": listed[0]["path"]}]) == 1
-    assert len(names.imports(root, config)) == 1
+    assert names.remove_imports(root, config, [listed[0]]) == 1
+    assert len(names.imports(root, config)) == 5

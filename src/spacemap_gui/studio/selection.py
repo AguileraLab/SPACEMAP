@@ -103,7 +103,7 @@ def evaluate(channel, settings, rule):
     rule = validate_rule(rule, settings["markers"])
     revision = _revision(settings)
     with _COMPUTE:
-        if rule["scope"] == "image":
+        if rule["scope"] == "image" or not settings["roi_column"]:
             rois = [settings["roi"]]
         else:
             rois = (

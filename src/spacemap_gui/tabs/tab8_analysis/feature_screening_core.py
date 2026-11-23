@@ -2341,8 +2341,6 @@ def _build_adjacency(coords: np.ndarray, min_dist_px: float, max_dist_px: float)
 def _count_dyads(phenotypes: np.ndarray, adjacency: list[set[int]], left: str, right: str) -> int:
     count = 0
     for idx_left, neighbors in enumerate(adjacency):
-        if phenotypes[idx_left] != str(left):
-            continue
         for idx_right in neighbors:
             if idx_right <= idx_left:
                 continue
@@ -2886,6 +2884,7 @@ def _permutation_zscore_dyad_triad(
     chunk_size: int = 64,
     min_obs_count: int = 3,
     use_gpu: bool = False,
+    diagnostics: dict | None = None,
 ) -> tuple[dict[tuple[str, str], float], dict[tuple[str, str, str], float]]:
     """Vectorised permutation Z-scores — no Python loop over iterations.
 
@@ -2911,6 +2910,8 @@ def _permutation_zscore_dyad_triad(
         chunk_size: Permutations processed per batch.  Tune to balance
                     memory vs. Python-loop overhead (default 64).
     """
+    if diagnostics is not None:
+        diagnostics.update(backend="none", permutations=int(n_iter))
     if n_iter <= 0 or edges.shape[0] == 0:
         return {}, {}
 
@@ -2977,6 +2978,8 @@ def _permutation_zscore_dyad_triad(
                 null_tri_sum, null_tri_sum2 = _tri_s, _tri_s2
             _gpu_done = True
 
+    if diagnostics is not None:
+        diagnostics["backend"] = "cuda" if _gpu_done else "cpu"
     iter_done = n_iter if _gpu_done else 0
     while iter_done < n_iter:
         c_size = min(_effective_chunk, n_iter - iter_done)
@@ -4084,13 +4087,13 @@ def compute_all_features(
         _rec: list[dict[str, Any]] = []
 
         _coords = zone_df[[x_col, y_col]].to_numpy(dtype=float)
-        _area_mm2, _buf_dist = _compute_virtual_area_mm2(
-            coords=_coords,
-            micron_per_pixel=micron_per_pixel,
-            hole_size_px2=min_hole_size_px2,
-            use_median=area_use_median,
-            percentile=area_percentile,
-        )
+        _area_mm2, _buf_dist = (float("nan"), float("nan"))
+        if "density" in enabled_families:
+            _area_mm2, _buf_dist = _compute_virtual_area_mm2(
+                coords=_coords, micron_per_pixel=micron_per_pixel,
+                hole_size_px2=min_hole_size_px2, use_median=area_use_median,
+                percentile=area_percentile,
+            )
         _base = _feature_base_record(
             zone_df,
             config,
@@ -4169,7 +4172,8 @@ def compute_all_features(
 
             if permutation_n_iter > 0:
                 _edges_arr = _build_edge_array(_adj)
-                _tri_arr = _find_triangle_array(_adj)
+                _tri_arr = (_find_triangle_array(_adj) if "triad" in enabled_families
+                            else np.empty((0, 3), dtype=np.int32))
                 _dyad_z, _triad_z = _permutation_zscore_dyad_triad(
                     _ph_arr, _edges_arr, _tri_arr,
                     permutation_n_iter, _rng, perm_chunk_size,
@@ -4200,7 +4204,7 @@ def compute_all_features(
                         _triad_z = {}
 
         if "dyad" in enabled_families and _adj is not None:
-            _use_perm = permutation_n_iter > 0 and bool(_dyad_z)
+            _use_perm = permutation_n_iter > 0
             _tot_edges = sum(len(v) for v in _adj) / 2.0
             for _il, _l in enumerate(phenotypes):
                 if int(_counts.get(_l, 0)) < min_cells_for_feature:
@@ -4224,7 +4228,7 @@ def compute_all_features(
                                   "value": _val})
 
         if "triad" in enabled_families and _adj is not None:
-            _use_perm_t = permutation_n_iter > 0 and bool(_triad_z)
+            _use_perm_t = permutation_n_iter > 0
             if not _use_perm_t:
                 _tc_raw = _collect_unordered_triads(_ph_arr, _adj)
                 _tot_tri = sum(_tc_raw.values())

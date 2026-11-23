@@ -154,3 +154,5 @@ def test_cell_data_as_circles_voronoi_and_the_images_cells(tmp_path):
     assert any(item["name"] == "Data: cells.csv" for item in cells["tables"])  # the linked ones join the image's cells
     cell_data.remove(root, str(image), inside["id"])
     assert not any(item["id"] == inside["id"] for item in cell_data.records(root, str(image)))
+    assert __import__("pathlib").Path(inside["table"]).is_file()
+    assert __import__("pathlib").Path(inside["geojson"]).is_file()

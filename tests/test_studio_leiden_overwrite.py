@@ -154,6 +154,8 @@ def test_command_uses_checkbox_and_names_only_the_current_run(setup, monkeypatch
     named = run(setup, "name_clusters", {"job_id": latest["id"], "names": {"Cluster 0": "New name"}}, confirmed=True)
     assert named["status"] == "done", named
     assert starts[-1]["output_col"] == "phenotype_leiden"
-    assert dataio.load(table).phenotype_leiden.eq("New name").all()
+    found = dataio.load(table)
+    assert found.loc[found.batch_id=='P11_roi_2','phenotype_leiden'].eq('New name').all()
+    assert found.loc[found.batch_id=='other','phenotype_leiden'].eq('Old name').all()
     assert "phenotype_leiden_2" not in dataio.columns(table)
     assert cluster_names.saved_names(root, table, "phenotype_leiden_clusters", cluster_job_id=latest["id"])["names"] == {"Cluster 0": "New name"}

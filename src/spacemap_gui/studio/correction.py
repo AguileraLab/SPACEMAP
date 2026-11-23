@@ -17,9 +17,8 @@ settings are Tab 6's own (``bc_config``), so classic and Studio share them:
 5. Measure pooled EMD reduction and relative MAD change on up to 10,000 cells;
    these are diagnostics, not cyCombine population-level benchmark scores.
 6. Optional post-correction QC; then save every loaded cell with its corrected
-   values as ``batch_corrected_merged_<time>.parquet``. Studio saves Parquet,
-   never CSV: a CSV (for classic) is written only when the user asks, from
-   Jobs > Saved results. Nothing is overwritten.
+   values as ``<output name>_<time>.parquet``. A CSV copy is optional at run
+   time or later from Jobs > Saved results. Nothing is overwritten.
 """
 
 from datetime import datetime
@@ -64,6 +63,8 @@ DEFAULTS = {
     "max_correction_distance": 10.0,
     "add_corrected_indicator": False,
     "corrected_indicator_col": "corrected",
+    "output_name": "batch_corrected_merged",
+    "export_csv": False,
     "exclude_markers": ["DAPI", "Blank", "Empty", "DNA"],
 }
 # What Studio lets the user change, with the checks Tab 6's widgets apply.
@@ -80,6 +81,18 @@ EDITABLE = {
     "min_cells_per_cluster": lambda v: isinstance(v, int) and not isinstance(v, bool) and 1 <= v <= 500,
     "parametric": lambda v: isinstance(v, bool),
     "corrected_suffix": lambda v: isinstance(v, str) and re.fullmatch(r"_[A-Za-z0-9_]{1,30}", v) is not None,
+    "tissue_col": lambda v: isinstance(v, str) and 0 < len(v.strip()) <= 256,
+    "tissue_val": lambda v: (isinstance(v, str) and len(v) <= 256) or (isinstance(v, (int, float)) and not isinstance(v, bool) and np.isfinite(v)),
+    "area_col": lambda v: isinstance(v, str) and 0 < len(v.strip()) <= 256,
+    **{key: lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and 0 <= v <= 100
+       for key in ("area_min_pct", "area_max_pct", "outlier_low", "outlier_high")},
+    **{key: lambda v: isinstance(v, bool)
+       for key in ("add_corrected_indicator", "enable_post_qc", "filter_overcorrected", "filter_distance")},
+    "corrected_indicator_col": lambda v: isinstance(v, str) and 0 < len(v.strip()) <= 128,
+    "qc_percentile_threshold": lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and 80 <= v <= 99.9,
+    "max_correction_distance": lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and 0.1 <= v <= 100,
+    "output_name": lambda v: isinstance(v, str) and re.fullmatch(r"[\w][\w .-]{0,119}", v) is not None and not v.endswith((" ", ".")),
+    "export_csv": lambda v: isinstance(v, bool),
 }
 
 
@@ -160,7 +173,7 @@ def _stamp(path):
 def _saved_results(root, mappings, table):
     """Completed outputs with manifests, newest first, including the active table."""
     folder = output_dir(root, mappings)
-    paths = list(folder.glob("batch_corrected_merged_*.parquet")) if folder.is_dir() else []
+    paths = [p for p in folder.glob("*.parquet") if not p.name.endswith((".labels.parquet", ".csv.parquet"))] if folder.is_dir() else []
     if table and Path(table).is_file():
         paths.append(Path(table))
     for path in sorted(set(paths), key=lambda p: p.stat().st_mtime_ns, reverse=True):
@@ -284,6 +297,7 @@ def plan(root, mappings, config, table=None):
         "rois": rois,
         "missing": [row["roi"] for row in matched if row["match"] == "missing"][:50],
         "common": common,
+        "filter_columns": list(dict.fromkeys(name for header in headers.values() for name in header)),
         "markers": markers,
         "saved_markers": isinstance(saved_choice, list),
         "units": units,
@@ -313,8 +327,13 @@ def save(root, changes, markers=None):
     with project_lock(root):
         config = read_config(root)
         saved = _tab6(config).get("bc_config")
+        merged = {**(saved if isinstance(saved, dict) else {}), **changes}
+        values = {**DEFAULTS, **merged}
+        for low, high, label in (("area_min_pct", "area_max_pct", "Area"), ("outlier_low", "outlier_high", "Marker outlier")):
+            if values[low] >= values[high]:
+                raise ValueError(f"{label} lower percentile must be less than its upper percentile.")
         persistence.update_stored_config_key(
-            config, "bc_config", {**(saved if isinstance(saved, dict) else {}), **changes}
+            config, "bc_config", merged
         )
         if markers is not None:
             persistence.update_stored_config_key(config, "bc_selected_markers", list(markers))
@@ -378,7 +397,7 @@ def _clean(loaded, config, markers, with_filter):
         numbers = pd.to_numeric(filtered[area], errors="coerce").replace([np.inf, -np.inf], np.nan)
         measured = numbers.dropna()
         if measured.empty:
-            raise ValueError(f"The area column {area} has no finite numbers. Review cell filters in classic Batch correction.")
+            raise ValueError(f"The area column {area} has no finite numbers. Review Cell filters in Batch correction.")
         low = np.percentile(measured, config.get("area_min_pct", 0.1))
         high = np.percentile(measured, config.get("area_max_pct", 99.9))
         before = len(filtered)
@@ -425,6 +444,10 @@ def save_table(frame, folder, stem="batch_corrected_merged"):
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
     from uuid import uuid4
+    if not EDITABLE["output_name"](stem):
+        raise ValueError("Use an output name without folders or special filename characters.")
+    if stem.lower().endswith((".parquet", ".csv")):
+        stem = stem.rsplit(".", 1)[0]
     target = folder / f"{stem}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid4().hex[:8]}.parquet"
     # Text columns may mix numbers and words (Samples columns): kept as text so Parquet takes them.
     frame = frame.copy()
@@ -458,6 +481,9 @@ def run(settings, folder, report):
     if collisions:
         raise ValueError("Rename these Samples columns so they do not replace cell IDs or marker measurements: " + ", ".join(collisions))
     loaded, with_filter = _load(found, sheet, batch_col, config, report, settings.get("sample_links", []))
+    indicator = config.get("corrected_indicator_col")
+    if config.get("add_corrected_indicator") and (indicator in loaded.columns or indicator in {f"{m}{config.get('corrected_suffix') or '_corr'}" for m in markers}):
+        raise ValueError("Choose a new corrected indicator column name; it must not replace input or corrected measurements.")
     if loaded[cell_col].isna().any() or loaded[cell_col].duplicated().any():
         raise ValueError("Cell IDs must be unique. Choose global IDs or ROI + local cell ID in classic Batch correction.")
     report(f"Filtering {len(loaded):,} cells as Tab 6 does…", 0.22)
@@ -556,7 +582,7 @@ def run(settings, folder, report):
         indicator = config["corrected_indicator_col"]
         result[indicator] = result[cell_col].isin(retained[cell_col]).astype(int)
     report("Saving the combined table (Parquet)…", 0.92)
-    target = save_table(result, output_dir(root, {"bc_output_dir": settings.get("output_dir")}))
+    target = save_table(result, output_dir(root, {"bc_output_dir": settings.get("output_dir")}), config.get("output_name") or DEFAULTS["output_name"])
     counts = result.loc[result[final].notna().all(axis=1)].groupby(batch_col).size().to_dict()
     summary = corrector.run_summary
     combat = summary.get("combat", {})
@@ -567,9 +593,21 @@ def run(settings, folder, report):
         warnings.append(f"{combat['n_cells_one_batch']} cells were in single-batch SOM groups and kept their arcsinh measurements.")
     if combat.get("n_cells_kept_as_measured"):
         warnings.append(f"{combat['n_cells_kept_as_measured']} cells retained at least one measured value because ComBat could not estimate it.")
+    csv_output = None
+    if config.get("export_csv"):
+        csv = target.with_suffix(".csv")
+        temporary_csv = csv.with_name("." + csv.name + ".tmp")
+        try:
+            report(f"Parquet saved. Writing CSV copy: {csv.name}…", 0.96)
+            result.to_csv(temporary_csv, index=False)
+            temporary_csv.replace(csv)
+            csv_output = str(csv)
+        except (OSError, ValueError) as error:
+            temporary_csv.unlink(missing_ok=True)
+            warnings.append(f"Parquet saved, but CSV export failed: {error}. Retry from Jobs > Saved results.")
     manifest = {"version": 2, "rois": list(found), "unit": unit, "markers": markers, "mode": mode,
                 "config": config, "inputs": inputs, "samples": sheet, "sample_links": settings.get("sample_links", []), "filters": filters,
-                "post_qc": qc,
+                "post_qc": qc, "csv_output": csv_output,
                 "corrected_per_roi": {roi: int(counts.get(roi, 0)) for roi in found},
                 "summary": summary, "warnings": warnings,
                 "diagnostics": {"scope": "pooled batches; not cyCombine population-level benchmark scores",
@@ -580,6 +618,7 @@ def run(settings, folder, report):
     return {
         "output": str(target),
         "name": target.name,
+        "csv_output": csv_output,
         "cells": int(len(result)),
         "corrected_cells": int(len(retained)),
         "filters": filters,

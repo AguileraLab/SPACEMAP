@@ -15,6 +15,7 @@ STEPS = (
     ("tab7", "Phenotyping", "phenotyping", "Review cells and give them phenotype labels."),
     ("tab8", "Spatial analysis", "analysis", "Explore where cells are and how they relate to each other."),
     ("tab9", "Visualization", "visualization", "Review your results and make figures."),
+    ("review", "Review", "", "Flag objects, share a review list, and apply reviewed decisions."),
 )
 
 

@@ -23,40 +23,42 @@ def _stamp(path):
 
 def column_kinds(table):
     """{column: "value" (numbers) or "group" (text, categories)}, from the table's schema (or a sample of a CSV)."""
-    from spacemap import dataio
+    from spacemap import column_types, dataio, labels
+    import pyarrow as pa
 
     from spacemap.viewer.cells import _edits_token
     key = (str(table), _stamp(table), _edits_token(str(table)))
     if key in _KINDS:
         return _KINDS[key]
-    kinds = {}
+    types = {}
     parquet = None
     for candidate in (Path(table), dataio.fast_copy_path(table)):
         if candidate and Path(candidate).is_file() and str(candidate).endswith(".parquet"):
             parquet = candidate
             break
     if parquet is not None:
-        import pyarrow as pa
         import pyarrow.parquet as pq
 
         for field in pq.read_schema(parquet):
-            numeric = pa.types.is_integer(field.type) or pa.types.is_floating(field.type) or pa.types.is_boolean(field.type)
-            kinds[field.name] = "value" if numeric else "group"
+            types[field.name] = column_types.plain(field.type)
     else:
         import pandas as pd
 
         sample = pd.read_csv(table, nrows=2000, low_memory=False)
-        kinds = {c: "value" if pd.api.types.is_numeric_dtype(sample[c]) else "group" for c in sample.columns}
+        types = {f.name: column_types.plain(f.type) for f in pa.Schema.from_pandas(sample, preserve_index=False)}
     from spacemap import pending_columns
-    import pyarrow as pa
     import pyarrow.parquet as pq
 
     for item in pending_columns.pending(table):
         if not item["stale"]:
             dtype = pq.read_schema(item["file"]).field("value").type
-            kinds[item["column"]] = "value" if pa.types.is_integer(dtype) or pa.types.is_floating(dtype) or pa.types.is_boolean(dtype) else "group"
+            types[item["column"]] = column_types.plain(dtype)
     for name in dataio.columns(table):
-        kinds.setdefault(name, "group")
+        types.setdefault(name, pa.null())
+    for name, group in labels.load(table).groupby('column'):
+        types[name] = column_types.with_values(types[name], group['value'])
+    kinds = {name: "value" if pa.types.is_integer(dtype) or pa.types.is_floating(dtype)
+             or pa.types.is_boolean(dtype) else "group" for name, dtype in types.items()}
     if len(_KINDS) > 32:
         _KINDS.clear()
     _KINDS[key] = kinds
@@ -77,17 +79,21 @@ def _rows(table, roi, columns, roi_column="batch_id", label_column="label"):
 
 
 def matches(reference, table, roi, cells_count=None, roi_column="batch_id", label_column="label", reference_roi=None):
-    """(True/False, reason): whether *table*'s rows for *roi* are the same cells as *reference*'s (the segmentation's
-    own table), by cell number and place; without positions, by count against *cells_count*."""
+    """(True/False/None, reason): same cells, mismatch, or a table still preparing.
+
+    Compare cell numbers and positions; without positions compare counts.
+    Temporary read failures must not become cached segmentation mismatches.
+    """
     from spacemap import dataio
+    from .data_view import Preparing
 
     key = (str(reference), str(table), str(roi), _stamp(table), _stamp(reference) if reference else None, cells_count, roi_column, label_column, reference_roi)
     if key in _MATCHES:
         return _MATCHES[key]
     try:
         columns = set(dataio.columns(str(table)))
-        if roi_column not in columns or label_column not in columns:
-            found = (False, "choose ROI and Segmentation label columns to find these cells")
+        if (roi_column and roi_column not in columns) or label_column not in columns:
+            found = (False, "check Image and Segmentation label columns to find these cells")
         else:
             pair = next((p for p in POSITION if set(p) <= columns), None)
             mine = _rows(table, roi, list(pair) if pair else [], roi_column, label_column)
@@ -96,7 +102,8 @@ def matches(reference, table, roi, cells_count=None, roi_column="batch_id", labe
             elif not np.isfinite(mine["label"]).all() or (mine["label"] <= 0).any() or (mine["label"] != np.floor(mine["label"])).any() or len(np.unique(mine["label"])) != len(mine["label"]):
                 found = (False, "segmentation labels must be unique positive whole numbers within each ROI")
             elif reference and pair and set(pair) <= set(dataio.columns(str(reference))):
-                theirs = _rows(reference, reference_roi or roi, list(pair))
+                reference_column = "batch_id" if "batch_id" in dataio.columns(str(reference)) else ""
+                theirs = _rows(reference, reference_roi or roi, list(pair), reference_column)
                 import pandas as pd
                 identity = pd.Index(theirs["label"])
                 if not identity.is_unique:
@@ -114,8 +121,10 @@ def matches(reference, table, roi, cells_count=None, roi_column="batch_id", labe
                          f"{count:,} rows for {cells_count:,} cells")
             else:
                 found = (True, "not checked (no positions to compare)")
+    except Preparing as error:
+        return None, str(error)
     except (OSError, ValueError, KeyError) as error:
-        found = (False, f"it could not be read ({error})")
+        return False, f"it could not be read ({error})"
     if len(_MATCHES) > 128:
         _MATCHES.clear()
     _MATCHES[key] = found

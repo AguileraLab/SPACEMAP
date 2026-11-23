@@ -8,6 +8,69 @@ from spacemap_gui.viewer import registry
 from test_studio_commands import setup  # noqa: F401
 
 
+def test_table_stays_available_when_a_cell_layer_cannot_reconnect(setup, monkeypatch):
+    channel, table, _, _ = setup
+    token = registry.session_view(channel)['spec']['layers'][1]['token']
+    found = cell_links.context(channel, ['expired-cell-token', token])
+    assert found['table']['path'] == str(table)
+    assert 'phenotype_ml_consensus' in found['table']['columns']
+    assert not found['layers']['expired-cell-token']['linked']
+    assert found['layers'][token]['linked']
+
+    def broken(*args):
+        raise OSError('Cell geometry is unavailable')
+    monkeypatch.setattr(cell_links, 'bind', broken)
+    found = cell_links.context(channel, [token])
+    assert found['table']['path'] == str(table)
+    assert found['layers'][token]['reason'] == 'Cell geometry is unavailable'
+
+
+def test_link_revision_tracks_saved_values_without_reading_cell_rows(setup, monkeypatch):
+    from spacemap import labels
+    from spacemap_gui.studio import data_view
+
+    path, frame = combined(setup)
+    channel = setup[0]
+    def revision():
+        return cell_links.context(channel)['table']['revision']
+    before = revision()
+    assert revision() == before
+    # A schema-only check must also notice overwriting an existing column.
+    monkeypatch.setattr(data_view, '_table', lambda *a, **k: (_ for _ in ()).throw(AssertionError('Full table read')))
+    labels.append(path, [{'row': 0, 'column': 'phenotype_ref1', 'value': 'T'}])
+    labelled = revision()
+    assert labelled != before and revision() == labelled
+    pending_columns.save(path, {'phenotype_clusters': ['A'] * len(frame)},
+                         anchor_column='global_id', anchor_values=frame.global_id)
+    predicted = revision()
+    assert predicted != labelled
+    pending_columns.save(path, {'phenotype_clusters': ['B'] * len(frame)},
+                         anchor_column='global_id', anchor_values=frame.global_id)
+    overwritten = revision()
+    assert overwritten != predicted and revision() == overwritten
+    frame.loc[0, 'M0'] = 123
+    frame.to_parquet(path, index=False)
+    assert revision() != overwritten
+
+
+def test_conflicting_data_draft_does_not_break_saved_image_links(setup):
+    from spacemap_gui.studio import data_view
+    from spacemap_gui.viewer.api import app
+    from starlette.testclient import TestClient
+    path, frame = combined(setup)
+    channel, _, root, _ = setup
+    token = registry.session_view(channel)['spec']['layers'][1]['token']
+    data_view.edit(path, [{'row':0,'col':'M0','value':99}])
+    pending_columns.save(path, {'M0':[77]*len(frame), 'phenotype_new':['T']*len(frame)},
+                         anchor_column='global_id',anchor_values=frame.global_id)
+    found = cell_links.context(channel,[token])
+    assert found['layers'][token]['linked']
+    assert 'phenotype_new' in found['table']['columns']
+    response = TestClient(app).post(f'/studio/{channel}/data/query',json={'source':{'combined':True}})
+    assert response.status_code == 409
+    assert response.json()['code'] == 'data_external_change'
+
+
 def combined(context):
     channel, local, root, _ = context
     frame = pd.read_csv(local).rename(columns={"batch_id":"roi_name", "label":"object_number"})
@@ -110,3 +173,25 @@ def test_ambiguous_roi_names_do_not_link(setup):  # noqa: F811
     token = registry.session_view(channel)["spec"]["layers"][1]["token"]
     link = cell_links.bind(root, str(path), token)
     assert not link["linked"] and "uniquely" in link["reason"]
+
+
+def test_link_recovers_when_the_fast_table_finishes_without_source_changes(setup, monkeypatch):
+    from spacemap_gui.studio import data_view
+
+    path, _ = combined(setup)
+    channel, _, root, _ = setup
+    token = registry.session_view(channel)['spec']['layers'][1]['token']
+    read = data_view._table
+    ready = False
+
+    def preparing(table, *args, **kwargs):
+        if str(table) == str(path) and not ready:
+            raise data_view.Preparing('Making a fast copy of the cell table')
+        return read(table, *args, **kwargs)
+
+    monkeypatch.setattr(data_view, '_table', preparing)
+    first = cell_links.context(channel, [token])['layers'][token]
+    assert not first['linked'] and first['retryable']
+    ready = True  # the CSV is unchanged; only its fast copy became available
+    second = cell_links.context(channel, [token])['layers'][token]
+    assert second['linked'] and 'same label and position' in second['reason']

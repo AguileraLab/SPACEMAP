@@ -4,7 +4,9 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>SPACEMAP Viewer</title>
-  <link rel="stylesheet" href="viewer.css" />
+  <link rel="stylesheet" href="viewer.css?v=panel-windows-1" />
+  <link rel="stylesheet" href="flow-gating.css?v=flow-stats-2" />
+  <link rel="stylesheet" href="review.css" />
   <script src="vendor/openseadragon.min.js"></script>
 </head>
 <body>
@@ -25,9 +27,11 @@
           <button type="button" data-tool="merge" title="Merge selected polygons or click two polygons. Maximum gap controls how far apart they can be.">Merge</button>
           <button type="button" data-tool="split" title="Select a polygon and drag right across a neck. Cut width is in full-resolution image pixels.">Split</button>
           <button type="button" data-mode="select" title="Selection mode: a rectangle, polygon or freehand outline selects the regions inside it instead of drawing (Shift adds to the selection)">Select</button>
+          <select id="area-select-target" aria-label="Selection target" hidden title="Annotations: select fully enclosed visible polygons across names and sources. Cells: select shown cells whose centres are inside. Shift adds to the selection."><option value="annotations">Annotations</option><option value="cells">Cells</option></select>
         </div>
         <span class="sep"></span>
         <button type="button" id="btn-save" title="Save what is on screen as a PNG image">Save image</button>
+        <button type="button" id="btn-copy-preview" title="Copy the visible image, overlays and scale bar, without viewer controls">Copy preview</button>
         <button type="button" id="btn-save-full" title="Save the area on screen at full image resolution (up to 8,192 px wide), for figures">Save full resolution</button>
         <span class="sep"></span>
         <button type="button" id="btn-fullscreen" title="Fill the screen with the viewer (Esc to leave)">Full screen</button>
@@ -48,27 +52,39 @@
   <script src="artifact-review.js"></script>
   <script src="classification.js"></script>
   <script src="annotation-difference.js"></script>
+  <script src="screening-results.js"></script>
   <script src="spatial-panels.js"></script>
-  <script src="studio.js"></script>
+  <script src="gland-types.js"></script>
+  <script src="studio-lists.js?v=lists-1"></script>
+  <script src="studio.js?v=segmentation-source-1"></script>
+  <script src="flow-stats.js?v=flow-stats-2"></script><script src="flow-gating.js?v=flow-stats-2"></script>
   <!-- The viewer, in parts that share their names: keep this order; start.js runs it and comes last. -->
-  <script src="viewer/core.js"></script>
-  <script src="viewer/setup.js"></script>
-  <script src="viewer/image.js"></script>
-  <script src="viewer/cells.js"></script>
-  <script src="viewer/shapes.js"></script>
-  <script src="viewer/regions.js"></script>
-  <script src="viewer/annotation-rows.js"></script>
-  <script src="viewer/cell-rows.js"></script>
+  <script src="viewer/core.js?v=cluster-names-2"></script>
+  <script src="viewer/view-transfer.js"></script>
+  <script src="viewer/setup.js?v=cell-context-2"></script>
+  <script src="viewer/image.js?v=cell-context-2"></script>
+  <script src="viewer/cells.js?v=cell-context-2"></script>
+  <script src="viewer/shapes.js?v=polygon-groups-1"></script>
+  <script src="viewer/regions.js?v=polygon-groups-1"></script>
+  <script src="viewer/annotation-rows.js?v=polygon-groups-1"></script>
+  <script src="viewer/cell-context.js?v=cell-context-2"></script>
+  <script src="viewer/cell-rows.js?v=training-cells-1"></script>
+  <script src="viewer/training-cells.js?v=training-cells-1"></script>
   <script src="viewer/bring.js"></script>
-  <script src="viewer/data-view.js"></script>
+  <script src="viewer/data-view.js?v=panel-windows-1"></script>
   <script src="viewer/brush.js"></script>
-  <script src="viewer/histogram.js"></script>
-  <script src="viewer/layers.js"></script>
-  <script src="viewer/panel.js"></script>
-  <script src="viewer/markers.js"></script>
+  <script src="viewer/histogram.js?v=image-panel-1"></script>
+  <script src="viewer/layers.js?v=cell-context-2"></script>
+  <script src="viewer/panel.js?v=annotation-sources-1"></script>
+  <script src="viewer/markers.js?v=image-panel-1"></script>
   <script src="viewer/resolve.js"></script>
-  <script src="viewer/legends.js"></script>
-  <script src="viewer/split-markers.js"></script>
+  <script src="viewer/legends.js?v=cluster-names-2"></script>
+  <script src="viewer/panel-windows.js?v=panel-windows-1"></script>
+  <script src="viewer/split-markers.js?v=panel-windows-1"></script>
+  <script src="viewer/flow.js?v=cell-context-2"></script>
+  <script src="viewer/review.js"></script>
+  <script src="viewer/annotation-selection.js"></script>
+<script src="viewer/annotation-components.js"></script>
   <script src="viewer/start.js"></script>
 </body>
 </html>

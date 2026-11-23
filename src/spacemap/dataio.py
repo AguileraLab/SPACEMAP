@@ -531,6 +531,9 @@ def columns(path: str | Path, *, include_pending: bool = True) -> list[str]:
     (:mod:`spacemap.pending_columns`) are listed too, unless *include_pending*
     is False.
     """
+    from . import table_collection
+    if table_collection.is_collection(path):
+        return table_collection.columns(path, include_pending)
     names = _file_columns(path)
     if include_pending and names:
         try:
@@ -620,6 +623,10 @@ def load(
     label to an unlabelled cell, for one -- so the conversion is opt-in and
     belongs only where the frame is known to be read-only.
     """
+    from . import table_collection
+    if table_collection.is_collection(path):
+        return table_collection.load(path, columns, categoricals=categoricals,
+            build_fast_copy=build_fast_copy, apply_labels=apply_labels, progress=progress)
     source = Path(path).expanduser()
     if not source.is_file():
         raise DataIOError(f"{source} does not exist.")

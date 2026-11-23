@@ -16,11 +16,12 @@ from typing import Any, Iterable, Mapping, Sequence
 import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 import numpy as np
+
+from spacemap.agreement import safe_cohen_kappa
 import pandas as pd
 import seaborn as sns
 from sklearn.metrics import (
     accuracy_score,
-    cohen_kappa_score,
     confusion_matrix,
     f1_score,
     precision_recall_fscore_support,
@@ -490,7 +491,7 @@ def build_validation_groups(
 
 def _safe_kappa(y_true: pd.Series, y_pred: pd.Series) -> float:
     try:
-        value = float(cohen_kappa_score(y_true, y_pred))
+        value = float(safe_cohen_kappa(y_true, y_pred))
         return value if np.isfinite(value) else np.nan
     except Exception:
         return np.nan

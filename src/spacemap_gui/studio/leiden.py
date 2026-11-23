@@ -212,6 +212,26 @@ def cluster_name(cluster):
     return "Low expression" if int(cluster) == LOW_EXPRESSION else f"Cluster {int(cluster)}"
 
 
+def input_columns(available, anchor, markers, config, roi, report):
+    """Load optional classic settings only when this table has their columns.
+
+    Classic clustering skips a missing row filter and normalises globally when
+    its grouping column is absent. Project-wide cached settings must not make
+    either column mandatory for a raw, per-image cell table.
+    """
+    wanted = list(dict.fromkeys([anchor, *markers]))
+    group = config.get("batch_id_col")
+    row_filter = config.get("filter_col") if config.get("enable_filter") else None
+    for name in (group, row_filter, roi):
+        if name and name in available and name not in wanted:
+            wanted.append(name)
+    if group and group not in available and config.get("norm_z1"):
+        report(f"Normalising across this table: {group} is unavailable.")
+    if row_filter and row_filter not in available:
+        report(f"Using all rows: saved filter {row_filter} is unavailable.")
+    return wanted
+
+
 def run(settings, folder, report):
     """The job: Tab 7's Leiden on the combined table, saved as ``<output>_clusters``."""
     from spacemap import dataio
@@ -222,15 +242,12 @@ def run(settings, folder, report):
     validate_table(settings)
     table, request = settings["table"], settings["pipeline"]
     anchor_column = settings.get("cell_id_col", "cell_id")
-    wanted = [anchor_column, *request["markers_selected"]]
-    for key in ("batch_id_col", "filter_col"):
-        if request.get(key) and request[key] not in wanted:
-            wanted.append(request[key])
     roi_column = settings.get("roi_col") or "batch_id"  # the combined table's ROI of each cell
-    if roi_column not in wanted and roi_column in dataio.columns(table):
-        wanted.append(roi_column)
-    report("Reading the combined table…", 0.02)
+    wanted = input_columns(dataio.columns(table), anchor_column, request["markers_selected"], request, roi_column, report)
+    report("Reading Cell data…", 0.02)
     frame = dataio.load(table, columns=wanted)
+    from . import phenotyping_images
+    frame = phenotyping_images.subset(frame, settings)
     with _given_input(request["full_input_path"], frame):
         found = _compute(
             {"project_root": settings["project_root"], "settings": request, "audit": None},
@@ -311,7 +328,15 @@ def name_clusters(settings, folder, report):
     validate_table(settings)
     table, anchor_column = settings["table"], settings.get("cell_id_col", "cell_id")
     report("Reading the clusters…", 0.1)
-    frame = dataio.load(table, columns=[anchor_column, settings["clusters_col"]])
+    roi = settings.get('roi_column') or settings.get('roi_col')
+    wanted = list(dict.fromkeys([anchor_column, settings['clusters_col'], *([roi] if roi else [])]))
+    frame = dataio.load(table, columns=wanted)
+    from . import phenotyping_images
+    frame = phenotyping_images.subset(frame, settings)
+    if settings.get('subphenotype_run') is not None:
+        from .subphenotypes import naming_cells
+        frame = naming_cells(frame, settings)
+        settings = {**settings, 'row_scoped': True}
     names = {str(key): str(value) for key, value in settings["names"].items()}
     phenotypes = frame[settings["clusters_col"]].map(
         lambda value: names.get(str(value), value) if pd.notna(value) else None

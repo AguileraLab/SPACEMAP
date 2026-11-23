@@ -39,10 +39,14 @@ setTimeout(async()=>{try{
  assert(selected.suggestions.scored===2&&selected.suggestions.choices.every(c=>Math.abs(c.probability-scores.get(c.phenotype))<1e-10),'Selected-cell suggestions average the full individual model distributions');
  assert(document.querySelector('#cellcard').textContent.includes('2/2 cells scored'),'Prediction coverage is shown for the group');
  const accepted=selected.suggestions.choices[0].phenotype;
+ setCellColour(layer,'phenotype_ml_consensus');
  document.querySelector('#cellcard .suggestion-choice').click();
  await until(()=>!window.__labelSaves.busy&&!window.__labelSaves.queue.length);
  const labelled=await Promise.all([1,21].map(label=>getJSON('/cells/'+layer.token+'/at?label='+label+'&details_only=1&t='+encodeURIComponent(layer.table))));
  assert(labelled.every(value=>value.details[s.labelColumn]===accepted),'Assign all explicitly saves the suggested label for every selected cell');
+ assert(layer.color_by==='phenotype_ml_consensus'&&!activeReferenceOverlay(layer),'Saving a suggestion preserves the chosen display column');
+ setCellColour(layer,'');
+ assert(activeReferenceOverlay(layer)===s.labelColumn,'Single colour can show assigned-label colours without switching the display column');
  layer.suggestionsOn=false;click(21,true);await until(()=>ready()&&result().label===1&&!result().members);
  assert(true,'Ctrl-click on a selected cell removes it');
  click(5,true);click(6,true);await until(()=>ready()&&result().members?.length===3);

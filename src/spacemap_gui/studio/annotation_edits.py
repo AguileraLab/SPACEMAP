@@ -130,9 +130,19 @@ def prepare(features, *, kind="regions", label="tissue"):
                 if len(_CHECKED) > 50000:
                     _CHECKED.clear()
                 _CHECKED[id(source)] = source
+            # A valid MultiPolygon already contains the exact component rings.
+            # Avoid GEOS -> Python coordinate reconstruction for every part.
+            component = source if same else (
+                {"type": "Polygon", "coordinates": [tuple(tuple(map(float, point)) for point in ring)
+                                                    for ring in source["coordinates"][part_index]]}
+                if valid and source.get("type") == "MultiPolygon" else mapping(polygon))
             normal = _normal({"type": "Feature", "properties": current,
-                              "geometry": source if same else mapping(polygon)}, len(found))
+                              "geometry": component}, len(found))
             if normal:
+                if polygon is not None:
+                    if len(_PREPARED_GEOMETRIES) > 50000:
+                        _PREPARED_GEOMETRIES.clear()
+                    _PREPARED_GEOMETRIES[id(component)] = (component, polygon)
                 found.append(normal)
     return found
 
@@ -155,6 +165,14 @@ def _shown(feature):
 
 
 _CHECKED = {}  # id(geometry dict) -> that dict: valid single polygons already checked here (never changed in place)
+_PREPARED_GEOMETRIES = {}  # exact GEOS geometry from validation; avoid parsing it a second time for indexing
+
+
+def prepared_geometry(feature):
+    from shapely.geometry import shape
+    source = feature['geometry']
+    cached = _PREPARED_GEOMETRIES.get(id(source))
+    return cached[1] if cached and cached[0] is source else shape(source)
 
 
 def _normal(feature, index):

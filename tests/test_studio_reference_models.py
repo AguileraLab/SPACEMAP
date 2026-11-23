@@ -159,7 +159,7 @@ def test_missing_values_in_another_roi_reuse_available_features(training):
     assert wait_prediction({**query,'roi':'roi1'},model_id,3)['choices'][0]['phenotype']=='A'
     assert reference_models.request(query,model_id,label=1)['status']=='ready'
     reduced,_=reference_models.adapt(model_id,['M0'])
-    assert len(reduced['rows'])==118 and reduced['oob'].shape==(118,2)
+    assert len(reduced['rows'])==82 and reduced['oob'].shape==(82,2)
     for _ in range(200):
         scan=reference_models.request(query,model_id,scan=True)
         if scan['status']!='preparing':
@@ -181,3 +181,41 @@ def test_partial_panel_in_another_dataset_does_not_require_import_or_reference_l
     meta_path=reference_models.model_path(model_id).with_suffix('.json')
     meta=json.loads(meta_path.read_text());meta['allow_missing']=False;meta_path.write_text(json.dumps(meta))
     assert model_id not in [m['model_id'] for m in reference_models.available(other)]
+
+
+def test_validation_cells_never_enter_saved_or_reduced_model(training, monkeypatch):
+    from sklearn.ensemble import RandomForestClassifier
+    table, settings, folder = training
+    fit = RandomForestClassifier.fit
+    seen = []
+    def record(self, values, targets, *args, **kwargs):
+        seen.append(np.asarray(values).copy())
+        return fit(self, values, targets, *args, **kwargs)
+    monkeypatch.setattr(RandomForestClassifier, 'fit', record)
+    result = reference_models.train({**settings, 'training_percent': 70}, folder, lambda *args: None)
+    meta = result['models'][0]
+    _, _, artifact = reference_models._source(meta['model_id'])
+    training_rows = set(artifact['rows'])
+    validation = artifact['validation_sample']
+    assert len(training_rows) == meta['training_cells'] == 82
+    assert len(validation['rows']) == meta['held_out_cells'] == 36
+    assert not training_rows.intersection(validation['rows'])
+    assert set(artifact['training_sample']['rows']) == training_rows
+    assert len(seen) == 1 and len(seen[0]) == 82  # no final all-cell refit
+    assert set(validation['targets']) == {'A', 'B'}
+    reduced, reduced_meta = reference_models.adapt(meta['model_id'], ['M0'])
+    assert not set(reduced['rows']).intersection(validation['rows'])
+    assert all(len(values) == 82 for values in seen)
+    assert reduced_meta['validation_held_out']
+    assert meta['held_out_macro_f1'] > .9
+    again = reference_models.train({**settings, 'training_percent': 70}, folder, lambda *args: None)
+    assert np.array_equal(reference_models._source(again['models'][0]['model_id'])[2]['validation_sample']['rows'], validation['rows'])
+    eighty = reference_models.train({**settings, 'training_percent': 80}, folder, lambda *args: None)
+    assert eighty['models'][0]['training_cells'] == 94
+
+
+@pytest.mark.parametrize('value', [0, 100, 49, 91, 70.5, True, '70', None])
+def test_invalid_training_split_is_rejected(training, value):
+    _, settings, folder = training
+    with pytest.raises(ValueError, match='training percentage'):
+        reference_models.train({**settings, 'training_percent': value}, folder, lambda *args: None)

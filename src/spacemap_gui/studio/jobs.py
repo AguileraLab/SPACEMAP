@@ -23,6 +23,10 @@ KINDS = {
     "resolve_all",
     "mr_ml",
     "train_reference_model",
+    "reference_collection",
+    "model_review",
+    "marker_figures",
+    "phenotyping_images",
     "subtract_background",
     "extract_rois",
     "detect_roi_cores",
@@ -42,6 +46,7 @@ KINDS = {
     "remove_small_pieces",
     "spatial_density",
     "tls_candidates",
+    "gland_types",
     "spatial_triads",
     "spatial_screening",
     "spatial_umap",
@@ -59,6 +64,7 @@ KINDS = {
     "som",
     "vortex",
     "export_table",
+    "write_annotations",
     "consensus_ml",
     "subphenotype",
     "cell_interactions",
@@ -93,10 +99,81 @@ def status(project, job_id):
     if result["status"] == "done":
         from .cluster_profiles import for_job
         result = for_job(project, folder, result)
+    result['hidden'] = (root(project) / 'hidden' / job_id).exists()
+    try:
+        request = json.loads((folder / 'request.json').read_text())
+        result['summary'] = describe(request.get('kind', result.get('kind')), request.get('settings', {}))
+        if result.get('kind') == 'train_cellpose':
+            training = request.get('settings', {}).get('training_session') or {}
+            name = (result.get('result') or {}).get('name')
+            if not name and training.get('name'):
+                name = f"{training['name']}_v{len(training.get('versions', [])) + 1}"
+            if name:
+                result['model_name'] = name
+    except (OSError, ValueError, TypeError):
+        result['summary'] = ''
     return result
 
 
-def recent(project, limit=20):
+def describe(kind, settings):
+    """Short, factual scope from the saved request, including older jobs."""
+    if kind == 'phenotyping_images':
+        work = settings.get('work') or []
+        if work:
+            first = work[0]
+            merged = dict(first.get('settings', {}))
+            merged['sources'] = [item.get('settings', {}) for item in work]
+            merged.pop('selected_images', None)
+            return first.get('kind', '').replace('_', ' ').upper() + ' · ' + describe(first.get('kind'), merged)
+    parts = []
+    sources = settings.get('sources') or [settings]
+    images = [(source.get('table'), image) for source in sources for image in (source.get('selected_images') or [])]
+    if images:
+        count = len(set(images))
+        parts.append(str(images[0][1]) if count == 1 else f'{count} images')
+    elif settings.get('roi'):
+        parts.append(str(settings['roi']))
+    elif settings.get('table'):
+        parts.append(Path(settings['table']).name)
+    reference = settings.get('training_column') or settings.get('reference_column')
+    output = settings.get('output_col') or settings.get('output_column')
+    if kind in ('train_reference_model', 'reference_collection') and settings.get('action', 'train') == 'train':
+        parts.append(('Train from ' + reference) if reference else 'Train reference model')
+    elif output:
+        parts.append((reference + ' → ' if reference else 'Output: ') + output)
+    elif kind == 'export_table':
+        parts.append('Export CSV')
+    features = settings.get('markers')
+    if isinstance(features, list) and features:
+        parts.append(f'{len(features)} feature' + ('s' if len(features) != 1 else ''))
+    return ' · '.join(parts)
+
+
+def clear_history(project, job_ids=None):
+    """Hide finished cards only. Preserve requests, logs, models and Parquet outputs."""
+    path = root(project)
+    if job_ids is None:
+        folders = [folder for folder in path.iterdir() if folder.is_dir() and re.fullmatch(r'[0-9a-f]{32}', folder.name)] if path.exists() else []
+    else:
+        if not isinstance(job_ids, list) or not job_ids or any(not isinstance(item, str) for item in job_ids):
+            raise ValueError('Select finished jobs to clear.')
+        folders = [directory(project, job_id) for job_id in dict.fromkeys(job_ids)]
+    cleared, active = [], []
+    for folder in folders:
+        if not (folder / 'status.json').is_file():
+            continue
+        current = json.loads((folder / 'status.json').read_text())
+        if current.get('status') in ACTIVE:
+            active.append(folder.name)
+            continue
+        hidden = path / 'hidden'
+        hidden.mkdir(exist_ok=True)
+        (hidden / folder.name).touch()
+        cleared.append(folder.name)
+    return {'cleared': cleared, 'active': active}
+
+
+def _recent_folders(project, limit):
     from itertools import groupby
 
     path = root(project)
@@ -133,7 +210,21 @@ def recent(project, limit=20):
             folders.sort(key=creation_time, reverse=True)
         ordered.extend(folders)
     # A job being started has its folder a moment before its status file.
-    return [status(project, folder.name) for folder in ordered[:limit] if (folder / "status.json").exists()]
+    return [folder for folder in ordered[:limit] if (folder / "status.json").exists()]
+
+
+def history(project, limit=300):
+    """Read persisted records lazily, without preparing profiles or reconciling workers.
+
+    Name/output provenance only needs saved records. Stop reading as soon as the
+    caller finds its run, instead of enriching hundreds of unrelated results.
+    """
+    for folder in _recent_folders(project, limit):
+        yield json.loads((folder / "status.json").read_text())
+
+
+def recent(project, limit=20):
+    return [status(project, folder.name) for folder in _recent_folders(project, limit)]
 
 
 def start(project, kind, settings, *, request_id=None):
@@ -142,6 +233,9 @@ def start(project, kind, settings, *, request_id=None):
 
     if kind not in KINDS:
         raise ValueError("This background job is not available.")
+    from .spatial_sources import OUTPUT_KINDS, output_folder
+    if kind in OUTPUT_KINDS:
+        settings = {**settings, 'spatial_output': str(output_folder(project))}
     path = root(project)
     path.mkdir(parents=True, exist_ok=True)
     with open_lock(path / ".launch.lock") as lock:
@@ -272,6 +366,7 @@ def worker(folder):
         print(message, flush=True)
 
     report.protect_output = output_guard.protect
+    report.finish_output = output_guard.close
 
     try:
         report("Preparing the selected data…", 0)
@@ -281,6 +376,14 @@ def worker(folder):
             raise ValueError("Unknown job type.")
         result = getattr(tasks, request["kind"])(request["settings"], folder, report)
         output_guard.protect(allow_cancel=request["kind"] not in job_stop.INTERRUPTIBLE)
+        from . import spatial_exports
+        try:
+            result = spatial_exports.publish(request['project'], request['kind'], request['settings'], folder, result)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            # Analysis and cell-table publication already succeeded. Keep that
+            # result usable if a separate export destination becomes unavailable.
+            result = {**result, 'export_warning': str(exc)}
+            print(f'Spatial export failed; job results are retained: {exc}', flush=True)
         current.update(status="done", progress=1, message="Finished. The result is ready.", result=result)
         from . import annotation_workflow
         if request['kind'] in annotation_workflow.ANNOTATION_JOBS:

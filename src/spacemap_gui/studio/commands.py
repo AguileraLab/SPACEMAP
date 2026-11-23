@@ -174,7 +174,8 @@ def _view(channel, spec, args, corrections):
 
 def _cell_table(spec, image):
     layer = next(
-        (layer for layer in spec["layers"] if layer["type"] == "cells" and layer.get("image_token") == image["token"]),
+        (layer for layer in sorted(spec["layers"], key=lambda item: item["id"].startswith("result-"))
+         if layer["type"] == "cells" and layer.get("image_token") == image["token"]),
         None,
     )
     if not layer:
@@ -341,6 +342,9 @@ def _execute(channel, name, args, spec, corrections, request_id):
         job_settings = manual_reference.training_settings(channel, column, args["checked_only"])
         job = jobs.start(project["root"], name, job_settings, request_id=request_id)
         return spec, [], {"job":job}, {"kind":"none"}, "Training reference models in the background. Your manual labels stay unchanged."
+    if name in {'run_leiden', 'run_som', 'run_vortex'} or (name == 'run_mr_ml' and args.get('settings_revision')):
+        from . import phenotyping_images
+        return phenotyping_images.start(channel, name, args, spec, request_id)
     if name in {"run_leiden", "run_som", "run_vortex", "name_clusters"}:
         # These jobs work on the combined table, independently of which image/layer is open.
         from .phenotyping_inputs import combined_table
@@ -619,23 +623,25 @@ def _execute(channel, name, args, spec, corrections, request_id):
         if job["status"] != "done":
             raise ValueError("This job has not finished successfully yet.")
         result = job.get("result") or {}
-        if result.get("table") != table:
+        table_id = next((key for key, path in (registered.get("tables") or {}).items()
+                         if path == result.get("table")), None)
+        if table_id is None:
             raise ValueError("Open an image using this job’s cell table to see its result.")
-        if result.get("column") not in dataio.columns(table):
+        if result.get("column") not in dataio.columns(result["table"]):
             raise ValueError("The saved result column is no longer available.")
-        added = {key: deepcopy(value) for key, value in layer.items() if key not in {"resolve", "command"}}
-        added.update(
-            id="result-" + args["job_id"],
-            name=result["column"],
-            color_by=result["column"],
-            visible=True,
-            mode="both",
-            added=True,
-        )
-        if any(item["id"] == added["id"] for item in spec["layers"]):
-            raise ValueError("This result is already in the layer list.")
-        spec["layers"].append(added)
-        return spec, [{"type": "add_layer", "layer": added}], result, undo, "Showing " + result["column"] + "."
+        # Results are columns on these cells, not additional segmentations.
+        # Retire result copies made by older versions, preserving other masks.
+        duplicates = [item for item in spec["layers"] if item is not layer
+                      and item["id"].startswith("result-") and item["type"] == "cells"
+                      and item.get("token") == layer["token"]
+                      and item.get("image_token") == layer.get("image_token")]
+        spec["layers"] = [item for item in spec["layers"] if item not in duplicates]
+        changes = dict(table=table_id, color_by=result["column"], visible=True,
+                       mode="both", hidden=[])
+        layer.update(changes)
+        effects = [{"type": "remove_layer", "layer": item["id"]} for item in duplicates]
+        effects.append({"type": "cells", "layer": layer["id"], "changes": changes})
+        return spec, effects, result, undo, "Showing " + result["column"] + "."
     if name == "density" and args.get("table"):
         return _point_density(channel, spec, layer, registered, image, args, corrections, request_id, undo)
     if name in {"colour_by", "filter_cells", "density", "count_cells"}:
@@ -1276,7 +1282,14 @@ def _segment(channel, args, spec, image, request_id):
             if kind == "whole":
                 item["area"] = {"whole": True}
             elif kind == "layer":  # its polygons are cut out in the job, not while the button waits
-                item["area"] = {"name": name, "pending": found[Path(item["image"]).name][name]}
+                selected = found[Path(item["image"]).name][name]
+                segmentation.require_single_area(selected)
+                item["area"] = {"name": selected.get('name', name) if isinstance(selected, dict) else name,
+                                "pending": selected}
+    # Check required image inputs before setting aside any existing results.
+    from spacemap.viewer.sources import open_source
+    for item in chosen:
+        segmentation.channels(list(open_source(item).info.channel_names), values)
     moved = [segmentation.set_aside(outputs, item.name, geojson) for item in chosen if item in done] if args.get("again") else []
     job = jobs.start(str(root), "segment_images", {"images": items, "values": values, "tag": str(root) if args.get("tag") else None,
                                                    "root": str(root), "mappings": mappings},
@@ -1447,7 +1460,7 @@ def _check_settings_revision(args, values):
         raise ValueError("The settings changed before the run started. Reload the panel and check your choices.")
 
 
-def _leiden(channel, name, args, spec, table, request_id):
+def _leiden(channel, name, args, spec, table, request_id, prepare_only=False):
     """Tab 7's Leiden or Tab 8's neighbourhoods through Studio: run one, or name its groups, each as a job."""
     from spacemap_gui.studio.settings import read_config
 
@@ -1482,6 +1495,8 @@ def _leiden(channel, name, args, spec, table, request_id):
         if job_settings["phenotype_col"] in dataio.columns(table) and not args.get("overwrite"):
             raise ValueError("That output column already exists. Choose a new name or tick Overwrite existing results.")
         job_settings["revision"] = tasks.source_revision(job_settings)
+        if prepare_only:
+            return "leiden", job_settings
         job = jobs.start(root, "leiden", job_settings, request_id=request_id)
         return (
             spec,
@@ -1520,6 +1535,8 @@ def _leiden(channel, name, args, spec, table, request_id):
         if job_settings["phenotype_col"] in dataio.columns(table) and not args.get("overwrite"):
             raise ValueError("That output column already exists. Choose a new name or tick Overwrite existing results.")
         job_settings["revision"] = tasks.source_revision(job_settings)
+        if prepare_only:
+            return method, job_settings
         job = jobs.start(root, method, job_settings, request_id=request_id)
         return (
             spec,
@@ -1529,7 +1546,8 @@ def _leiden(channel, name, args, spec, table, request_id):
             f"{label} is running in the background; the groups are saved in a new column.",
         )
     if name == "run_neighbourhoods":
-        from . import neighbourhoods
+        from . import neighbourhoods, spatial_sources
+        table = spatial_sources.resolve(root, table)
 
         chosen = neighbourhoods.values(read_config(root))
         _check_settings_revision(args, chosen)
@@ -1564,6 +1582,9 @@ def _leiden(channel, name, args, spec, table, request_id):
         )
     done = jobs.status(root, args["job_id"])
     result = done.get("result") or {}
+    if done.get('kind') == 'neighbourhoods':
+        from . import spatial_sources
+        table = spatial_sources.resolve(root, table)
     if (
         done.get("kind") not in {"leiden", "neighbourhoods", "som", "vortex", "subphenotype"}
         or done.get("status") != "done"
@@ -1611,8 +1632,27 @@ def _leiden(channel, name, args, spec, table, request_id):
         "cluster_job_id": args["job_id"],
         "overwrite_columns": [output] if replacing else [],
     }
+    request = json.loads((jobs.directory(root, done['id']) / 'request.json').read_text())
+    source_settings = request.get('settings', {})
+    if done['kind'] == 'subphenotype':
+        job_settings['row_scoped'] = True
+        job_settings['subphenotype_run'] = {
+            'clusters': sorted(known),
+            'selection': result.get('selection') or {
+                'parent_column': source_settings['config']['parent_col'],
+                'parents': source_settings['config']['parent_values'],
+                'filters': source_settings['config'].get('filters', []),
+            },
+            'membership_file': str(jobs.directory(root, done['id']) / 'subphenotype_membership.parquet')
+                if result.get('scoped_membership') else None,
+        }
+    if source_settings.get('selected_images') is not None:
+        job_settings.update(selected_images=source_settings['selected_images'], roi_col=source_settings.get('roi_col'),
+                            roi_column=source_settings.get('roi_column'))
     if done["kind"] == "neighbourhoods":
         job_settings["result"] = "neighbourhoods"
+        job_settings['images'] = source_settings.get('images') or []
+        job_settings['image_col'] = IMAGE_COLUMN
     tasks.validate_table(job_settings)
     job_settings["revision"] = tasks.source_revision(job_settings)
     job = jobs.start(root, "name_clusters", job_settings, request_id=request_id)
@@ -1844,21 +1884,26 @@ def _tag_cells(channel, args, spec, request_id):
         raise ValueError("Choose the columns that hold the cell coordinates.")
     if not any(row["annotation"] for row in found["rows"]):
         raise ValueError("No cell table has annotations: export them in the Annotation step, or pick a file for each table.")
+    state[tab5.RULES_KEY] = tagging.rules(found, state)
     engine_rules, edge, *_ = tab5.build_engine_inputs(state)
     beds = tab5.selected_bed_labels(state=state)
     if not any(rule.is_active() for rule in engine_rules) and edge is None and not beds:
         raise ValueError("Choose at least one column to add for an annotation, then save the tagging settings.")
     tables = list(args.get("tables") or [])
-    if tables and found["mode"] == tab5.MODE_PER_IMAGE:
-        unknown = [name for name in tables if name not in found["tables"]]
+    if tables:
+        unknown = [name for name in tables if name not in {r['source'] for r in found['rows']}]
         if unknown:
             raise ValueError("Not a cell table here: " + ", ".join(unknown[:3]))
-    count = len(tables) if tables and found["mode"] == tab5.MODE_PER_IMAGE else len(found["rows"])
+    if tagging.updating(state) and not tables:
+        raise ValueError('Select the images to update in the existing table.')
+    count = len(tables) if tables else len(found["rows"])
     exports, _ = tagging._exports_and_images(root)
     job = jobs.start(root, "cell_tagging", {"state": state, "found": found, "tables": tables, "root": str(root), "exports": exports},
                      request_id=request_id)
     where = "the combined table" if found["mode"] == tab5.MODE_MERGED else f"{count} cell table{'s' if count != 1 else ''}"
-    return (spec, [], {"job": job}, {"kind": "none"}, f"Tagging the cells of {where} in the background; the originals are kept.")
+    message = (f"Updating selected annotation columns for {count} images in the existing table; backups will be kept."
+               if tagging.updating(state) else f"Tagging the cells of {where} in the background; the originals are kept.")
+    return (spec, [], {"job": job}, {"kind": "none"}, message)
 
 
 IMAGE_COLUMN = "batch_id"
@@ -1883,14 +1928,21 @@ def _interactions(channel, args, spec, table, request_id):
     if not project.get("root"):
         raise ValueError("Load a project before running a job.")
     root = project["root"]
+    from . import spatial_sources
+    from spacemap import table_collection
+    table = spatial_sources.resolve(root, table)
     chosen = interactions.values(read_config(root))
     available = dataio.columns(table)
+    chosen.update({key: chosen[key] if chosen[key] in available else '' for key in ('batch_col', 'roi_col')})
     missing = [c for c in ("x_centroid", "y_centroid") if c not in available]
     if chosen["phenotype_col"] not in available:
         raise ValueError("Choose the phenotype column for cell-cell interactions and save the settings first.")
     if missing:
         raise ValueError("The combined table has no cell positions (" + ", ".join(missing) + ").")
     images = _table_images(table, args.get("images"))
+    if table_collection.is_collection(table):
+        table_collection.validate(table, [chosen['phenotype_col'], 'x_centroid', 'y_centroid',
+            *[chosen[k] for k in ('batch_col', 'roi_col') if chosen.get(k)]], images)
     job = jobs.start(root, "cell_interactions", {"table": table, "values": chosen, "images": images, "image_col": IMAGE_COLUMN}, request_id=request_id)
     return (
         spec,
@@ -1915,6 +1967,13 @@ def _subphenotyping(channel, args, spec, table, request_id):
     from .phenotyping_inputs import column_roles
     roles = column_roles(root, table)
     available = dataio.columns(table)
+    subphenotypes.check_inputs(chosen, available)
+    if set(chosen['markers']) & {v for v in roles.values() if v}:
+        raise ValueError('Choose measured features, excluding image and cell IDs.')
+    if chosen.get('model_id'):
+        from .reference_setup import options
+        if chosen['model_id'] not in {m['id'] for m in options(root, table)['models']}:
+            raise ValueError('Choose a model from the Models folder.')
     if chosen["parent_col"] not in available:
         raise ValueError("Choose the phenotype column to split and save the settings first.")
     if not chosen["parent_values"]:
@@ -1923,6 +1982,8 @@ def _subphenotyping(channel, args, spec, table, request_id):
     if not chosen["markers"] or missing:
         raise ValueError("Choose markers the table has" + (f" (no {', '.join(missing[:5])})." if missing else "."))
     mode = args.get("mode") or "run"
+    if mode not in {'run', 'discover'}:
+        raise ValueError('Choose Find markers or Run sub-phenotyping.')
     names = chosen["studio_output_col"]
     job_settings = {
         "table": table,
@@ -1934,6 +1995,7 @@ def _subphenotyping(channel, args, spec, table, request_id):
         "config": chosen,
         "mode": mode,
         "overwrite_columns": [names, names + "_clusters"] if args.get("overwrite") and mode == "run" else [],
+        **subphenotypes.image_scope(root, table),
     }
     if mode == "run":
         if names in available and not args.get("overwrite"):

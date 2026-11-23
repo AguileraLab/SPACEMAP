@@ -11,6 +11,26 @@ and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Studio 0.5.0
+
+- Add Review with scoped collaborator links, suggested labels, multi-selection,
+  review queues and owner-approved decisions; keep reviewer display state separate.
+- Add gland-composition types and exterior bed niches, K review, silhouette
+  diagnostics, image-linked profiles and sample-level comparisons.
+- Expand spatial feature screening with all diversity measures, configurable
+  comparison scopes, correction families, resampling and interactive results.
+- Support spatial analysis of separate per-image tables and explicit image/table
+  matching without requiring batch correction or a merged table.
+- Add linked Flow gating, marker review, figure layouts and statistical tools.
+- Refine annotation selection, renaming, colours, opacity and display persistence;
+  consolidate linked cell controls and make imported data sources explicit.
+- Extend manual-reference models, class inclusion switches, selected-tile
+  retraining and missing-marker validation.
+- Preserve installed-package marker defaults, isolated settings storage,
+  chronological job ordering, the academic research license and Python 3.10 support.
+
+## [0.4.0]
+
 ### Studio release (0.4.0)
 
 - Make Studio the primary documented workflow, with a persistent image viewer,
@@ -182,7 +202,7 @@ See [docs/viewer.md](docs/viewer.md).
   refreshes when a tab writes new columns. **Full screen**, **Minimize** and
   **Restore image viewer** are added, and each image's view is remembered.
 - **Faster and sturdier:** an image opens in under a second the first time
-  (it was 8-9 s on PDAC and INNATE ROIs) and at once afterwards. A new ROI's
+  (previously 8-9 s in the development benchmark) and at once afterwards. A new ROI's
   cell outlines are prepared in the background while the image already
   shows. Viewer links, and an open separate window, keep working after
   SPACEMAP restarts.
@@ -370,7 +390,7 @@ See [docs/viewer.md](docs/viewer.md).
   non-standard `Channel/@Exposure`; SPACEMAP reads either.
 
 - **Fixed:** marker names showed as empty boxes and colours as black when
-  blanks had been saved in the project (seen for INNATE's P11). Black was also
+  blanks had been saved in the project. Black was also
   written into the extracted ROI files. A blank name, or black where the image
   gives a colour, is now filled from the image again.
 - **Fixed:** TMA core-detection settings (core size, sensitivity, row gap, row
@@ -545,5 +565,6 @@ First public release.
 - Committed interface state containing one developer's absolute paths and
   project names.
 
-[Unreleased]: https://github.com/AguileraLab/SPACEMAP/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/AguileraLab/SPACEMAP/compare/891331f7f6db7bd775a8f2ba15b6dc9a11e2a989...HEAD
+[0.4.0]: https://github.com/AguileraLab/SPACEMAP/tree/891331f7f6db7bd775a8f2ba15b6dc9a11e2a989
 [0.3.0]: https://github.com/AguileraLab/SPACEMAP/releases/tag/v0.3.0

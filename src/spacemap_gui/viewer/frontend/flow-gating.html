@@ -1,0 +1,19 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Flow gating · SPACEMAP</title><link rel="stylesheet" href="flow-gating.css?v=flow-stats-2"></head>
+<body class="flow-window"><main id="flow-root"><section style="padding:24px;font:14px system-ui,sans-serif"><strong>Flow gating</strong><p role="status">Opening workspace…</p><a href="" style="color:#9dbdff">Reload window</a></section></main><script src="flow-stats.js?v=flow-stats-2"></script><script src="flow-gating.js?v=flow-stats-2"></script>
+<script>
+(async()=>{const root=document.getElementById('flow-root');try{
+  const params=new URLSearchParams(location.search),channel=params.get('session');
+  if(!channel)throw Error('Open Flow gating from Studio to connect your project.');
+  if(!window.SPACEMAPFlow)throw Error('Flow tools could not load. Reload this window.');
+  const base=(params.get('api')||new URL('../',location.href).href).replace(/\/$/,'');
+  const request=async(path,body)=>{const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),120000);try{
+    const r=await fetch(base+path,{credentials:'same-origin',signal:controller.signal,...(body?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:{})});
+    if(!r.headers.get('content-type')?.includes('application/json'))throw Error('Studio returned an unexpected response. Reopen Flow gating from Studio.');
+    const result=await r.json();if(!r.ok)throw Error(result.error||r.statusText);return result;
+  }catch(error){if(error.name==='AbortError')throw Error('Studio has not responded. Retry to reconnect.');throw error;}finally{clearTimeout(timer);}};
+  await SPACEMAPFlow.mount(root,{channel,get:path=>request(path),post:request,plotly:base+'/flow_plotly.js'});
+}catch(error){const message=document.createElement('p');message.setAttribute('role','alert');message.textContent=error.message;root.replaceChildren(message);
+  const reload=document.createElement('button');reload.textContent='Reload window';reload.onclick=()=>location.reload();root.append(reload);
+}})();
+</script></body></html>

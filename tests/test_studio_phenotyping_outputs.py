@@ -16,9 +16,6 @@ def test_every_method_requires_overwrite_and_keeps_exact_output(setup, monkeypat
     _, table, root, _ = setup
     frame = pd.read_csv(table)
     frame["cell_id"] = range(len(frame))
-    # Consensus defaults to tissue-only analysis; this fixture represents
-    # already selected tissue so the test can reach the overwrite guard.
-    frame["tissue"] = 1
     frame["phenotype_a"], frame["phenotype_b"] = "A", "A"
     output = "phenotype_test"
     clustered = method in {"leiden", "som", "vortex", "subphenotyping"}

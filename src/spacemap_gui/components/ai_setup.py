@@ -182,6 +182,21 @@ def _start(entry) -> None:
     st.rerun()
 
 
+def _stop() -> bool:
+    """A pending shutdown is normal; failure must not crash the setup page."""
+    from spacemap_assistant.model_runtime import ModelRuntimeError, stop_runtime
+
+    try:
+        status = stop_runtime()
+    except (ModelRuntimeError, OSError) as exc:
+        st.error(str(exc))
+        return False
+    if status.running:
+        st.rerun()  # Show Stopping and poll; do not switch models or delete files yet.
+        return False
+    return True
+
+
 @st.fragment(run_every=3)
 def _starting_progress(prefix: str) -> None:
     """Loading progress that updates by itself; the page updates when the model is ready."""
@@ -190,6 +205,9 @@ def _starting_progress(prefix: str) -> None:
     status = _runtime_status()
     if status is None or status.ready or not status.running:
         st.rerun()
+        return
+    if getattr(status, 'stopping', False):
+        st.info(status.message)
         return
     started = st.session_state.setdefault(f"{prefix}_start_seen", time.time())
     st.info(f"{status.message} {time.time() - started:.0f} s so far (usually about a minute on a GPU).")
@@ -246,6 +264,8 @@ def _state_label(entry, status, active_id: str, runtime) -> str:
         return "Download failed" if status.state == "error" else "Not downloaded"
     if entry.id != active_id:
         return "Downloaded"
+    if runtime is not None and getattr(runtime, 'stopping', False):
+        return "In use · stopping"
     if runtime is not None and runtime.ready:
         return "In use · ready"
     if runtime is not None and runtime.running:
@@ -298,18 +318,18 @@ def _render_model_row(entry, report, prefix: str = "ai") -> None:
         elif entry.id != active_id:
             if buttons[0].button("Use", key=f"{key}_use", type="primary"):
                 if runtime is None:
-                    from spacemap_assistant.model_runtime import runtime_status, stop_runtime
+                    from spacemap_assistant.model_runtime import runtime_status
 
-                    if runtime_status().running:
-                        stop_runtime()  # the model in use now makes room for this one
+                    if runtime_status().running and not _stop():
+                        return
                 ai_settings.update_settings(active_model=entry.id, backend="local")
                 st.rerun()
         else:
-            from spacemap_assistant.model_runtime import stop_runtime
-
             if runtime is not None and runtime.running:
-                if buttons[0].button("Stop", key=f"{key}_stop"):
-                    stop_runtime()
+                stopping = getattr(runtime, 'stopping', False)
+                if buttons[0].button("Stopping…" if stopping else "Stop", key=f"{key}_stop", disabled=stopping):
+                    if not _stop():
+                        return
                     _log("local_model_stopped", f"{entry.name} was stopped from AI setup.", model=entry.id)
                     st.rerun()
             elif buttons[0].button("Start", key=f"{key}_start", type="primary"):
@@ -320,9 +340,8 @@ def _render_model_row(entry, report, prefix: str = "ai") -> None:
                            "It can be downloaded again.")
                 if st.button("Delete the files", key=f"{key}_remove", type="primary"):
                     if entry.id == active_id:
-                        from spacemap_assistant.model_runtime import stop_runtime
-
-                        stop_runtime()
+                        if not _stop():
+                            return
                     model_installer.remove_model(entry)
                     st.rerun()
 

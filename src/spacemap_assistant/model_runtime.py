@@ -25,6 +25,7 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -50,6 +51,9 @@ PRECISIONS = ("auto", "float32", "bfloat16", "int8", "int4")
 
 #: How long to wait for the server process to stay up before reporting failure.
 STARTUP_GRACE_SECONDS = 1.0
+STOP_GRACE_SECONDS = 25.0  # The child guard itself allows 20 seconds.
+_STOP_LOCK = threading.RLock()
+_STOP_WORKERS: set[tuple[str, int]] = set()
 
 
 #: Where the assistant's settings are, for messages.
@@ -74,6 +78,7 @@ class RuntimeStatus:
     model_id: str = ""
     backend: str = ""
     port: int = 0
+    stopping: bool = False
 
 
 def _state_path() -> Path:
@@ -136,12 +141,71 @@ def _interpreter() -> Path:
     return Path(sys.executable)
 
 
-def _read_pid_record() -> dict[str, Any]:
+def _read_pid_record(path: Path | None = None) -> dict[str, Any]:
     try:
-        payload = json.loads(_state_path().read_text(encoding="utf-8"))
+        payload = json.loads((path or _state_path()).read_text(encoding="utf-8"))
         return payload if isinstance(payload, dict) else {}
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
         return {}
+
+
+def _record_matches(record: dict[str, Any]) -> bool:
+    """A process identity is local to its host and must not have been reused."""
+    if record.get('host', socket.gethostname()) != socket.gethostname():
+        return False
+    try:
+        pid = int(record.get('pid') or 0)
+    except (TypeError, ValueError):
+        return False
+    if not _pid_matches(pid):
+        return False
+    started = record.get('process_started')
+    return started is None or _process_start_time(pid) == started
+
+
+def _save_pid_record(record: dict[str, Any], path: Path | None = None) -> None:
+    target = path or _state_path()
+    temporary = target.with_name(f'.{target.name}.{os.getpid()}.{threading.get_ident()}.tmp')
+    try:
+        temporary.write_text(json.dumps(record, indent=2) + '\n', encoding='utf-8')
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _signal_server(pid: int, sig: int) -> None:
+    # A legacy server may share the application's group. Never signal that group.
+    if os.getpgid(pid) == pid:
+        os.killpg(pid, sig)
+    else:
+        os.kill(pid, sig)
+
+
+def _finish_stop(record: dict[str, Any], key: tuple[str, int]) -> None:
+    """Wait off the UI thread; enforce Stop if generation prevents graceful exit."""
+    path = Path(key[0])
+    try:
+        deadline = time.monotonic() + STOP_GRACE_SECONDS
+        while _record_matches(record) and time.monotonic() < deadline:
+            time.sleep(.1)
+        if _record_matches(record):
+            _signal_server(int(record['pid']), signal.SIGKILL)
+            deadline = time.monotonic() + 3
+            while _record_matches(record) and time.monotonic() < deadline:
+                time.sleep(.1)
+        with _STOP_LOCK:
+            if _read_pid_record(path) == record:
+                if not _record_matches(record):
+                    path.unlink(missing_ok=True)
+                else:
+                    _save_pid_record({**record, 'stop_error': 'The model process has not exited. Try Stop again.'}, path)
+    except OSError as exc:
+        with _STOP_LOCK:
+            if _read_pid_record(path) == record:
+                _save_pid_record({**record, 'stop_error': f'Could not stop the model server: {exc}'}, path)
+    finally:
+        with _STOP_LOCK:
+            _STOP_WORKERS.discard(key)
 
 
 def _is_model_server(argv: list[str]) -> bool:
@@ -257,6 +321,7 @@ def _write_pid_record(pid: int, precision: str, entry: ModelEntry) -> None:
         "backend": entry.backend,
         "port": _server_port(),
         "started_at": int(time.time()),
+        "process_started": _process_start_time(pid),
     }
     temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
     try:
@@ -387,7 +452,13 @@ def runtime_status() -> RuntimeStatus:
         pid = int(record.get("pid"))
     except (TypeError, ValueError):
         pid = None
-    running = bool(pid and _pid_matches(pid))
+    running = bool(pid and _record_matches(record))
+
+    if running and record.get('stopping_at'):
+        return RuntimeStatus(True, True, False, pid,
+            str(record.get('stop_error') or f'{entry.name} is stopping…'),
+            str(record.get('precision') or ''), model_id=entry.id, backend=entry.backend,
+            port=int(record.get('port') or _server_port()), stopping=not bool(record.get('stop_error')))
 
     if running:
         try:
@@ -485,6 +556,8 @@ def _server_environment() -> dict[str, str]:
 def start_runtime(precision: str = "auto") -> RuntimeStatus:
     """Launch the local model server for the selected model."""
     current = runtime_status()
+    if current.stopping:
+        raise ModelRuntimeError('The model is stopping. Wait until it has stopped before starting it.')
     if current.running:
         return current
     entry = active_entry()
@@ -565,6 +638,8 @@ def ensure_running(*, precision: str | None = None, timeout: float = 900.0, on_w
     model is not downloaded, stops while loading, or is not ready in time.
     """
     status = runtime_status()
+    if getattr(status, 'stopping', False):
+        raise ModelRuntimeError('The model is stopping. Start it again after shutdown to ask a new question.')
     if status.ready:
         return status
     if not status.installed:
@@ -578,6 +653,8 @@ def ensure_running(*, precision: str | None = None, timeout: float = 900.0, on_w
     started = time.monotonic()
     while True:
         status = runtime_status()
+        if getattr(status, 'stopping', False):
+            raise ModelRuntimeError('The model was stopped while this request was waiting for it.')
         if status.ready:
             return status
         waited = time.monotonic() - started
@@ -591,34 +668,32 @@ def ensure_running(*, precision: str | None = None, timeout: float = 900.0, on_w
 
 
 def stop_runtime() -> RuntimeStatus:
-    """Stop the local model server if this application started it."""
-    record = _read_pid_record()
-    try:
-        pid = int(record.get("pid"))
-    except (TypeError, ValueError):
-        pid = 0
-    if pid and _pid_matches(pid):
-        try:
-            os.killpg(os.getpgid(pid), signal.SIGTERM)
-        except (ProcessLookupError, PermissionError, OSError):
+    """Request shutdown; return an explicit stopping state until the process exits."""
+    with _STOP_LOCK:
+        record = _read_pid_record()
+        if record.get('host', socket.gethostname()) != socket.gethostname():
+            raise ModelRuntimeError('This process record belongs to another computer; no process was stopped.')
+        if _record_matches(record):
+            pid = int(record['pid'])
+            key = (str(_state_path()), pid)
+            if key not in _STOP_WORKERS:
+                pending = {**record, 'stopping_at': time.time(), 'process_started': _process_start_time(pid)}
+                pending.pop('stop_error', None)
+                try:
+                    _save_pid_record(pending)
+                    _signal_server(pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass  # It exited between the identity check and the signal.
+                except OSError as exc:
+                    _save_pid_record(record)
+                    raise ModelRuntimeError(f'Could not stop the model server: {exc}') from exc
+                _STOP_WORKERS.add(key)
+                threading.Thread(target=_finish_stop, args=(pending, key), daemon=True).start()
+        elif record and _read_pid_record() == record:
             try:
-                os.kill(pid, signal.SIGTERM)
+                _state_path().unlink(missing_ok=True)
             except OSError as exc:
-                raise ModelRuntimeError(f"Could not stop the model server: {exc}") from exc
-        for _ in range(50):
-            if not _pid_matches(pid):
-                break
-            time.sleep(0.1)
-        if _pid_matches(pid):
-            raise ModelRuntimeError(
-                "The model server is still stopping. Wait a few seconds and try again."
-            )
-    try:
-        _state_path().unlink()
-    except FileNotFoundError:
-        pass
-    except OSError as exc:
-        raise ModelRuntimeError(f"Could not remove the process record: {exc}") from exc
+                raise ModelRuntimeError(f'Could not remove the process record: {exc}') from exc
     return runtime_status()
 
 

@@ -355,8 +355,27 @@ def render_cell_tile(
             colours[:, 3] = np.where(colours[:, 3] > 0, 255, 0)
             rgba[edges] = colours
         else:
+            if lut is not None:
+                # Hidden groups must lose their outlines as well as their fill.
+                # Otherwise a picked cluster still appears to show every cell.
+                safe = np.where(labels < len(lut), labels, 0)
+                edges &= lut[safe, 3] > 0
             rgba[edges] = outline_rgba
     return rgba
+
+
+def render_reference_tile(labels, lut, *, mode="both", outline_rgba=(255, 255, 0, 255), z=0):
+    """Colour assigned cells over the ordinary outlines, retaining unlabelled cells.
+
+    Labels have already passed the viewer's filters. Missing reference values
+    mean unassigned, not hidden; explicit population filtering remains separate.
+    """
+    base = render_cell_tile(labels, None, outline_rgba=outline_rgba, z=z)
+    if lut is not None:
+        assigned = render_cell_tile(labels, lut, mode=mode, outline_rgba=outline_rgba, z=z)
+        visible = assigned[..., 3] > 0
+        base[visible] = assigned[visible]
+    return base
 
 
 # ---------------------------------------------------------------------------
@@ -416,6 +435,13 @@ def roi_index(
                 return cached
             index = _INDEX.get(key)
             if index is None:
+                if not roi_column:
+                    frame = dataio.load(table_path, columns=[label_column], apply_labels=False)
+                    labels = pd.to_numeric(frame[label_column], errors="coerce").to_numpy()
+                    keep = np.isfinite(labels)
+                    selected = (np.flatnonzero(keep).astype(np.int64), labels[keep].astype(np.int64))
+                    _INDEX.put(roi_key, selected)
+                    return selected
                 # Opening one ROI must not convert/group millions of unrelated
                 # rows in Python: that holds the GIL and delays image tiles.
                 selected = _parquet_roi_index(table_path, str(roi), roi_column, label_column)
@@ -884,6 +910,7 @@ def density_grid(
     weighted: bool = False,
     roi_column: str = "batch_id",
     label_column: str = "label",
+    allowed_labels=None,
 ) -> dict:
     """A smoothed map of the ROI's cells, cached.
 
@@ -900,6 +927,8 @@ def density_grid(
     if columns is None:
         raise ValueError("The table has no position columns (x_centroid, y_centroid).")
     keys = dict(roi_column=roi_column, label_column=label_column)
+    from hashlib import sha256
+    label_key = None if allowed_labels is None else sha256(np.asarray(allowed_labels, dtype=np.int64).tobytes()).hexdigest()
     stamp = (
         table_path,
         fingerprint(table_path),
@@ -911,6 +940,7 @@ def density_grid(
         value_column,
         float(radius_um),
         bool(weighted),
+        roi_column, label_column, label_key,
     )
     cached = _DENSITY.get(stamp)
     if cached is not None:
@@ -928,7 +958,12 @@ def density_grid(
     xs = np.asarray(pd.to_numeric(pd.Series(read(columns[0])), errors="coerce"), dtype=float)
     ys = np.asarray(pd.to_numeric(pd.Series(read(columns[1])), errors="coerce"), dtype=float)
     keep = np.isfinite(xs) & np.isfinite(ys)
-    if filter_column and filter_values:
+    if allowed_labels is not None:
+        if points:
+            raise ValueError('Viewer cell selections require cell data with segmentation cell numbers.')
+        labels = roi_values(table_path, roi, columns[0], **keys)[0]
+        keep &= np.isin(labels, allowed_labels)
+    if filter_column:
         groups = read(filter_column)
         wanted = {str(v) for v in filter_values}
         keep &= np.array([str(v).strip() in wanted for v in groups], dtype=bool)

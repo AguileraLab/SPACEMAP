@@ -68,6 +68,28 @@ def _safe(text):
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", str(text)).strip("._")[:120] or "model"
 
 
+def new_entry(library, kind, root, model):
+    """Readable copyable version folders; identity remains in model.json."""
+    from zoneinfo import ZoneInfo
+    date = model.get('created') or model.get('trained') or _now()
+    try:
+        stamp = datetime.fromisoformat(date).astimezone(ZoneInfo(model.get('model_timezone') or 'UTC'))
+        date = stamp.strftime('%Y-%m-%d_%H%M%S_%Z')
+    except (ValueError, TypeError, KeyError):
+        date = 'undated'
+    title = model.get('name') or Path(root).name
+    if Path(root).name not in title:
+        title = Path(root).name + '__' + title
+    method = {'Random Forest': 'RF', 'Extra Trees': 'ExtraTrees'}.get(model.get('method'), '')
+    name = _safe(title) + ('__' + method if method else '') + '__' + _safe(date)
+    target = Path(library) / kind / name
+    count = 2
+    while target.exists():
+        target = Path(library) / kind / (name + '_' + str(count))
+        count += 1
+    return target
+
+
 def _now():
     return datetime.now(timezone.utc).isoformat()
 
@@ -99,7 +121,7 @@ def _artifact_parts():
 
 def project_models(root):
     """The models trained in (or imported into) this project that can be shared."""
-    from . import artifact_learning, reference_models, training
+    from . import artifact_learning, reference_examples, reference_models, training
 
     found = []
     try:
@@ -115,22 +137,27 @@ def project_models(root):
             if record.get("deleted_at") or not (home / (record["id"] + ".joblib")).is_file():
                 continue
             found.append({"kind": "artifact", "id": record["id"], "name": record.get("name") or record["id"], "part": part,
+                          "path": str(home / (record["id"] + ".joblib")),
                           "created": record.get("created", ""), "details": {
                               "artifact": artifact_learning.NAMES.get(part, part), "images": record.get("images"),
                               "samples": record.get("samples"), "markers": record.get("markers"), "he_backup": bool(record.get("he")),
                               "imported_from": record.get("imported_from")}})
     directory = reference_models.directory()
     tables = _project_tables(root)
+    project_key = reference_examples.source_key(root)
     if directory.is_dir():
         for meta_path in sorted(directory.glob("*.json")):
             meta = _read(meta_path, None)
-            if not meta or not (meta.get("table_path") in tables or meta.get("imported")):
+            if not meta or not (meta.get("project_key") == project_key or meta.get("table_path") in tables or meta.get("imported")
+                                or any(item["table"] in tables for item in meta.get("training_sources", []))):
                 continue
             found.append({"kind": "phenotyping", "id": meta_path.stem, "name": f"{meta.get('method', 'Model')} · {meta.get('column', '')}",
-                          "created": meta.get("trained", ""), "details": {
+                          "path": str(meta_path.with_suffix('.joblib')),
+                          "created": meta.get("trained", ""), "method":meta.get("method"), "model_timezone":meta.get("model_timezone", "UTC"), "details": {
                               "table": meta.get("table"), "markers": meta.get("markers"), "examples": meta.get("examples"),
                               "held_out_balanced_accuracy": meta.get("held_out_balanced_accuracy"),
                               "marker_importance": meta.get("marker_importance"), "adaptable": bool(meta.get("adaptable")),
+                              "auto_train": bool(meta.get("auto_train")),
                               "imported_from": meta.get("imported_from")}})
     return found
 
@@ -170,10 +197,10 @@ def share(root, kind, identifier, project_name=""):
     model = next((m for m in project_models(root) if m["kind"] == kind and m["id"] == identifier), None)
     if model is None:
         raise ValueError("That model is not in this project.")
-    entry = _safe(kind + "_" + identifier)
-    target = location() / kind / entry
-    if (target / "model.json").is_file():
+    if any(item["kind"] == kind and item["id"] == identifier for item in entries()):
         raise ValueError("This model is already in the library.")
+    target = new_entry(location(), kind, root, model)
+    entry = target.name
     files = []
     if kind == "cellpose":
         source = Path(model["path"])
@@ -192,13 +219,31 @@ def share(root, kind, identifier, project_name=""):
         record = next(r for r in _read(home / "versions.json", []) if r["id"] == identifier)
     else:
         source = reference_models.model_path(identifier)
-        _copy(source, target / source.name)
+        record = _read(source.with_suffix(".json"), {})
+        if record.get("training_sources"):
+            import joblib
+            # Local row mappings are only for independent review in the source project.
+            # Shared predictions use the model and examples, without private table paths.
+            artifact = {**reference_models._source(identifier)[2]}
+            artifact.pop("training_origin", None)
+            artifact.pop("_file_stamp", None)
+            target.mkdir(parents=True, exist_ok=True)
+            temporary = target / ("." + source.name + ".partial")
+            joblib.dump(artifact, temporary, compress=3)
+            temporary.replace(target / source.name)
+        else:
+            _copy(source, target / source.name)
         files.append(source.name)
-        record = {k: v for k, v in _read(source.with_suffix(".json"), {}).items() if k not in ("table_path",)}
+        record = {k: v for k, v in record.items() if k not in ("table_path", "training_sources")}
     manifest = {"kind": kind, "kind_name": KINDS[kind], "id": identifier, "name": model["name"], "part": model.get("part"),
                 "created": model.get("created", ""), "shared": _now(), "source_project": project_name or Path(root).name,
                 "details": model.get("details", {}), "record": record, "files": files}
     (target / "model.json").write_text(json.dumps(manifest, indent=2, default=str))
+    from spacemap.sharing import share as share_path
+    share_path(target.parent)
+    share_path(target)
+    for name in [*files, "model.json"]:
+        share_path(target / name)
     return {**manifest, "entry": entry}
 
 

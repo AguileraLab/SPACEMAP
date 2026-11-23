@@ -32,17 +32,30 @@
   // A step's list while its jobs run: reloaded as they progress (at most every 6 s, and once when they end), so each row's
   // state turns green as it is done, and the row being worked on is marked. Job messages start with "<row name>:".
   const ACTIVE_JOBS = ['starting', 'running', 'stopping'];
+  const CELL_RESULT_JOBS = ['leiden', 'som', 'vortex', 'mr_ml', 'name_clusters', 'consensus_ml',
+    'subphenotype', 'resolve_all', 'reference_collection', 'neighbourhoods', 'tls_candidates', 'gland_types', 'correct_batches'];
   let lastJobs = [];
-  const followJobs = (current, kinds, reload) => {
+  const followJobs = (current, kinds, reload, {progress} = {}) => {
     let last = 0, timer = null;
     const active = jobs => jobs.filter(job => kinds.includes(job.kind) && ACTIVE_JOBS.includes(job.status));
     let wasActive = active(lastJobs).length > 0;
+    let known = new Map(lastJobs.filter(job=>kinds.includes(job.kind)).map(job=>[job.id,job.status]));
+    current.activeJobs = active(lastJobs);
     current.workingOn = new Set(active(lastJobs).map(job => String(job.message || '').split(':')[0]));
     current.jobsChanged = jobs => {
       const mine = active(jobs);
+      current.activeJobs = mine;
       current.workingOn = new Set(mine.map(job => String(job.message || '').split(':')[0]));
       const ended = wasActive && !mine.length; wasActive = mine.length > 0;
-      if (!mine.length && !ended) return;
+      if (progress) {
+        // Status text does not change image inputs or cell counts. Refresh results
+        // once per finished job, including one that finishes between two polls.
+        const now = new Map(jobs.filter(job=>kinds.includes(job.kind)).map(job=>[job.id,job.status]));
+        const finished = [...now].some(([id,status])=>!ACTIVE_JOBS.includes(status)&&known.get(id)!==status) ||
+          [...known].some(([id,status])=>ACTIVE_JOBS.includes(status)&&!now.has(id));
+        known = now; progress();
+        if (!finished) return;
+      } else if (!mine.length && !ended) return;
       const run = async () => {
         timer = null;
         if (!current.body.isConnected) return;
@@ -52,7 +65,7 @@
         await reload();
         const scroll = current.body.querySelector('.studio-pairs-scroll'); if (scroll && top) scroll.scrollTop = top;
       };
-      clearTimeout(timer); timer = setTimeout(run, ended ? 0 : Math.max(0, 6000 - (Date.now() - last)));
+      clearTimeout(timer); timer = setTimeout(run, progress || ended ? 0 : Math.max(0, 6000 - (Date.now() - last)));
     };
   };
   const workingChip = (current, name) => current.workingOn?.has(name) ? chip('Working…', 'run', 'A job is working on it now') : null;
@@ -88,12 +101,12 @@
   const STATE_KIND = {done:'ok', partial:'warn', running:'run', failed:'error', needs_review:'warn', not_run:''};
   const ITEMS = {tab0:'Project', tab1:'Image pairs', tab2:'Images', tab3:'Images', tab4:'ROIs', tab5:'ROIs', tagging:'Cell tables', tab6:'Tables',
     tab7:'ROIs', tab8:'Tables', tab9:'Tables'};
-  const JOB_NAMES = {resolve_all:'RESOLVE · all ROIs', mr_ml:'MR-ML', train_reference_model:'Reference models',
+  const JOB_NAMES = {marker_figures:'Marker figures',model_review:'Models review',phenotyping_images:'Phenotyping · selected images',resolve_all:'RESOLVE · all ROIs', mr_ml:'MR-ML', train_reference_model:'Reference models', reference_collection:'Phenotyping · selected images',
     subtract_background:'Background removal', extract_rois:'ROI extraction', segment_images:'Segmentation',
     register_pairs:'Registration', detect_tissue:'Tissue detection', clean_tissue:'Tissue clean-up',
     train_artifact_model:'Artifact model training', detect_artifacts:'Artifact detection', artifact_batch:'Artifacts · ticked images', subtract_annotations:'Subtract annotations', remove_small_pieces:'Remove small pieces', classify_shared:'Shared classes', save_class_polygons:'Class polygons', subtract_artifacts:'Subtract artifacts',
-    export_classes:'Class export', import_annotations:'GeoJSON import', export_annotations:'Annotation export', apply_pieces:'Tissue pieces', make_zones:'Zones', leiden:'Leiden', name_clusters:'Names', neighbourhoods:'Neighbourhoods', train_cellpose:'Cellpose training', score_cellpose:'Cellpose scores',
-    correct_batches:'Batch correction', som:'SOM', vortex:'VORTEX', export_table:'CSV copy', consensus_ml:'Consensus ML', subphenotype:'Sub-phenotyping', cell_interactions:'Cell–cell interactions', cell_tagging:'Cell tagging', tls_candidates:'TLS candidates'};
+    export_classes:'Class export', import_annotations:'GeoJSON import', export_annotations:'Annotation export', write_annotations:'Write annotation files', apply_pieces:'Tissue pieces', make_zones:'Zones', leiden:'Leiden', name_clusters:'Names', neighbourhoods:'Neighbourhoods', train_cellpose:'Cellpose training', score_cellpose:'Cellpose scores',
+    correct_batches:'Batch correction', som:'SOM', vortex:'VORTEX', export_table:'CSV copy', consensus_ml:'Consensus ML', subphenotype:'Sub-phenotyping', cell_interactions:'Cell–cell interactions', cell_tagging:'Cell tagging', tls_candidates:'TLS candidates', gland_types:'Gland types'};
   // Tab 7's own methods, in its order, plus manual reference labelling.
   const METHODS = [
     {id:'leiden', name:'Leiden clustering', studio:true, tip:'Groups cells by their markers. Review and name the resulting clusters.'},
@@ -106,12 +119,13 @@
     {id:'subphenotyping', name:'Sub-phenotyping', studio:true, tip:'Finds finer groups within selected phenotypes using markers that vary between their cells.'},
     {id:'reference', name:'Manual reference', studio:true, tip:'Name cells yourself (click, box or a marker rule) into a reference ' +
       'column such as phenotype_ref1. Suggestions and least-sure navigation help.'},
+    {id:'flow', name:'Flow gating', studio:true, tip:'Draw marker gates, compare populations and apply phenotype labels. Linked to the image and Data.'},
   ];
 
   window.startSpacemapStudio = hooks => {
     const {session, get:rawGet, post:rawPost, stream, openImage, runCommand:rawCommand, applyLevels, captureView, renderResolve, refreshResolve, renderLabels,
       renderBackground, backgroundLevels, renderRois, renderShapeLayer, setDrawTarget, flushShapes, saveTissuePolygons, activeTissueId, chooseTissue, ensureArtifactLayer, saveArtifactPolygons, reviewedArtifact, drawArtifactExamples, artifactExampleState, finishArtifactExamples, artifactNeedsReview, annotationState, reloadAnnotations, showTissuePreview, ensureTissueLayer, clearTissuePreview, tissueForPieces, applyPiecePreview, zoomAnnotationBox, showNeckReview, approveNeck, viewBounds, imageMarkers, showSegPreview, showPreview, showRaster, drawExample, saveFigure,
-      heCompare, detectLevels, cellsState, viewSummary, colourCells, previewCells, setBackgroundScope, showCellGroups, setMarkerRoles, editCells, readCells, dropCells, pickPoint, imageSize,
+      heCompare, detectLevels, cellsState, viewSummary, colourCells, previewCells, refreshTaggedCells, setBackgroundScope, showCellGroups, setMarkerRoles, editCells, readCells, dropCells, configureTrainingCells, showSavedTrainingCells, pickPoint, imageSize,
       setSelectionTool} = hooks;
     const route = path => '/studio/' + encodeURIComponent(session) + path;
     // Something happening behind the screen: the page waiting on the server ("Loading…", after a moment, so quick
@@ -136,7 +150,8 @@
       }
     };
     const get = tracked(rawGet), post = tracked(rawPost);
-    const runCommand = tracked(rawCommand);
+    let imageSelectionSave=Promise.resolve();
+    const runCommand = tracked(async(...args)=>{await imageSelectionSave;return rawCommand(...args);});
     document.body.classList.add('studio');
     if (/^[0-9a-f]{32}$/.test(session)) {
       try { localStorage.setItem('spacemap-viewer-browser', session); } catch (_) {}
@@ -144,14 +159,31 @@
     const remember = (key, value) => { try { localStorage.setItem('spacemap-studio-' + key, value); } catch (_) {} };
     const recall = (key, fallback) => { try { return localStorage.getItem('spacemap-studio-' + key) || fallback; } catch (_) { return fallback; } };
     let context, images = null, imagesRequest, selectionTools, heatmapTools, currentSpec, frame = null, matches = [];
+    let clusterJobsChanged = null;
     let selected = new URLSearchParams(location.search).get('step'), method = recall('method', 'resolve');
 
     // ------------------------------------------------------------ header
     const header = node('header', {id:'studio-header'});
-    const toggle = node('button', {class:'btn', text:'Steps', title:'Show or hide the step names', 'aria-expanded':'true', onclick:() => {
-      const hidden = document.body.classList.toggle('studio-hide-steps');
-      toggle.setAttribute('aria-expanded', String(!hidden));
-    }});
+    const paneButtons = {}, paneArrows = {};
+    const setPaneOpen = (key, open, save=true) => {
+      const changed = document.body.classList.contains('studio-hide-'+key) === open;
+      document.body.classList.toggle('studio-hide-'+key,!open);
+      const pane=document.getElementById('studio-'+key);if(pane){pane.hidden=!open;pane.inert=!open;}
+      paneButtons[key]?.setAttribute('aria-expanded',String(open));
+      if(paneButtons[key])paneButtons[key].hidden=open;
+      paneArrows[key]?.setAttribute('aria-expanded',String(open));
+      paneControls.hidden=Object.values(paneButtons).every(button=>button.hidden);
+      if(save)remember('pane-'+key,open?'open':'closed');
+      if(changed)window.dispatchEvent(new Event('resize'));
+    };
+    const paneControls=node('div',{class:'studio-pane-toggles',role:'group','aria-label':'Show or hide panels'});
+    for(const [key,label] of [['steps','Steps'],['tools','Parameters'],['right','Right panel']]){
+      const button=node('button',{type:'button',class:'btn small studio-pane-restore',text:(key==='right'?'«':'»')+' Show '+(key==='right'?'Layers':label),'data-pane-toggle':key,'aria-controls':'studio-'+key,'aria-expanded':'true',
+        'aria-label':'Show '+label.toLowerCase(),title:'Show '+label.toLowerCase(),onclick:()=>setPaneOpen(key,true)});
+      paneButtons[key]=button;paneControls.append(button);
+      paneArrows[key]=node('button',{type:'button',class:'studio-pane-arrow',text:key==='right'?'»':'«','data-pane-collapse':key,
+        'aria-controls':'studio-'+key,'aria-expanded':'true','aria-label':'Hide '+label.toLowerCase(),title:'Hide '+label.toLowerCase(),onclick:()=>setPaneOpen(key,false)});
+    }
     const brand = node('div', {class:'studio-brand', title:'Studio\u2019s code: ' + BUILD}, [node('strong', {text:'SPACEMAP'}), node('span', {text:'Studio'}),
       node('span', {class:'muted studio-build', text:BUILD})]);
     const projectName = node('strong', {text:'Connecting…'});
@@ -170,35 +202,41 @@
     const jobsButton = node('button', {class:'btn', title:'Background jobs', onclick:() => showTab('jobs')}, [node('span', {text:'Jobs'}), jobsBadge]);
     const classic = node('a', {class:'btn', text:'Classic SPACEMAP', target:'spacemap-classic', rel:'noopener'});
     const assistant = node('a', {class:'btn', text:'AI assistant', target:'spacemap-classic', rel:'noopener'});
-    header.append(toggle, brand, busy, projectMenu, finder, askButton, node('span', {class:'grow'}), jobsButton, assistant, classic);
+    header.append(paneControls, brand, busy, projectMenu, finder, askButton, node('span', {class:'grow'}), jobsButton, assistant, classic);
 
     // ------------------------------------------------------------ rail, tools, right side
     const rail = node('aside', {id:'studio-steps', 'aria-label':'Analysis steps'});
     const steps = node('nav', {'aria-label':'Workflow'});
-    rail.append(steps, node('div', {class:'studio-legend'}, [['done', 'Done'], ['partial', 'Partly done'], ['none', 'Not run']]
+    rail.append(node('div',{class:'studio-rail-head'},[node('span',{text:'Steps'}),paneArrows.steps]),steps, node('div', {class:'studio-legend'}, [['done', 'Done'], ['partial', 'Partly done'], ['none', 'Not run']]
       .map(([state, text]) => node('span', {}, [node('i', {class:'studio-dot', 'data-state':state}), node('span', {text})]))));
     const tools = node('section', {id:'studio-tools', 'aria-label':'Step tools'});
     const right = node('aside', {id:'studio-right'});
-    const tabs = node('div', {class:'studio-tabs', role:'tablist', 'aria-label':'Outputs, layers and jobs'});
+    hooks.watchOpenImageRows(tools);hooks.watchOpenImageRows(list);
+    const tabs = node('div', {class:'studio-tabs', role:'tablist', 'aria-label':'Layers, Lists, Jobs and Assistant'});
+    tabs.append(paneArrows.right);
     const outputsPane = node('div', {id:'studio-outputs', class:'studio-pane', role:'tabpanel'});
     const panel = document.getElementById('panel');
     panel.classList.add('studio-pane'); panel.setAttribute('role', 'tabpanel');
     const jobsPane = node('div', {id:'studio-jobs', class:'studio-pane', role:'tabpanel'});
     const tabBadge = node('span', {class:'badge idle', text:'0'});
     const assistantPane = node('div', {id:'studio-assistant', class:'studio-pane', role:'tabpanel'});
-    const TABS = {outputs:[outputsPane, 'Outputs'], layers:[panel, 'Layers'], jobs:[jobsPane, 'Jobs'], assistant:[assistantPane, 'Assistant']};
+    const TABS = {layers:[panel, 'Layers'], outputs:[outputsPane, 'Lists'], jobs:[jobsPane, 'Jobs'], assistant:[assistantPane, 'Assistant']};
     const tabButtons = {};
     Object.entries(TABS).forEach(([key, [pane, label]]) => {
       tabButtons[key] = node('button', {type:'button', role:'tab', 'data-tab':key, 'aria-controls':pane.id, onclick:() => showTab(key)},
         [node('span', {text:label}), key === 'jobs' ? tabBadge : null]);
       tabs.append(tabButtons[key]);
     });
+    let onListsShown = null;
+    let lists = null;
     let onAssistantShown = null;
     let onJobsShown = null;  // set by Jobs below: Saved results are read when the tab is shown
     let openAiSetup = () => {};  // opens AI setup in the Assistant tab (defined with the assistant below)
     let explorerNow = null;  // the cluster explorer on screen (run, picks, names typed), told to the assistant  // set by the assistant below: its conversation loads when first shown
-    const showTab = key => {
+    const showTab = (key, reveal=true) => {
+      if(reveal)setPaneOpen('right',true);
       if (!TABS[key]) key = 'layers';
+      if (key === 'outputs' && onListsShown) onListsShown();
       if (key === 'assistant' && onAssistantShown) onAssistantShown();
       if (key === 'jobs' && onJobsShown) onJobsShown();
       Object.entries(TABS).forEach(([name, [pane]]) => {
@@ -208,7 +246,8 @@
       tabButtons[key].classList.remove('fresh');
       remember('tab', key);
     };
-    right.append(tabs, outputsPane, panel, jobsPane, assistantPane);
+    tabButtons.outputs.title = 'Inputs, outputs and imports for every Studio step';
+    right.append(tabs, panel, outputsPane, jobsPane, assistantPane);
     const app = document.getElementById('app');
     app.prepend(header, rail, tools); app.append(right);
 
@@ -273,7 +312,8 @@
         event.preventDefault(); remember(key + '-width', set(pane.getBoundingClientRect().width + step)); window.dispatchEvent(new Event('resize'));
       });
     });
-    showTab(recall('tab', 'layers'));
+    for(const key of Object.keys(paneButtons))setPaneOpen(key,recall('pane-'+key,'open')!=='closed',false);
+    showTab(recall('tab', 'layers'),false);
 
     const empty = node('div', {id:'studio-empty'}, [node('h2', {text:'Choose an image to begin'}),
       node('p', {text:'Your image and cell tools stay here as you move through the steps.'}),
@@ -290,11 +330,37 @@
     }});
     const results = section('Results', {tip:'What your last question or action returned.', actions:[describe]});
     results.body.append(notice);
-    const stepOutputs = node('div', {id:'studio-step-outputs'});
-    const outputGroups = new Map();
-    const expandedOutputs = new Set();
-    const rememberOutputs = () => stepOutputs.querySelectorAll('[data-output-key]').forEach(group => outputGroups.set(group.dataset.outputKey, group.open));
-    outputsPane.append(results.box, stepOutputs);
+    const lastAction = node('details', {class:'studio-options'}, [node('summary',{text:'Last action'}), results.box]);
+    jobsPane.append(lastAction);
+    lists = window.createStudioLists({holder:outputsPane,node,help,get,post,api:hooks.apiUrl,route,
+      imageChoices:async () => (await get('/session/'+encodeURIComponent(session)+'/images')).images,
+      changed:async result => {
+        await hooks.removeListedFiles?.(result.paths || []);
+        await reloadAnnotations?.();
+        images = null; imagesRequest = null; await loadImages(true);
+        if (frame) await chooseStep(frame.id);
+        await hooks.refreshPhenotypingLinks?.();
+        loadOverview();
+      },
+      open:async (step,item,annotation) => {
+        await flushShapes?.();
+        if(item.method){method=item.method;remember('method',method);}
+        if(item.stage)remember('annotation-part',item.stage);
+        if(item.part)remember('artifact-part',item.part);
+        await chooseStep(step);
+        if(item.viewer_image)await hooks.openListedImage(item.viewer_image);
+        await hooks.imageSettled?.();
+        if(item.method)frame?.selectMethod?.(item.method);
+        if(item.file_token)await hooks.openListedTable?.(item);
+        if(item.path&&item.kind==='annotation')await hooks.showListedAnnotation?.(item,annotation);
+        if(item.column){await hooks.refreshPhenotypingLinks?.();await colourCells(item.column);}
+        if(item.preview){const preview=node(item.path.toLowerCase().endsWith('.pdf')?'iframe':'img',{src:hooks.apiUrl(item.preview),title:item.path,style:'max-width:100%;min-height:180px',sandbox:''});showFigure('listed-file',node('div',{},[node('strong',{text:item.name}),preview]));}
+        showTab('layers');
+      }});
+    onListsShown = async () => { await lists.show(); await lists.invalidate(); };
+    if(!outputsPane.hidden)onListsShown();
+    window.addEventListener('spacemap-files-changed',()=>lists.invalidate());
+    document.addEventListener('spacemap-annotations-changed',()=>lists.invalidate());
     // Figures a step's tools put beside the image (heatmaps) go in the dock; one per key, cleared when the step
     // or part changes.
     const showFigure = (key, box) => {
@@ -303,7 +369,265 @@
       if (old) old.replaceWith(box); else figures.append(box);
       dock.hidden = false;
     };
-    const clearFigures = () => { figures.replaceChildren(); dock.hidden = true; };
+    // Explicit result selections reveal the dock; background progress must not
+    // reopen a panel the user deliberately hid or move their scroll position.
+    const revealFigure = key => {
+      const figure = figures.querySelector('[data-figure="' + key + '"]');
+      if(!figure)return;
+      setPaneOpen('right',true);dock.hidden=false;
+      if(key.startsWith('screening-'))figures.prepend(figure);
+      figures.scrollTop=0;
+      figure.scrollIntoView({block:'nearest'});
+    };
+    let closeMarkerFigure = () => {};
+    const clearFigures = () => { closeMarkerFigure(); figures.replaceChildren(); dock.hidden = true; };
+    const markerReviewView = async (holder, job, entry, alive) => {
+      holder.replaceChildren(node('p',{class:'hint',text:'Loading review…'}));
+      const request={job_id:job.id,phenotype:entry.phenotype};
+      const review=await post(route('/marker_review'),request);
+      if(!alive())return;
+      const fmt=n=>n===null||n===undefined?'—':Number(n).toLocaleString(undefined,{maximumFractionDigits:3});
+      const key='marker-review:'+job.id+':'+entry.phenotype;
+      let remembered=[];try{remembered=JSON.parse(recall(key,'[]'));}catch(_){}
+      const chosen=new Set(remembered.filter(m=>review.rows.some(r=>r.marker===m))), list=node('div',{class:'studio-review-list'}), detail=node('div',{class:'studio-review-detail'});
+      const search=node('input',{type:'search',placeholder:'Find a marker…','aria-label':'Review marker search'});
+      const all=node('input',{type:'checkbox','aria-label':'Select matching review markers'});
+      const status=node('p',{class:'hint',role:'status'});
+      const drawList=()=>{
+        remember(key,JSON.stringify([...chosen]));
+        const matching=review.rows.filter(r=>r.marker.toLowerCase().includes(search.value.toLowerCase()));
+        all.checked=!!matching.length&&matching.every(r=>chosen.has(r.marker));
+        all.indeterminate=matching.some(r=>chosen.has(r.marker))&&!all.checked;
+        const table=node('table',{class:'studio-table'},[node('thead',{},[node('tr',{},['Use','Marker','IQR','5–95%','Measured'].map(t=>node('th',{text:t})))])]);
+        table.append(node('tbody',{},matching.map(row=>{
+          const tick=node('input',{type:'checkbox',checked:chosen.has(row.marker),'aria-label':'Review use '+row.marker});
+          tick.onchange=()=>{if(tick.checked)chosen.add(row.marker);else chosen.delete(row.marker);drawList();};
+          return node('tr',{title:row.note},[node('td',{},[tick]),node('td',{},[
+            node('button',{class:'btn small',text:row.marker,onclick:()=>inspect(row.marker)}),
+            row.candidate?node('span',{class:'muted',text:' ☆',title:'Candidate to inspect; not a positive call'}):null]),
+            node('td',{text:fmt(row.iqr)}),node('td',{text:fmt(row.tail)}),node('td',{text:fmt(row.coverage)+'%'})]);
+        })));
+        list.replaceChildren(table);
+      };
+      search.oninput=drawList;
+      all.onchange=()=>{review.rows.filter(r=>r.marker.toLowerCase().includes(search.value.toLowerCase())).forEach(r=>{
+        if(all.checked)chosen.add(r.marker);else chosen.delete(r.marker);});drawList();};
+      const svgElement=(tag,attrs)=>{const el=document.createElementNS('http://www.w3.org/2000/svg',tag);Object.entries(attrs).forEach(([k,v])=>el.setAttribute(k,v));return el;};
+      const inspect=marker=>{
+        const row=review.rows.find(r=>r.marker===marker),h=review.histograms.find(r=>r.marker===marker);
+        const low=node('input',{type:'number',step:'any','aria-label':'Review range from',placeholder:'Any'});
+        const high=node('input',{type:'number',step:'any','aria-label':'Review range to',placeholder:'Any'});
+        const range=node('div',{class:'row'},[node('span',{text:'From'}),low,node('span',{text:'to'}),high]);
+        const plot=svgElement('svg',{viewBox:'0 0 600 145',role:'img','aria-label':marker+' distribution'});
+        if(h){
+          const maximum=Math.max(1,...h.counts);
+          h.counts.forEach((count,i)=>{
+            const bar=svgElement('rect',{x:i*10,y:120-count/maximum*110,width:9,height:count/maximum*110,fill:'#69a7ce',tabindex:0,role:'button','aria-label':fmt(h.edges[i])+' to '+fmt(h.edges[i+1])+': '+count+' cells'});
+            const select=()=>{low.value=h.edges[i];high.value=h.edges[i+1];status.textContent='Range chosen. Click Show cells to inspect it.';};
+            bar.onclick=select;bar.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();select();}};
+            plot.append(bar);
+          });
+          for(const [x,anchor,value] of [[0,'start',h.edges[0]],[600,'end',h.edges.at(-1)]]){
+            const text=svgElement('text',{x,y:140,'text-anchor':anchor,fill:'currentColor','font-size':12});text.textContent=fmt(value);plot.append(text);
+          }
+        }
+        const inspectStatus=node('span',{class:'hint',role:'status'});
+        const show=node('button',{class:'btn small',text:'Show cells',onclick:async()=>{
+          if(!low.checkValidity()||!high.checkValidity()){low.reportValidity();high.reportValidity();return;}
+          show.disabled=true;inspectStatus.textContent='Selecting…';
+          try{
+            const result=await hooks.showMarkerReviewCells(()=>post(route('/marker_review'),{...request,action:'select',marker,
+              lo:low.value===''?null:Number(low.value),hi:high.value===''?null:Number(high.value)}),()=>alive()&&show.isConnected);
+            if(result&&alive()&&show.isConnected)inspectStatus.textContent=fmt(result.count)+' cells · '+fmt(result.current)+' in this image';
+          }catch(error){if(alive())inspectStatus.textContent=error.message;}
+          finally{show.disabled=false;}
+        }});
+        const table=(heads,rows)=>node('table',{class:'studio-table'},[node('thead',{},[node('tr',{},heads.map(t=>node('th',{text:t})))]),
+          node('tbody',{},rows.map(r=>node('tr',{},r.map(v=>node('td',{text:String(v)})))))]);
+        const context=review.context.filter(r=>r.marker===marker);
+        const samples=review.samples.filter(r=>r.marker===marker);
+        detail.replaceChildren(node('div',{class:'row'},[node('strong',{text:marker}),help('Histogram: all measured cells in this phenotype. Click a bar or type a range in analysis units; both ends are inclusive. Show cells links the exact saved image/phenotype/region selection to Data and the current image. It does not assign labels or change the open image.')]),plot,
+          node('div',{class:'row'},[range,show,inspectStatus]),
+          node('div',{class:'row'},[node('button',{class:'btn small',text:'Upper 5% range',onclick:()=>{low.value=row.p95??'';high.value='';}}),
+            help('A relative tail for inspection, not a positive threshold. Sparse true signals may be smaller than 5%; inspect the full distribution and original staining.')]),
+          node('details',{open:true},[node('summary',{text:'Across selected phenotypes'}),table(['Phenotype','Median','Middle 50%','Cells'],context.map(r=>[r.phenotype,fmt(r.median),fmt(r.q25)+'–'+fmt(r.q75),fmt(r.n_finite)]))]),
+          node('details',{},[node('summary',{text:review.grouping?'Compare samples by '+review.grouping:'Sample comparison · None'}),
+            samples.length?table([review.grouping,'Median','Cells','Status'],samples.map(r=>[r.patient,fmt(r.median),fmt(r.n_finite),r.n_finite>=job.result.metadata.min_cells?'Included':'Too few cells'])):
+              node('p',{class:'hint',text:'No sample comparison. Choose an optional column in Figure options and generate again.'})]));
+      };
+      holder.replaceChildren(node('div',{class:'row'},[node('strong',{text:entry.phenotype}),help(review.rule),
+        chip(job.result.metadata.transform==='auto'?'Arcsinh raw; keep corrected':'Stored values'),help('Review uses the transformation above, before clustering normalization. For multiple slides, use validated corrected markers; inspect the raw measurements and image to confirm staining. No universal variation or positivity cutoff is fitted.')]),
+        node('div',{class:'row'},[all,search,node('button',{class:'btn small',text:'Select candidates',onclick:()=>{
+          chosen.clear();review.rows.filter(r=>r.candidate).forEach(r=>chosen.add(r.marker));drawList();
+        }}),help('Stars are a shortlist for inspection, not automatic clustering inputs. Review the staining first; then choose the markers to use.')]),list,
+        node('div',{class:'row'},[node('button',{class:'btn small',text:'Use selected for clustering',onclick:async()=>{
+          try{
+            if(!frame?.useReviewedMarkers)throw Error('Open Sub-phenotyping to apply these choices.');
+            await frame.useReviewedMarkers(request,[...chosen]);status.textContent='Saved '+chosen.size+' markers for '+entry.phenotype+'.';
+          }catch(error){status.textContent=error.message;}
+        }}),status]),detail);
+      drawList();if(review.rows.length)inspect(review.rows[0].marker);
+    };
+    const markerFigureGallery = job => {
+      closeMarkerFigure();
+      const result=job.result, entries=result?.figures||[];
+      if(!entries.length)return;
+      const url=file=>hooks.apiUrl(route('/subpheno_figure')+'?job_id='+encodeURIComponent(job.id)+'&file='+encodeURIComponent(file));
+      const box=section('Marker figures',{tip:'Saved measurements and cutoffs. Displaying fewer markers does not change the analysis. Generate again to change cells, thresholds or the marker pair.'});
+      box.box.classList.add('studio-marker-gallery');
+      const viewKey='marker-views:'+job.id;
+      let savedViews={};
+      try{savedViews=JSON.parse(recall(viewKey,'{}'))||{};}catch(_){}
+      const initial=entries.some(e=>e.id===savedViews.selected)?savedViews.selected:entries[0].id;
+      const pick=choice(entries.map(e=>[e.id,e.title]),initial,'Marker figure');
+      const reviewHolder=node('div',{'data-marker-review':'',hidden:true});
+      const note=node('p',{class:'hint',role:'status'});
+      const image=node('img',{class:'studio-marker-image',alt:'Marker exploration figure'});
+      const png=node('a',{class:'btn small',text:'PNG',download:''}),pdf=node('a',{class:'btn small',text:'PDF',download:''});
+      const menu=node('details',{class:'studio-marker-menu'});
+      const summary=node('summary'), checks=node('div',{class:'studio-markers'});
+      let chosen=[],sequence=0,overlay=null,placeholder=null;
+      const appearance=node('details',{class:'studio-marker-menu','data-marker-appearance':''});
+      const styleDefaults={font_size:10,x_size:9,y_size:10,x_angle:null,y_angle:0,
+        width:100,height:100,wrap:24,label_pad:6,show_values:true};
+      const styleInputs={};
+      const styleGrid=node('div',{class:'studio-marker-style-grid'});
+      [
+        ['font_size','Text size (pt)',6,24,1],['x_size','X labels (pt)',6,24,1],['y_size','Y labels (pt)',6,24,1],
+        ['x_angle','X angle (°)',-90,90,1],['y_angle','Y angle (°)',-90,90,1],
+        ['width','Width (%)',50,200,10],['height','Height (%)',50,200,10],
+        ['wrap','Wrap labels',0,60,1],['label_pad','Label gap (pt)',0,30,1],
+      ].forEach(([key,label,min,max,step])=>{
+        const input=node('input',{type:'number',min,max,step,placeholder:key==='x_angle'?'Auto':'',
+          required:key!=='x_angle','aria-label':'Figure '+label});
+        styleInputs[key]=input;
+        styleGrid.append(node('label',{},[node('span',{text:label}),input]));
+        input.onchange=()=>{note.textContent='Click Apply view to update the figure.';};
+      });
+      const showValues=node('input',{type:'checkbox','aria-label':'Show heatmap values'});
+      styleInputs.show_values=showValues;
+      showValues.onchange=()=>{note.textContent='Click Apply view to update the figure.';};
+      const valueRow=node('label',{class:'row'},[showValues,node('span',{text:'Show values'})]);
+      const setStyle=style=>{
+        Object.entries({...styleDefaults,...style}).forEach(([key,value])=>{
+          if(!styleInputs[key])return;
+          if(key==='show_values')styleInputs[key].checked=value;
+          else styleInputs[key].value=value===null?'':value;
+        });
+      };
+      const readStyle=()=>Object.fromEntries(Object.entries(styleInputs).map(([key,input])=>
+        [key,key==='show_values'?input.checked:input.value===''?null:Number(input.value)]));
+      appearance.append(node('summary',{text:'Appearance'}),styleGrid,valueRow,
+        node('div',{class:'row'},[
+          node('button',{class:'btn small',text:'Reset appearance',onclick:()=>{
+            setStyle(styleDefaults);note.textContent='Click Apply view to restore the default appearance.';
+          }}),
+          help('Applies to this figure and its PNG/PDF downloads. Text size scales titles, legends and values; X/Y sizes control axis labels. X angle: blank = automatic, 0 = horizontal, 90 = vertical. Wrap labels: characters per line; 0 = no wrapping. Width and height change plot spacing. Margins fit automatically.')]));
+      const large=node('button',{class:'btn small',text:'Expand'});
+      const close=()=>{
+        if(!overlay)return;
+        if(placeholder?.isConnected)placeholder.replaceWith(box.box);
+        else figures.append(box.box);
+        overlay.remove();overlay=null;large.textContent='Expand';
+        document.removeEventListener('keydown',escape);
+      };
+      const escape=event=>{if(event.key==='Escape')close();};
+      large.onclick=()=>{
+        if(overlay){close();return;}
+        placeholder=node('div',{'data-marker-placeholder':''});
+        box.box.before(placeholder);
+        overlay=node('div',{class:'studio-figure-large',role:'dialog','aria-label':'Expanded marker figure'});
+        document.querySelector('#stage').append(overlay);overlay.append(box.box);
+        large.textContent='Back to figures';document.addEventListener('keydown',escape);large.focus();
+      };
+      closeMarkerFigure=close;
+      image.onclick=()=>{if(!overlay)large.click();};
+      const show=file=>{image.src=url(file+'.png');png.href=url(file+'.png');pdf.href=url(file+'.pdf');};
+      const describe=()=>{summary.textContent='Show markers · '+chosen.length;};
+      const drawChecks=()=>{
+        checks.replaceChildren(...result.metadata.markers.map(marker=>{
+          const input=node('input',{type:'checkbox','aria-label':'Display marker '+marker,checked:chosen.includes(marker)});
+          input.onchange=()=>{chosen=input.checked?[...chosen,marker]:chosen.filter(m=>m!==marker);describe();};
+          return node('label',{},[input,node('span',{text:marker})]);
+        }));describe();
+      };
+      const apply=node('button',{class:'btn small',text:'Apply view',onclick:async()=>{
+        const invalid=Object.values(styleInputs).find(input=>!input.checkValidity());
+        if(invalid){appearance.open=true;invalid.reportValidity();return;}
+        const mine=++sequence;apply.disabled=true;note.textContent='Updating figure…';
+        try{
+          const view=await post(route('/subpheno_figure'),{job_id:job.id,figure:pick.value,markers:chosen,appearance:readStyle()});
+          if(mine!==sequence)return;
+          savedViews[pick.value]=view;savedViews.selected=pick.value;remember(viewKey,JSON.stringify(savedViews));
+          show(view.file);menu.open=false;note.textContent='View saved. PNG/PDF updated.';
+        }catch(error){if(mine===sequence)note.textContent=error.message;}
+        finally{if(mine===sequence)apply.disabled=false;}
+      }});
+      menu.append(summary,node('div',{class:'row'},[
+        node('button',{class:'btn small',text:'All',onclick:()=>{chosen=result.metadata.markers.slice();drawChecks();}}),
+        node('button',{class:'btn small',text:'None',onclick:()=>{chosen=[];drawChecks();}})]),checks);
+      pick.onchange=()=>{
+        sequence++;apply.disabled=false;
+        const entry=entries.find(e=>e.id===pick.value);
+        const view=savedViews[entry.id];
+        chosen=(view?.markers||entry.markers).slice();drawChecks();show(view?.file||entry.id);
+        setStyle(view?.appearance||styleDefaults);
+        valueRow.hidden=!['patients','stratified','groups'].includes(entry.kind);
+        const isReview=entry.kind==='review';
+        reviewHolder.hidden=!isReview;image.hidden=isReview;appearance.hidden=isReview;apply.hidden=isReview;
+        menu.hidden=isReview||entry.kind==='coexpression';
+        if(isReview){const mine=sequence;markerReviewView(reviewHolder,job,entry,()=>mine===sequence&&reviewHolder.isConnected).catch(error=>{if(mine===sequence)note.textContent=error.message;});}
+        image.alt=entry.title;
+        savedViews.selected=entry.id;remember(viewKey,JSON.stringify(savedViews));
+        note.textContent=entry.kind==='review'?'Review candidates, inspect cells, then choose clustering markers.':entry.kind==='variation'?'Markers ranked by expression spread; not biological importance.':
+          entry.kind==='composition'?'% of high cells belonging to each phenotype.':
+          entry.kind==='dot'?'Size: % high within phenotype. Colour: median Z.':
+          ['patients','stratified'].includes(entry.kind)?'Each patient contributes its own percentage. Grey means too few measured cells.':
+          entry.kind==='groups'?(result.metadata.patient_column?'Mean of patient percentages in each group. n = eligible patients.':'Pooled cell percentages by group; no patient column selected.'):
+          entry.kind==='histogram'?'Blue: cells. Orange: equal patient weight. Shading: middle 50%. Red: high cutoff.':
+          'All measured cells in this phenotype. Colour shows cell counts.';
+      };
+      box.body.append(pick,menu,appearance,node('div',{class:'row'},[apply,large,png,pdf,
+        node('a',{class:'btn small',text:'Run figure book',title:'The original figures from this run.',href:url('figure_book.pdf'),target:'_blank',rel:'noopener'})]),note,reviewHolder,image,
+        node('details',{},[node('summary',{text:'Saved run'}),node('p',{class:'hint',text:
+          new Date(result.metadata.created).toLocaleString()+' · '+result.metadata.cells.toLocaleString()+' cells · Z > '+result.metadata.z}),
+          node('p',{class:'hint',text:result.metadata.selection?.parent_col||''}),
+          ...(result.metadata.notes||[]).map(text=>node('p',{class:'hint',text})),
+          node('input',{type:'text',readOnly:true,value:result.output_dir,'aria-label':'Saved marker figures folder',onclick:event=>event.target.select()})]));
+      showFigure('marker-exploration',box.box);pick.onchange();
+    };
+    window.addEventListener('studio-model-figures',async event=>{
+      for(const model of event.detail.models||[]){
+        const modelLabel=model.name+' · '+model.method;
+        const matrices=[];
+        if(model.profile)matrices.push({kind:'profiles',title:modelLabel+' · reference feature profiles',matrix:model.profile,
+          note:'Mean measured features of saved training cells, standardized within this model. These are example patterns, not decision weights.',
+          options:{vmin:-2.5,vmax:2.5,value_label:'Mean feature z-score',cmap:'RdBu_r',preserve_missing:true}});
+        if(model.importance)matrices.push({kind:'importance',title:modelLabel+' · feature importance',
+          matrix:{rows:['Overall importance'],columns:Object.keys(model.importance),values:[Object.values(model.importance)]},
+          note:'Overall contribution to tree splits. This does not explain an individual prediction.',
+          options:{vmin:0,vmax:Math.max(...Object.values(model.importance),.01),value_label:'Relative importance',cmap:'viridis'}});
+        if(model.validation?.cells)matrices.push({kind:'validation',title:modelLabel+' · validation predictions',
+          matrix:{rows:model.validation.labels.map(p=>'Reference: '+p),columns:model.validation.labels.map(p=>'Predicted: '+p),values:model.validation.confusion},
+          note:model.validation.cells+' validation cells · macro F1 '+model.validation.f1.toFixed(2)+'. Rows are reference labels; columns are predictions.',
+          options:{vmin:0,vmax:Math.max(...model.validation.confusion.flat(),1),value_label:'Cells',cmap:'viridis'}});
+        for(const matrix of matrices){
+          const key='model-'+model.id+'-'+matrix.kind;
+          const {box,body}=section(matrix.title,{});
+          const note=node('p',{class:'hint',text:'Drawing…'});body.append(note);showFigure(key,box);
+          try{
+            const found=await post(route('/figure'),{matrix:matrix.matrix,title:matrix.title,
+              options:{...matrix.options,cluster_x:false,cluster_y:false,dpi:150,format:'png'}});
+            note.textContent=matrix.note;
+            const img=node('img',{src:'data:'+found.type+';base64,'+found.data,alt:matrix.title,class:'studio-figure-preview'});
+            body.append(img,node('div',{class:'row'},['png','svg','pdf'].map(format=>node('button',{class:'btn small',text:'Save '+format.toUpperCase(),onclick:async()=>{
+              try{downloadFile(await post(route('/figure'),{matrix:matrix.matrix,title:matrix.title,
+                options:{...matrix.options,cluster_x:false,cluster_y:false,dpi:300,format}}));}catch(error){note.textContent=error.message;}
+            }}))));
+          }catch(error){note.textContent=error.message;}
+        }
+      }
+    });
 
     // A clickable heatmap: rows are groups (clusters, neighbourhoods, classes), columns markers or phenotypes,
     // coloured by how much a group stands out from the others. Clicking a row picks it (Shift or Ctrl adds more)
@@ -365,10 +689,14 @@
       const display = composition ? choice([['share','Share (%)'],['relative','Relative (z-score)']],recall('heatmap-values:'+key,'share'),'Neighbourhood heatmap values') : null;
       const isShare = () => display?.value === 'share';
       let values = isShare() ? profile.raw.map(row => row.map(v => 100*v)) : profile.values;
+      const colourRange=choice([['auto','Auto'],['1','±1'],['1.5','±1.5'],['2.5','±2.5'],['3','±3']],
+        recall('heatmap-range:'+key,key==='subphenotype'?'auto':'2.5'),'Heatmap colour range');
+      const autoRange=profile.values.reduce((limit,row)=>row.reduce((v,x)=>Number.isFinite(x)?Math.max(v,Math.abs(x)):v,limit),.1);
+      const range=()=>colourRange.value==='auto' ? autoRange : Number(colourRange.value);
       const scaleLabel = () => isShare() ? 'Share (%)' : 'Z-score';
-      const scaleTicks = () => isShare() ? [100,50,0] : [2.5,0,-2.5];
-      const tickLabel = v => isShare() ? String(v) : (v>0?'+':'')+v;
-      const heatColour = (value, palette) => diverging(isShare() ? value/20-2.5 : value,palette);
+      const scaleTicks = () => isShare() ? [100,50,0] : [range(),0,-range()];
+      const tickLabel = v => isShare() ? String(v) : (v>0?'+':'')+Number(v.toFixed(2));
+      const heatColour = (value, palette) => diverging(isShare() ? value/20-2.5 : value*2.5/range(),palette);
       const caption = () => composition ? (isShare() ? 'Mean share of each phenotype in the local windows (%)' : 'Mean shares compared across neighbourhood types (z-score)') : profile.note || '';
       const view = {labels, colours, notes};
       const chosen = new Set(picked.filter(row => rows.includes(row)));
@@ -384,11 +712,14 @@
       clusterY.checked=recall('heatmap-cluster-y:'+key,oldOrder==='similarity');
       order.disabled=clusterY.checked;
       const palette=choice([['blue-orange','Blue–orange'],['blue-red','Blue–red'],['viridis','Viridis'],['magma','Magma']],recall('heatmap-palette:'+key,composition?'viridis':'blue-orange'),'Heatmap colours');
+      const rangeField=node('label',{class:'row',hidden:isShare()},[node('span',{text:'Colour range'}),colourRange,
+        help('Auto fits the largest absolute Z-score. A smaller range adds contrast and clips colours at its limits. Values and clusters stay unchanged. Relative high/low is not a positive/negative gate.')]);
       const heatControls=node('div',{class:'row wrap heatmap-controls'},[node('span',{class:'muted',text:'Sort'}),order,palette,
+        rangeField,
         node('label',{class:'row'},[clusterX,node('span',{text:'Cluster X'})]),
         node('label',{class:'row'},[clusterY,node('span',{text:'Cluster Y'})]),
         help('Cluster X groups similar columns; Cluster Y groups similar rows. Choose either, both, or neither. Sorting by name is available when Y clustering is off. Ctrl, ⌘ or Shift-click adds rows to the selection. ' +
-          (composition ? 'Share shows mean local phenotype percentages, from 0 to 100. Relative shows each phenotype compared across neighbourhood types, from −2.5 to +2.5 z-score; it is not fold enrichment. The list on the left follows this choice. ' : 'Colours show z-scores from −2.5 to +2.5, not fold enrichment. ') + 'Display choices do not change classification.')]);
+          (composition ? 'Share shows mean local phenotype percentages, from 0 to 100. Relative compares each phenotype across neighbourhood types using z-scores. The list on the left follows this choice. ' : 'Colours compare each marker across cluster summaries using z-scores. ') + 'Display choices do not change classification.')]);
       if (display) heatControls.prepend(display);
       if (onAggregation) {
         const methods=profile.available_summaries || Object.keys(profile.summaries || {});
@@ -511,12 +842,13 @@
       clusterX.onchange=()=>{remember('heatmap-cluster-x:'+key,clusterX.checked);draw();};
       clusterY.onchange=()=>{remember('heatmap-cluster-y:'+key,clusterY.checked);order.disabled=clusterY.checked;draw();};
       palette.onchange=()=>{remember('heatmap-palette:'+key,palette.value);draw();};
+      colourRange.onchange=()=>{remember('heatmap-range:'+key,colourRange.value);draw();};
       const saveNote = node('span', {class:'muted'});
       const saveFigure = node('button', {class:'btn small', text:'Save figure', onclick:async () => {
         saveFigure.disabled = true; saveNote.textContent = 'Drawing…';
         try {
           const {ri,ci}=ordered();
-          const found = await post(route('/figure'), {title, options:{...saving.read(),cluster_x:false,cluster_y:false,vmin:isShare()?0:-2.5,vmax:isShare()?100:2.5,value_label:scaleLabel(),cmap:({'blue-orange':'coolwarm','blue-red':'RdBu_r',viridis:'viridis',magma:'magma'})[palette.value]},
+          const found = await post(route('/figure'), {title, options:{...saving.read(),cluster_x:false,cluster_y:false,vmin:isShare()?0:-range(),vmax:isShare()?100:range(),value_label:scaleLabel(),cmap:({'blue-orange':'coolwarm','blue-red':'RdBu_r',viridis:'viridis',magma:'magma'})[palette.value]},
             matrix:{rows:ri.map(i => view.labels[rows[i]] || rows[i]), columns:ci.map(i=>columns[i]), values:ri.map(i=>ci.map(j=>values[i][j]))}});
           downloadFile(found); saveNote.textContent = 'Saved ' + found.name + '.';
         } catch (error) { saveNote.textContent = error.message; }
@@ -528,6 +860,7 @@
       if (display) display.onchange = () => {
         remember('heatmap-values:'+key,display.value);
         values = isShare() ? profile.raw.map(row => row.map(v => 100*v)) : profile.values;
+        rangeField.hidden=isShare();
         computedRows = computedCols = null;
         captionNode.textContent = caption(); onDisplay?.(display.value); draw();
       };
@@ -639,8 +972,9 @@
       }
       const status = node('p', {class:'muted', role:'status'});
       const act = async (action, body = {}, done = '') => {
-        status.textContent = 'Working…';
-        try { await drawSetup(await post(route('/ai/' + action), body)); setupStatus(done); loadChat(); }
+        status.textContent = action==='stop'?'Stopping model…':'Working…';
+        try { const next=await post(route('/ai/' + action), body);await drawSetup(next);
+          setupStatus(next.runtime?.stopping?'Stopping model…':done); loadChat(); }
         catch (error) { status.textContent = error.message; }
       };
       const setupStatus = text => { const line = setupBox.querySelector('[role=status]'); if (line) line.textContent = text; };
@@ -658,6 +992,9 @@
           if (model.failed) state = 'Download failed';
         } else if (!model.active) {
           buttons.push(node('button', {class:'btn small', text:'Use', onclick:() => act('use', {model:model.id}, model.name + ' will answer.')}));
+        } else if (runtime.stopping) {
+          state = 'In use · stopping'; kind = 'warn';
+          buttons.push(node('button', {class:'btn small ghost', text:'Stopping…', disabled:true}));
         } else if (runtime.ready) {
           state = 'In use · ready'; kind = 'ok';
           buttons.push(node('button', {class:'btn small ghost', text:'Stop', onclick:() => act('stop', {}, 'Stopped.')}));
@@ -1018,26 +1355,29 @@
       frame?.clearAnnotationAutosave?.();
       frame?.thresholdBenchmark?.dispose?.(); hooks.clearThresholdPreview?.();
       frame?.tlsReview?.dispose?.();
+      frame?.reviewQueue?.dispose?.();
       selected = id; selectionTools = null;
       const url = new URL(location.href); url.searchParams.set('step', id); history.replaceState(null, '', url);
       steps.querySelectorAll('button').forEach(button => button.setAttribute('aria-current', button.dataset.step === id ? 'step' : 'false'));
       const link = node('a', {class:'btn small', text:'Open Tab ' + id.replace('tab', ''), href:step.classic, target:'spacemap-classic',
         rel:'noopener', title:'Open this step in classic SPACEMAP; settings are shared'});
+      if (id === 'review') link.hidden = true;
       const body = node('div', {class:'studio-step-body'});
       const bar = node('div', {class:'studio-runbar', hidden:true});
-      tools.replaceChildren(node('div', {class:'studio-step-head'}, [node('h2', {text:step.name}), help(step.description), link]), body, bar, ...tools.querySelectorAll(':scope > .studio-resize-x'));
+      tools.replaceChildren(node('div', {class:'studio-step-head'}, [paneArrows.tools,node('h2', {text:step.name}), help(step.description), link]), body, bar, ...tools.querySelectorAll(':scope > .studio-resize-x'));
       showPreview(null); showRaster('classes', null); clearFigures(); if (setMarkerRoles && id !== 'tab5') setMarkerRoles(null);
       if (dropCells) dropCells(TRAINING_LAYER);  // a tile being corrected is left behind with its step
-      rememberOutputs(); stepOutputs.replaceChildren();
+      configureTrainingCells?.(null);
       frame = {id, step, body, bar, runBar:(rows, note) => {
         bar.replaceChildren(...[...rows, note ? node('p', {class:'muted', text:note}) : null].filter(Boolean));
         bar.hidden = !rows.length;
       }};
-      if (!['tab0', 'tab1', 'tab2', 'tab3', 'tab4', 'tab5', 'tagging', 'tab6', 'tab7', 'tab8', 'tab9'].includes(id)) workList(frame);
+      if (!['tab0', 'tab1', 'tab2', 'tab3', 'tab4', 'tab5', 'tagging', 'tab6', 'tab7', 'tab8', 'tab9', 'review'].includes(id)) workList(frame);
       (TOOLS[id] || classicOnly)(frame);
       if (FOLDER_STEPS.has(id)) folderSection(frame);
       menu.hidden = true; search.setAttribute('aria-expanded', 'false');
     };
+
 
     // The assistant changed a step's saved settings: that step, when shown, is drawn again from them.
     window.addEventListener('studio-settings-changed', event => {
@@ -1087,7 +1427,7 @@
     };
 
     // Where a step reads and writes, changed in the step: the folder in use, and a new one beside it.
-    const FOLDER_STEPS = new Set(['tab8', 'tab9']);  // earlier steps show their folders at the top
+    const FOLDER_STEPS = new Set(['tab9']);  // earlier steps show their folders at the top
     const folderSection = current => {
       const {box, body} = section('Folders', {tip:'Where this step reads from and writes to, shared with classic SPACEMAP. Choose ' +
         'another of the project\u2019s folders, or type a new one (inside the project) on the right; a new output folder is made ' +
@@ -1119,40 +1459,7 @@
       get(route('/folders/' + current.id)).then(draw).catch(error => fill(body, node('p', {class:'hint', text:error.message})));
     };
 
-    const showOutputs = (current, value) => {
-      if (frame !== current) return;
-      rememberOutputs(); stepOutputs.replaceChildren();
-      if (current.id === 'tab7') {
-        const methods = Array.from(new Set(value.items.flatMap(item => item.methods || []))).sort();
-        if (methods.length) {
-          const {box, body} = section('Phenotype columns', {actions:[chip(String(methods.length))],
-            tip:'Result columns of the cell table with calls for these ROIs. Colour the cells by one in the Phenotyping step.'});
-          body.append(node('div', {class:'studio-chips'}, methods.map(name => chip(name))));
-          stepOutputs.append(box);
-        }
-      }
-      const kinds = {};
-      value.outputs.forEach(item => (kinds[item.kind] ||= []).push(item.name));
-      if (value.outputs.length) stepOutputs.append(node('p', {class:'hint', text:'Saved files for this step. Use Layers to show or hide results on the image.'}));
-      Object.entries(kinds).forEach(([kind, names]) => {
-        const key = current.id + ':' + kind;
-        const box = node('details', {class:'layer-group studio-output-group', 'data-output-kind':kind, 'data-output-key':key});
-        box.open = !!outputGroups.get(key);
-        box.addEventListener('toggle', () => { if (box.isConnected) outputGroups.set(key, box.open); });
-        const body = node('div', {class:'studio-output-files'});
-        const row = name => node('div', {class:'studio-out-row', text:name, title:name});
-        const count = expandedOutputs.has(key) ? names.length : 12;
-        names.slice(0, count).forEach(name => body.append(row(name)));
-        if (names.length > count) body.append(node('button', {class:'btn small', text:'Show all ' + names.length,
-          onclick:event => { expandedOutputs.add(key); event.currentTarget.remove(); names.slice(count).forEach(name => body.append(row(name))); }}));
-        box.append(node('summary', {}, [node('span', {class:'name', text:kind}), chip(names.length.toLocaleString())]), body);
-        stepOutputs.append(box);
-      });
-      if (!stepOutputs.children.length) {
-        const {box, body} = section('Outputs'); body.append(node('p', {class:'muted', text:'Nothing saved by this step yet.'}));
-        stepOutputs.append(box);
-      }
-    };
+    const showOutputs = () => { lists?.invalidate(); };
 
     const classicOnly = current => {
       const {box, body} = section('Tools', {tip:'Studio controls for this step are being built (see the checklist). ' +
@@ -1163,6 +1470,9 @@
     };
 
     const TOOLS = {};
+    TOOLS.review = current => {
+      current.reviewQueue = window.SpacemapReview.mount(current.body, {session,openImage:openTableImage});
+    };
     // ------------------------------------------------------------ Project
     const DOT = {done:'done', partial:'partial', needs_review:'partial', running:'partial'};
     // The model library: its folder, this project's models (Share) and the library's (Import), by kind.
@@ -1194,12 +1504,17 @@
           note.textContent = body.action === 'share' ? d.name + ' is in the library.' : body.action === 'import' ? d.name + ' is now in this project (' + data.kinds[d.kind] + ').' : 'Library folder changed.'; }
         catch (error) { note.textContent = error.message; }
       };
-      const list = (items, button) => {
+      const list = (items, button, action) => {
         if (!items.length) return [node('p', {class:'muted', text:'None yet.'})];
         return Object.keys(data.kinds).flatMap(kind => {
           const own = items.filter(item => item.kind === kind);
-          return own.length ? [node('div', {class:'studio-sub', text:data.kinds[kind]}), ...own.map(item => node('div', {class:'row model-row'}, [
-            node('span', {class:'grow model-name', text:item.name, title:describe(item)}), node('span', {class:'muted model-about', text:describe(item)}), button(item)]))] : [];
+          if (!own.length) return [];
+          own.sort((a,b)=>(b.created||'').localeCompare(a.created||''));
+          const picker=choice(own.map((item,index)=>[String(index),item.name+' · '+formatModelTime(item.created)]),'0',action+' '+data.kinds[kind]+' model');
+          const about=node('div',{class:'hint'}), control=node('span');
+          const update=()=>{const item=own[Number(picker.value)];about.textContent=describe(item);fill(control,button(item));};
+          picker.onchange=update;update();
+          return [field(data.kinds[kind],node('div',{class:'inline'},[picker,control])),about];
         });
       };
       const draw = () => {
@@ -1207,13 +1522,13 @@
         folder.addEventListener('change', () => { if (folder.value.trim() && folder.value.trim() !== data.location) act({action:'location', path:folder.value.trim()}, 'Changing the library folder…'); });
         const shared = new Set(data.library.map(e => e.kind + '/' + e.id));
         fill(holder,
-          field('Library', folder, data.fixed ? 'Set by SPACEMAP_MODEL_LIBRARY, so it cannot be changed here.' : 'The folder holding the shared models. Type a full path and press Enter (a shared lab folder works too).'),
+          field('Sharing folder', folder, data.fixed ? 'Set by SPACEMAP_MODEL_LIBRARY, so it cannot be changed here.' : 'Share copies models here. Other users can choose the same folder and import them. Type a full path and press Enter.'),
           node('div', {class:'studio-sec-h studio-sub'}, [node('span', {text:'In this project'})]),
           ...list(data.project, item => shared.has(item.kind + '/' + item.id) ? chip('In the library', 'ok') :
-            node('button', {class:'btn small', text:'Share', 'aria-label':'Share ' + item.name, onclick:() => act({action:'share', kind:item.kind, id:item.id}, 'Copying ' + item.name + ' into the library…')})),
+            node('button', {class:'btn small', text:'Share', 'aria-label':'Share ' + item.name, onclick:() => act({action:'share', kind:item.kind, id:item.id}, 'Copying ' + item.name + ' into the library…')}), 'Share'),
           node('div', {class:'studio-sec-h studio-sub'}, [node('span', {text:'In the library'})]),
           ...list(data.library, item => data.project.some(own => own.kind === item.kind && own.id === item.id) ? chip('In this project', 'ok') :
-            node('button', {class:'btn small', text:'Import', 'aria-label':'Import ' + item.name, onclick:() => act({action:'import', kind:item.kind, entry:item.entry}, 'Copying ' + item.name + ' into this project…')})),
+            node('button', {class:'btn small', text:'Import', 'aria-label':'Import ' + item.name, onclick:() => act({action:'import', kind:item.kind, entry:item.entry}, 'Copying ' + item.name + ' into this project…')}), 'Import'),
           note);
       };
       holder.append(node('p', {class:'muted', text:'Reading the model library…'}));
@@ -1480,19 +1795,31 @@
         'often than if the phenotypes were shuffled among the same cells, within each slide and region.'},
       {id:'density', name:'Density', tip:'Cells per mm² of each group in each image (the tissue outline drawn on the image), density maps on the image, and each group by distance from an annotation.'},
       {id:'triads', name:'Triads', tip:'Three phenotypes found together (each within a distance of the others) more or less often than chance; the triangles are drawn on the image.'},
-      {id:'screening', name:'Feature screening', tip:'Test spatial features against an outcome and review findings on the image.'}];
+      {id:'screening', name:'Feature screening', tip:'Test spatial features against an outcome and review findings on the image.'},
+      {id:'glands', name:'Gland types', tip:'Group glands and their exterior beds by cell composition. Review size-aware types on the image and compare independent samples.'}];
     // Spatial analysis and Visualization results beside the image and on it (spatial-panels.js), made once.
     let spatialPanels = null;
-    const spatial = () => spatialPanels ||= window.createSpatialPanels({node, field, choice, help, section, chip, get, post, route, runCommand, showResult,
-      heatmapFigure, showFigure, showCellGroups, filterCells:(...a) => hooks.filterCells(...a), showPreview, openTableImage, imageSettled:(...a) => hooks.imageSettled?.(...a),
+    const spatial = () => spatialPanels ||= window.createSpatialPanels({node, field, choice, help, section, chip, get, post, route, apiUrl:hooks.apiUrl, runCommand, showResult,
+      heatmapFigure, showFigure, revealFigure, downloadFile, showCellGroups, filterCells:(...a) => hooks.filterCells(...a), showPreview, openTableImage, imageSettled:(...a) => hooks.imageSettled?.(...a),
       openRoi:() => (currentSpec?.layers || []).find(l => l.type === 'cells' && l.roi)?.roi || null, zoomBox:zoomAnnotationBox, refreshJobs,
-      tlsEditor:(...args)=>hooks.tlsEditor(...args)});
+      tlsEditor:(...args)=>hooks.tlsEditor(...args), showReviewedCells:(...args)=>hooks.showMarkerReviewCells(...args)});
     // The image of a combined-table image name (batch_id): opened in the viewer.
+    let spatialImageRequest = 0;
     const openTableImage = async roi => {
-      let list = [];
-      try { list = await loadImages(); } catch (_) { /* said below */ }
-      const image = list.find(item => item.sample === roi) || list.find(item => item.name === roi || item.name.startsWith(roi + '.'));
-      if (image) await chooseImage(image); else showResult({message:'No image of ' + roi + ' in this project.'});
+      const request = ++spatialImageRequest;
+      try {
+        const inputs = await get(route('/spatial/inputs'));
+        if (request !== spatialImageRequest) return;
+        const row = inputs.rows.find(item => item.roi === roi);
+        if (!row?.image_path) throw new Error('No matching image in the Images folder for ' + roi + '. Check Images above.');
+        if (inputs.per_image && row.table_path && row.table_path !== inputs.path)
+          await post(route('/spatial/inputs'), {table:row.table_path});
+        if (request !== spatialImageRequest) return;
+        const added = await post('/session/' + encodeURIComponent(session) + '/add-image', {path:row.image_path});
+        if (request !== spatialImageRequest) return;
+        await chooseImage(added.images.find(item => item.id === added.added));
+        if (request === spatialImageRequest && frame?.id === 'tab8') await frame.refreshSpatialInputs?.();
+      } catch (error) { if (request === spatialImageRequest) showResult({message:error.message}); }
     };
     // The combined-table image name of the image open in the viewer.
     const openTableName = rois => {
@@ -1502,64 +1829,153 @@
       return rois.filter(roi => name === roi || name.startsWith(roi + '.') || name.startsWith(roi + '_')).sort((a, b) => b.length - a.length)[0] || null;
     };
     TOOLS.tab8 = current => {
-      let part = recall('spatial-part', 'neighbourhoods');
+      let part = new URLSearchParams(location.search).has('gland_run') ? 'glands' : recall('spatial-part', 'neighbourhoods');
       const picked = current.spatialPicked = current.spatialPicked || new Set();
       const openTLS = async roi => {
-        if (part !== 'tls') {part='tls';remember('spatial-part',part);draw();}
+        if (part !== 'tls') {part='tls';remember('spatial-part',part);await draw();}
         try {await current.tlsReady;await current.tlsReview?.selectImage(roi);}
         catch (error) {showResult({message:error.message});}
       };
       current.imageChanged = () => { if(part==='tls')current.tlsReview?.syncOpenImage(false); };
       current.imageReady = () => { if(part==='tls')current.tlsReview?.syncOpenImage(); };
-      const list = section('Images', {tip:'The combined table’s images (every image’s cells, as Batch correction made it) with their cells. ' +
-        'Click a name to open it; tick images to run on them with Selected (the header box ticks all). The chips show neighbourhood coverage and candidate counts from the latest TLS run for this table.'});
-      list.body.append(node('p', {class:'muted', text:'Reading the combined table…'}));
-      let overview = null;
-      const drawList = () => {
-        if (!list.box.isConnected) return;
-        if (!overview.table) { fill(list.body, node('p', {class:'hint', text:'No combined table yet: make it in Batch correction.'})); return; }
-        const rois = overview.rois.map(item => item.roi);
-        const head = pickAll(rois, picked, drawList);
-        const runs = Object.entries(overview.results || {});
-        const rows = overview.rois.map(item => {
-          const tick = node('input', {type:'checkbox', 'aria-label':'Pick ' + item.roi}); tick.checked = picked.has(item.roi);
-          tick.addEventListener('change', () => { tick.checked ? picked.add(item.roi) : picked.delete(item.roi); head.sync(); });
-          const covered = runs.filter(([, counts]) => counts[item.roi]).map(([column]) => column.replace(/_cn$/, ''));
-          return node('tr', {'data-roi':item.roi}, [node('td', {}, [tick]),
-            node('td', {}, [node('button', {type:'button', class:'studio-item-name studio-file', text:item.roi, title:'Open ' + item.roi, onclick:() => openTableImage(item.roi)})]),
-            node('td', {class:'mono', text:item.cells.toLocaleString()}),
-            node('td', {}, [workingChip(current, item.roi), covered.length ? chip(covered.length === 1 ? 'Neighbourhoods' : covered.length + ' neighbourhood runs', 'ok',
-              'Neighbourhood columns with this image’s cells: ' + covered.join(', ')) : null,
-              Object.hasOwn(overview.tls?.counts || {}, item.roi) ? node('button', {type:'button', class:'chip' + (overview.tls.measured[item.roi] ? ' ok' : ''),
-                text:overview.tls.measured[item.roi] ? overview.tls.counts[item.roi] + ' TLS candidates' : 'TLS: no eligible cells',
-                title:'Open '+item.roi+' and review all TLS candidates ('+overview.tls.column+')', 'aria-label':'Show TLS in '+item.roi, onclick:()=>openTLS(item.roi)}) : null,
-              !covered.length && !Object.hasOwn(overview.tls?.counts || {}, item.roi) ? chip('Not run') : null].filter(Boolean))]);
+      const list = section('Folders and tables', {tip:'Images, cell tables and assignments are shared with Phenotyping. Batch correction and merging are optional. TIFF and QPTIFF images are supported; H&E registration is optional. Click an image to open it; tick images to analyse them. Folder changes keep the current viewer image open.'});
+      const controls=node('div'), rowsBox=node('div'), inputStatus=node('div',{class:'hint',role:'status'});
+      const searchImages=node('input',{type:'search',placeholder:'Find an image or table…','aria-label':'Find spatial images'});
+      list.body.append(controls,searchImages,rowsBox,inputStatus);
+      let overview = null, inputs = null, listRequest = 0, summaryRequest = 0, savingInputs = Promise.resolve();
+      const mutateInputs = payload => {
+        ++listRequest;
+        inputStatus.textContent='Saving…';
+        savingInputs=savingInputs.catch(()=>{}).then(()=>post(route('/spatial/inputs'),payload)).then(async()=>{
+          await loadList();
+          if (!payload.folders || Object.keys(payload.folders).some(key=>key!=='output')) {
+            await draw(); await hooks.refreshPhenotypingLinks?.();
+          }
+        }).catch(error=>{inputStatus.textContent=error.message;});
+      };
+      const drawControls = () => {
+        const directory=(key,label,tip)=>{
+          const input=node('input',{type:'text',class:'grow',value:inputs.folders[key],'aria-label':'Spatial '+label.toLowerCase()+' folder'});
+          input.onchange=()=>mutateInputs({folders:{[key]:input.value}});
+          return field(label,input,tip);
+        };
+        const files=[...new Set([inputs.path,...inputs.tables].filter(Boolean))];
+        const table=choice([['','Choose a cell table…'],...files.map(path=>[path,path.split('/').pop()])],inputs.path,'Spatial cell table');
+        table.onchange=()=>{if(table.value)mutateInputs({table:table.value});};
+        const roles=node('details',{class:'studio-options'},[node('summary',{text:'Column roles'})]);
+        const draft={...inputs.roles,label:inputs.segmentation_label||'',image:inputs.single_image||''};
+        [['roi','Image','For a merged table, choose the image-name column. For separate tables choose No image column. Tissue-piece IDs are not image names.'],
+         ['cell_id','Cell ID','Unique cell identifier within each source table. Separate tables may reuse local labels.'],
+         ['label','Segmentation label','Local cell number linking a row to its segmentation outline.'],
+         ['slide','Slide','Optional physical slide column, shared with Phenotyping.']].forEach(([key,label,tip])=>{
+          const pick=choice([['',key==='roi'?'No image column — one image per table':'None'],...inputs.columns.map(c=>[c,c])],draft[key],'Spatial '+label+' column');
+          pick.onchange=()=>{draft[key]=pick.value;if(!draft.roi&&!draft.cell_id&&inputs.columns.includes('label'))draft.cell_id='label';mutateInputs({roles:{...draft}});};
+          roles.append(field(label,pick,tip));
         });
-        fill(list.body,
-          node('div', {class:'row wrap'}, [chip(overview.table, 'ok', 'The combined table'), chip(overview.cells.toLocaleString() + ' cells'),
-            chip(overview.rois.length + ' images'), chip(runs.length + ' neighbourhood run' + (runs.length === 1 ? '' : 's'))]),
-          node('div', {class:'studio-pairs-scroll'}, [node('table', {class:'studio-counts studio-pairs'}, [
-            node('tr', {}, [node('th', {}, [head]), node('th', {text:'Image'}), node('th', {text:'Cells'}), node('th', {text:'State'})]), ...rows])]));
+        if(inputs.per_image)roles.insertBefore(field('Active table',table,'Column roles apply to this table. Image assignments below select the file used for each image.'),roles.children[1]);
+        controls.replaceChildren(directory('images','Images','Starts with the Images folder used in Phenotyping. Choose any supported image folder, including unregistered QPTIFF. Only direct files are listed. Click a listed image to switch the viewer.'),
+          directory('tables','Tables','CSV and Parquet cell tables, shared with Phenotyping. Separate files are matched by name; use each row to correct a missing or ambiguous match.'),
+          ...(!inputs.per_image?[field('Cell table',table,'Choose the merged table to analyse. Batch correction is optional.')]:[]),
+          directory('output','Output','New runs go into method subfolders: '+inputs.output_subfolders.join(', ')+'. Results added to cell tables stay linked to their original files.'),roles);
+      };
+      const updateWorking = () => {
+        rowsBox.querySelectorAll('tr[data-roi]').forEach(row=>{
+          const roi=row.dataset.roi;
+          const working=(current.activeJobs||[]).some(job=>{
+            const message=String(job.message||'');
+            return message===roi || [':',' · ',' - '].some(separator=>message.startsWith(roi+separator));
+          });
+          row.querySelector('[data-working]').hidden=!working;
+        });
+      };
+      const updateSummary = () => {
+        const runs=Object.entries(overview.results||{}), details=new Map(overview.rois.map(item=>[item.roi,item]));
+        const total=rowsBox.querySelector('[data-cell-total]');
+        if(total)total.textContent=overview.cells==null?'Counting cells…':overview.cells.toLocaleString()+' cells';
+        rowsBox.querySelectorAll('tr[data-roi]').forEach(row=>{
+          const item=details.get(row.dataset.roi);if(!item)return;
+          const count=row.querySelector('[data-cell-count]');
+          const text=item.cells==null?'—':item.cells.toLocaleString();if(count.textContent!==text)count.textContent=text;
+          const covered=runs.filter(([,counts])=>counts[item.roi]).map(([column])=>column.replace(/_cn$/,''));
+          const tls=Object.hasOwn(overview.tls?.counts||{},item.roi), glands=Object.hasOwn(overview.glands?.counts||{},item.roi);
+          const status=row.querySelector('[data-spatial-results]');
+          const stamp=JSON.stringify([covered,tls&&overview.tls.counts[item.roi],tls&&overview.tls.measured[item.roi],glands&&overview.glands.counts[item.roi],item.ready]);
+          if(status.dataset.stamp===stamp)return;status.dataset.stamp=stamp;
+          status.replaceChildren(...[
+            covered.length?chip(covered.length===1?'Neighbourhoods':covered.length+' neighbourhood runs','ok','Neighbourhood columns: '+covered.join(', ')):null,
+            tls?node('button',{type:'button',class:'chip'+(overview.tls.measured[item.roi]?' ok':''),
+              text:overview.tls.measured[item.roi]?overview.tls.counts[item.roi]+' TLS candidates':'TLS: no eligible cells',
+              title:'Review TLS in '+item.roi,'aria-label':'Show TLS in '+item.roi,onclick:()=>openTLS(item.roi)}):null,
+            glands?chip(overview.glands.counts[item.roi]+' typed glands','ok'):null,
+            item.ready===false?chip('No paired table','warn','Choose its cell table in this row.'):
+              !covered.length&&!tls&&!glands?chip('Not run'):null].filter(Boolean));
+        });
+        updateWorking();
+      };
+      const drawList = () => {
+        if (!list.box.isConnected || !overview) return;
+        const visible=overview.rois.filter(item=>(item.roi+' '+(item.table_path||'')).toLowerCase().includes(searchImages.value.toLowerCase()));
+        const rois = visible.filter(item => item.ready !== false).map(item => item.roi);
+        const head = pickAll(rois, picked, drawList);
+        const rows = visible.map(item => {
+          const tick = node('input', {type:'checkbox', 'aria-label':'Pick ' + item.roi}); tick.checked = item.ready !== false && picked.has(item.roi); tick.disabled = item.ready === false;
+          tick.addEventListener('change', () => { tick.checked ? picked.add(item.roi) : picked.delete(item.roi); head.sync(); });
+          const pairing=choice([['','Choose a table…'],...inputs.tables.map(path=>[path,path.split('/').pop()])],item.table_path||'','Cell table for '+item.roi);
+          pairing.title=item.table_path||'No unique filename match. Choose the correct table.';
+          pairing.onchange=()=>{pairing.disabled=true;mutateInputs({pair:{image:item.roi,table:pairing.value}});};
+          return node('tr', {'data-roi':item.roi,'data-view-path':item.image_path||''}, [node('td', {}, [tick]),
+            node('td', {}, [node('button', {type:'button', class:'studio-item-name studio-file', text:item.image || item.roi, title:item.image_path||'No matching image in Images',disabled:!item.image_path, onclick:() => openTableImage(item.roi)})]),
+            ...(inputs.per_image?[node('td',{},[pairing])]:[]),
+            node('td', {class:'mono','data-cell-count':'', text:item.cells == null ? '—' : item.cells.toLocaleString()}),
+            node('td', {}, [node('span',{class:'chip run','data-working':'',hidden:true,text:'Working…'}),node('span',{'data-spatial-results':''})])]);
+        });
+        fill(rowsBox,
+          node('div', {class:'row wrap'}, [chip(overview.table || 'Choose cell tables',overview.table?'ok':''),node('span',{class:'chip','data-cell-total':''}),chip(overview.rois.length + ' images')]),
+          node('div', {class:'studio-pairs-scroll'}, [node('table', {class:'studio-counts studio-pairs studio-spatial-pairs'}, [
+            node('tr', {}, [node('th', {}, [head]), node('th', {text:'Image'}),...(inputs.per_image?[node('th',{text:'Cell table'})]:[]), node('th', {text:'Cells'}), node('th', {text:'State'})]), ...rows])]));
+        updateSummary();
+      };
+      searchImages.oninput=drawList;
+      const refreshSummary = async () => {
+        if(!inputs)return;
+        const request=++summaryRequest, source=inputs;
+        try {
+          const summary=await get(route('/spatial/overview')+'?summaries=1');
+          if(request!==summaryRequest||source!==inputs||!list.box.isConnected)return;
+          const details=new Map(summary.rois.map(row=>[row.roi,row]));
+          overview={...summary,rois:source.rows.map(row=>({...row,...details.get(row.roi),ready:!!row.table_path}))};
+          updateSummary();
+        } catch(error) {if(request===summaryRequest&&source===inputs&&list.box.isConnected)inputStatus.textContent=error.message;}
       };
       const loadList = async () => {
-        try { overview = await get(route('/phenotyping_overview') + '?results=1'); drawList(); }
-        catch (error) { fill(list.body, node('p', {class:'hint', text:error.message})); }
+        const request = ++listRequest;
+        ++summaryRequest;
+        try {
+          const found = await get(route('/spatial/inputs'));
+          if (request !== listRequest || !list.box.isConnected) return;
+          inputs=found;inputStatus.textContent=(found.warnings||[]).join(' ');
+          overview={table:found.per_image?'Per-image cell tables':found.table,cells:null,rois:found.rows.map(row=>({...row,ready:!!row.table_path}))};
+          drawControls();drawList();
+          // The list and directories are usable before any full CSV counts finish.
+          refreshSummary();
+        } catch (error) { if(request===listRequest&&list.box.isConnected)inputStatus.textContent=error.message; }
       };
-      followJobs(current, ['neighbourhoods', 'cell_interactions', 'tls_candidates'], async()=>{
-        await loadList();await current.tlsReview?.refresh?.();
-      });
+      followJobs(current, ['neighbourhoods', 'cell_interactions', 'tls_candidates', 'gland_types'], async()=>{
+        await refreshSummary();await current.tlsReview?.refresh?.();
+      }, {progress:updateWorking});
+      current.refreshSpatialInputs=loadList;
       loadList();
       // The images a run is for: the open one, or the ticked ones (every image when all are ticked).
       const chosen = (which, said) => {
-        const rois = (overview?.rois || []).map(item => item.roi);
+        const rois = (overview?.rois || []).filter(item => item.ready !== false).map(item => item.roi);
         if (which === 'open') {
           const roi = openTableName(rois);
-          if (!roi) { said.textContent = 'Open an image of the combined table first (click its name in the list).'; return null; }
+          if (!roi) { said.textContent = 'Open an image first (click its name in the list).'; return null; }
           return [roi];
         }
         const ticked = rois.filter(roi => picked.has(roi));
         if (!ticked.length) { said.textContent = 'Tick the images first (the header box ticks all).'; return null; }
-        return ticked.length === rois.length ? [] : ticked;
+        return ticked;
       };
       const actionRow = (label, act, tip, said) => {
         const run = (button, which) => async () => {
@@ -1578,13 +1994,20 @@
       const tip = help('');
       const holder = node('div', {class:'studio-method'});
       current.body.append(freshnessNote(['combined']), list.box, node('div', {class:'row studio-stage-row'}, [tabs, tip]), holder);
-      const draw = () => {
+      let drawRequest = 0;
+      const draw = async () => {
+        const request = ++drawRequest;
+        // Finish the old panel's save before a new panel reads its revision.
+        // Starting both at once makes our own autosave look like an external edit.
+        try { await current.saveAnnotationSettings?.(); }
+        catch (error) { inputStatus.textContent=error.message; return; }
+        if(request!==drawRequest||!holder.isConnected)return;
+        current.clearAnnotationAutosave?.();
         const chosenPart = SPATIAL_PARTS.find(item => item.id === part) || SPATIAL_PARTS[0];
         part = chosenPart.id; setTip(tip, chosenPart.tip);
         tabs.replaceChildren(...SPATIAL_PARTS.map(item => node('button', {type:'button', class:'btn small' + (item.id === part ? ' active' : ''), role:'tab',
           'aria-selected':String(item.id === part), text:item.name, onclick:() => { part = item.id; remember('spatial-part', part); draw(); }})));
         const pane = node('div', {class:'studio-method-pane'});
-        current.saveAnnotationSettings?.().catch(() => {}); current.clearAnnotationAutosave?.();
         current.tlsReview?.dispose();current.tlsReview=null;
         holder.replaceChildren(pane); current.runBar([]); clearFigures(); showPreview('tls-candidates', null);
         if (part === 'neighbourhoods') neighbourhoodsPanel(current, pane, actionRow);
@@ -1592,6 +2015,7 @@
         else if (part === 'density') spatial().density(current, pane, actionRow).catch(error => pane.append(node('p', {class:'hint', text:error.message})));
         else if (part === 'triads') spatial().triads(current, pane, actionRow, tab8SavedPanel).catch(error => pane.append(node('p', {class:'hint', text:error.message})));
         else if (part === 'screening') spatial().screening(current, pane, actionRow, tab8SavedPanel).catch(error => pane.append(node('p', {class:'hint', text:error.message})));
+        else if (part === 'glands') spatial().glands(current, pane, actionRow).catch(error => pane.append(node('p', {class:'hint', text:error.message})));
         else if (part === 'interactions') {
           const contacts = section('Cell–cell interactions', {tip:chosenPart.tip + ' Settings are shared with classic Tab 8.'});
           pane.append(contacts.box);
@@ -1689,7 +2113,7 @@
       {id:'heatmap', name:'Heatmap', tip:'Each group’s mean marker values; a click on a group shows its cells on the image.'},
       {id:'proportions', name:'Proportions', tip:'The cells of each group in each image as stacked bars; a click opens that image showing those cells.'},
       {id:'umap', name:'UMAP', tip:'A map of cells by their markers; select points to see those cells on the image.'},
-      {id:'agreement', name:'Method agreement', tip:'A phenotyping method against a reference column (the F1 paper figures’ measures); a click shows the cells on the image.'}];
+      {id:'agreement', name:'Method agreement', tip:'Compare phenotype methods with reference labels using validation cells, training cells, or all labels. Figures appear below the image.'}];
     TOOLS.tab9 = current => {
       let part = recall('viz-part', 'figure');
       const tabs = node('div', {class:'segmented studio-stage-tabs', role:'tablist', 'aria-label':'Visualization'});
@@ -1729,7 +2153,7 @@
           const key = keys[index];
           const tick = node('input', {type:'checkbox', 'aria-label':'Pick ' + image.name}); tick.checked = picked.has(key);
           tick.addEventListener('change', () => { tick.checked ? picked.add(key) : picked.delete(key); head.sync(); });
-          return node('tr', {'data-image':image.name}, [node('td', {}, [tick]),
+          return node('tr', {'data-image':image.name,'data-view-path':image.path||''}, [node('td', {}, [tick]),
             node('td', {}, [node('button', {type:'button', class:'studio-item-name studio-file', text:image.name, title:'Open ' + image.name, onclick:() => chooseImage(image)})]),
             node('td', {class:'muted', text:image.group})]);
         });
@@ -1792,25 +2216,23 @@
       override:'seg_tag_geojson_override', matches:'seg_tag_geojson_matches', outSuffix:'seg_tag_output_suffix', x:'seg_tag_x_column',
       y:'seg_tag_y_column', tissue:'seg_tag_tissue_label', rules:'seg_tag_rules', beds:'seg_tag_bed_labels', edge:'seg_tag_edge_enabled',
       edgeRef:'seg_tag_edge_reference', edgeBuffer:'seg_tag_edge_buffer', edgeColumn:'seg_tag_edge_column', minBed:'seg_tag_min_cells_per_bed_target',
-      clean:'seg_tag_require_clean_path', overwrite:'seg_tag_overwrite_columns', gpu:'seg_tag_use_gpu_distances',
+      clean:'seg_tag_require_clean_path', overwrite:'seg_tag_overwrite_columns', gpu:'seg_tag_use_gpu_distances', update:'seg_tag_update_merged',
       csvDir:'seg_tag_csv_dir', mergedDir:'seg_tag_merged_dir', outDir:'seg_tag_output_dir', geojsonDir:'seg_tag_geojson_dir'};
     const PER_ROI = 'One CSV per image', COMBINED = 'One merged CSV for several images';
     // Results older than what they were made from, said where they are used (tagging, correction, phenotyping).
-    const freshnessNote = kinds => {
+    const freshnessNote = (kinds, canRerun = false) => {
       const box = node('div', {class:'studio-freshness', hidden:''});
       get(route('/freshness')).then(found => {
         const lines = [];
         const list = names => names.slice(0, 6).join(', ') + (names.length > 6 ? ' and ' + (names.length - 6) + ' more' : '');
         if (kinds.includes('tagging') && found.tagging.length) lines.push('Tagged before their latest segmentation: ' + list(found.tagging) +
           '. Check whether segmentation changed before reusing these tagged tables.');
-        if (kinds.includes('combined') && found.combined.length) lines.push('The combined table' + (found.table ? ' (' + found.table + ')' : '') +
-          ' has changed or missing recorded inputs: ' + list(found.combined) + '. Review its saved run before reusing it.');
-        if (kinds.includes('combined') && found.unverified) {
-          box.append(node('details', {}, [node('summary', {text:'Active table: ' + found.table, title:found.combined_path}),
-            node('p', {class:'muted', text:'This table has no recorded input provenance. Its age does not establish a link to the current images or cell tables. Select the intended unified table or use the new result after correction.'})]));
-          box.hidden = false;
-          if (!lines.length) box.classList.add('info');
+        if (kinds.includes('combined') && found.combined.length) {
+          lines.push('Saved combined result has changed or missing inputs: ' + list(found.combined) +
+            (canRerun ? '. Run Correct: Selected to create a new result.' : '. Review or rerun Batch correction before reusing it.'));
+          box.title = found.combined_path || found.table;
         }
+        // Imported and segmentation tables need no Batch correction history.
         if (!lines.length) return;
         box.append(...lines.map(text => node('p', {class:'hint', text})));
         box.hidden = false;
@@ -1824,7 +2246,7 @@
       // preview on the image, then Tag for the open image or the ticked tables. The engine is classic Tab 5's.
       const place = section('Folders and tables', {tip:'One row per cell table (what Segmentation wrote). Each is tagged with its ' +
         'image’s annotations: by default the GeoJSON the Annotation step exported (its final names), or a file picked in the row. ' +
-        'Tagged tables are new files in the output folder; the originals are never changed.'});
+        'Choose Update existing table with One merged table to refresh only the selected images and columns. Otherwise, tagged tables are saved separately.'});
       const compute = section('Compute', {tip:'CPU cores and optional GPU distances for new tagging runs. Changing these settings does not change a running job.'});
       const pieces = section('Tissue pieces', {tip:'The parent annotation (usually tissue). Each separate polygon of it is one tissue piece, ' +
         'numbered by size (largest = 1). Every other column is measured inside the cell’s own piece, never across glass to another one.'});
@@ -1841,14 +2263,20 @@
       const note = node('p', {class:'muted', role:'status'}), trialNote = node('p', {class:'muted', role:'status'});
       const picked = new Set();
       let data = null, previewed = null, openTable = null, inView = true;
+      let loadSequence = 0, previewSequence = 0;
       const load = async () => {
-        try { data = await get(route('/tagging_settings')); if (place.box.isConnected) draw(); }
-        catch (error) { fill(place.body, node('p', {class:'hint', text:error.message})); }
+        const sequence = ++loadSequence;
+        try {
+          const next = await get(route('/tagging_settings'));
+          if (sequence !== loadSequence || !place.box.isConnected) return;
+          data = next; draw();
+        } catch (error) { if (sequence === loadSequence && place.box.isConnected) fill(place.body, node('p', {class:'hint', text:error.message})); }
       };
       const save = async (change, said) => {
+        ++loadSequence;
         try {
           data = await post(route('/tagging_settings'), {changes:change, revision:data.revision});
-          note.textContent = said || 'Saved; classic Tab 5’s Cell tagging uses the same settings.'; draw();
+          note.textContent = said || 'Saved.'; draw();
           if (previewed) trialNote.textContent = 'Settings changed: press Preview again to see them on the image.';
         } catch (error) { note.textContent = error.message; await load(); }
       };
@@ -1893,7 +2321,7 @@
         catch (error) { note.textContent = error.message; }
       };
       const draw = () => {
-        const v = data.values, found = data.found, combined = v[TAG.mode] === COMBINED;
+        const v = data.values, found = data.found, combined = v[TAG.mode] === COMBINED, updating = combined && !!v[TAG.update];
         // ---- tables and their annotations
         const head = pickAll(found.rows.map(row => row.source), picked, draw);
         const rows = found.rows.map(row => {
@@ -1915,7 +2343,7 @@
             row.annotation ? chip('Not tagged') : chip('No annotation', 'warn', 'Export the image’s annotations in the Annotation step, or pick a file')]);
           const name = node('button', {type:'button', class:'studio-item-name studio-file', text:row.sample, title:row.source + (row.image ? ' · open ' + row.image : ''),
             onclick:() => openRow(row)});
-          const line = node('tr', {'data-source':row.source, class:row.source === openTable ? 'selected' : ''});
+          const line = node('tr', {'data-source':row.source,'data-view-path':row.image_path||''});
           line.addEventListener('click', event => { if (!event.target.closest('button, select, input')) openRow(row); });
           fill(line, node('td', {}, [tick]), node('td', {}, [name]), node('td', {}, [file]), node('td', {}, [state]));
           return line;
@@ -1945,7 +2373,7 @@
             return node('label', {class:'inline-check'}, [radio, node('span', {text})]);
           }), node('span', {class:'grow'}),
           help('One per image: a CSV or Parquet file per image, as Segmentation writes them. One merged table: every image’s cells in one CSV or Parquet ' +
-            'file, with a column naming each cell’s image (batch_id, say); the tagged table is written as one file too.')]);
+            'file, with a column naming each cell’s image. Tick Update existing table to add or fix annotation fields in that same file.')]);
         const follow = node('input', {type:'checkbox', 'aria-label':'Follow Segmentation'}); follow.checked = v.seg_tag_follow_segmentation !== false;
         follow.addEventListener('change', () => save({seg_tag_follow_segmentation:follow.checked},
           follow.checked ? 'Tables: Segmentation’s output, followed when it changes.' : 'Tables: type the folder.'));
@@ -1953,6 +2381,8 @@
         suffix.addEventListener('change', () => { if (suffix.value.trim()) save({[TAG.outSuffix]:suffix.value.trim()}); else note.textContent = 'The name ending cannot be empty.'; });
         const tablesFile = combined ? choice([['', '(choose)'], ...(found.tables || []).map(n => [n, n])], found.table || '', 'Merged table') : null;
         if (tablesFile) tablesFile.addEventListener('change', () => save({[TAG.file]:tablesFile.value}));
+        const update = node('input', {type:'checkbox', 'aria-label':'Update existing table'}); update.checked = updating;
+        update.addEventListener('change', () => save({[TAG.update]:update.checked}));
         const done = found.rows.filter(row => data.tagged['*'] || data.tagged[row.source]).length;
         const matched = found.rows.filter(row => row.annotation).length;
         fill(place.body,
@@ -1961,13 +2391,17 @@
             node('div', {}, [pathBox('Folder', 'csv', TAG.csvDir, 'The folder with one cell table per image (CSV or Parquet). With Follow Segmentation, the Segmentation step’s Output.', follow.checked),
               node('div', {class:'row field'}, [node('label', {class:'lbl'}), node('label', {class:'inline-check'}, [follow, node('span', {text:'Follow Segmentation'})]),
                 help('On: the tables are what the Segmentation step writes, in its Output folder, even after it changes. Off: type the folder.')])]),
-          combined ? field('Table', tablesFile, 'The merged CSV or Parquet file in that folder.') : null,
+          combined ? field('Table', node('div', {class:'row wrap grow'}, [tablesFile,
+            node('label', {class:'inline-check'}, [update, node('span', {text:'Update existing table'})])]),
+            'Update: replace only ticked annotation columns for selected images. Add new columns with blanks for images not tagged yet. ' +
+            'The matching CSV/Parquet file is also updated when present; backups are kept. Existing cell IDs, measurements and unticked columns stay unchanged. ' +
+            'Pending saved edits must be written into the table first. Off: save a separate tagged output.') : null,
           combined ? field('Image column', columnChoice('Image column', TAG.batch, found.batch_column), 'The column naming each cell’s image (batch_id, say): its values are the rows below.') : null,
           field('Annotations from', annotationSource, 'Export: each image’s file from the Annotation step’s Export (its rules: kept inside, subtracted, ' +
             'renamed), else the folder’s file by name. Imported: the GeoJSON imported for each image (Annotation > Export > Imported files), as it is. ' +
             'Folder: the file matching each table’s name in the Annotations folder below. A table can pick its own file in its row.'),
           pathBox('Annotations', 'geojson', TAG.geojsonDir, 'Annotation GeoJSON files matched to the tables by name (or picked in each row).'),
-          pathBox('Output', 'output', TAG.outDir, 'Where the tagged tables are written: <table><ending>, in the format of the table (CSV or Parquet). The originals are kept.'),
+          updating ? null : pathBox('Output', 'output', TAG.outDir, 'Where the tagged tables are written: <table><ending>, in the format of the table (CSV or Parquet). The originals are kept.'),
           node('div', {class:'row'}, [chip(found.rows.length + (combined ? ' images' : ' tables')), chip(matched + ' with annotations', matched === found.rows.length ? 'ok' : 'warn'),
             chip(done + ' tagged', done ? 'ok' : '')]),
           found.rows.length ? node('div', {class:'studio-pairs-scroll'}, [node('table', {class:'studio-counts studio-pairs studio-seg-list'},
@@ -1976,7 +2410,7 @@
           node('details', {class:'studio-options'}, [node('summary', {text:'Table columns'}),
             field('X, Y', node('div', {class:'inline'}, [columnChoice('X column', TAG.x, found.coordinates.x), columnChoice('Y column', TAG.y, found.coordinates.y)]),
               'Each cell’s position in full-resolution image pixels (found by itself when named x_centroid, y_centroid…).'),
-            field('Ending', suffix, 'Added to each tagged table’s name, so it never replaces the original.')]),
+            updating ? null : field('Ending', suffix, 'Added to each tagged table’s name, so it never replaces the original.')]),
           note);
         const gpu = node('input', {type:'checkbox', 'aria-label':'GPU distances'}); gpu.checked = !!v[TAG.gpu];
         gpu.addEventListener('change', () => save({[TAG.gpu]:gpu.checked}));
@@ -2079,18 +2513,24 @@
           item.counts.map(([value, count]) => value + ': ' + count.toLocaleString()).join(' · ') + (item.blank ? ' · blank: ' + item.blank.toLocaleString() : '');
         const drawSummary = () => { if (pick) summary.textContent = pick.value + ': ' + describe(previewed.summary[pick.value]); };
         go.addEventListener('click', async () => {
+          const image = currentSpec?.id, sequence = ++previewSequence;
           go.disabled = true; trialNote.textContent = 'Tagging ' + (inView ? 'the cells in view' : 'this image’s cells') + ' in memory…';
           try {
             const area = inView ? viewBounds() : null;
-            previewed = await post(route('/tagging_preview'), area ? {bounds:area} : {});
+            const answer = await post(route('/tagging_preview'), area ? {bounds:area} : {});
+            if (image !== currentSpec?.id || sequence !== previewSequence || !trial.box.isConnected) return;
+            previewed = answer;
             trialNote.textContent = previewed.cells.toLocaleString() + (previewed.of > previewed.cells ? ' of ' + previewed.of.toLocaleString() : '') +
               ' cells of ' + previewed.table + ' tagged with ' + previewed.annotation + (previewed.warnings.length ? '. ' + previewed.warnings.join(' ') : '. Nothing is written.');
             drawTrial();
+            if (previewed.columns.length) previewCells(previewed.prefix + (previewed.shown || previewed.columns[0]));
           } catch (error) { trialNote.textContent = error.message; }
           finally { go.disabled = false; }
         });
         const clear = node('button', {class:'btn small ghost', text:'Clear', hidden:!previewed, onclick:async () => {
+          const image = currentSpec?.id, sequence = ++previewSequence;
           try { await post(route('/tagging_preview'), {clear:true}); } catch (_) {}
+          if (image !== currentSpec?.id || sequence !== previewSequence || !trial.box.isConnected) return;
           previewed = null; previewCells(null); trialNote.textContent = ''; drawTrial();
         }});
         if (pick) pick.addEventListener('change', () => { previewed.shown = pick.value; previewCells(previewed.prefix + pick.value); drawSummary(); });
@@ -2099,13 +2539,20 @@
           pick ? field('Colour by', pick, 'The image’s cells take this new column’s colours: distances as a scale, the rest as categories. The legend is in Layers (Cells).') : null,
           summary, trialNote);
         drawSummary();
-        if (pick) previewCells(previewed.prefix + pick.value);
       };
       // ---- bottom: Tag [Again] This image | Selected
       const status = node('p', {class:'muted', role:'status'});
       const planned = chip('');
+      const actionLabel = node('span', {class:'lbl', text:'Tag:'});
       const syncBar = () => { const list = data?.columns_added || []; planned.textContent = list.length + ' column' + (list.length === 1 ? '' : 's');
+        actionLabel.textContent = data?.values[TAG.mode] === COMBINED && data?.values[TAG.update] ? 'Update:' : 'Tag:';
         planned.title = list.join(', ') || 'Tick at least one column to add'; planned.className = 'chip' + (list.length ? ' ok' : ' warn'); };
+      const clearColumns = node('button', {class:'btn small ghost', text:'None', 'aria-label':'Clear tagging columns',
+        title:'Untick all annotation, tissue, bed and edge columns; then tick only the fields to add or update.', onclick:() => {
+          if (!data) return;
+          save({[TAG.rules]:rules().map(rule => ({...rule, 'Binary (0/1)':false, 'ROI ID':false, 'ROI Size':false, 'Distance':false})),
+            [TAG.beds]:[], [TAG.edge]:false});
+        }});
       const tagRun = (button, which) => async () => {
         button.disabled = true;
         try {
@@ -2127,10 +2574,13 @@
       };
       const one = node('button', {class:'btn', text:'This image'}), many = node('button', {class:'btn primary', text:'Selected'});
       one.addEventListener('click', tagRun(one, 'open')); many.addEventListener('click', tagRun(many, 'picked'));
-      current.runBar([node('div', {class:'row wrap'}, [node('span', {class:'lbl', text:'Tag:'}), planned, one, many,
+      current.runBar([node('div', {class:'row wrap'}, [actionLabel, planned, clearColumns, one, many,
         help('Tags the cells with the columns above, as a job: this image’s table, or the ticked ones (tick the header box for all). ' +
-          'Tagged tables are new files; the originals are kept. Batch correction reads the tagged tables.')]), status]);
+          'Update existing table keeps all other images and unticked columns, including corrected markers and phenotypes. ' +
+          'Use None to clear the column selection first. New columns are blank for unprocessed images. ' +
+          'Review analyses that used any changed annotation or tissue filter; they are not rerun automatically. Without Update, a separate output is saved.')]), status]);
       followJobs(current, ['cell_tagging', 'import_annotations'], load);
+      current.refreshMarkers = () => { ++previewSequence; previewed = null; trialNote.textContent = ''; if (data) drawTrial(); };
       load();
     };
 
@@ -2150,7 +2600,7 @@
           node('button', {class:'btn small ghost', text:'Cancel', onclick:() => importBox.replaceChildren()})])); name.focus();
       }});
       body.append(summary, grid, columnsRow, node('div', {class:'row wrap'}, [pickFile, addColumn, file,
-        help('Slides come from the ROI step. Use one metadata row per ROI if that ROI has one patient and timepoint. If an ROI mixes samples, match a sample ID already recorded for each cell. Match by slide only for values shared by every sample on that slide. All imported columns are saved in new correction outputs, whether or not you tick them in Keep biological differences.')]), importBox, status);
+        help('Slides come from the ROI step. Match by ROI when all its cells share the same sample information. If an ROI mixes samples, match a sample ID already recorded for each cell. Match by slide only for values shared by every sample on that slide. All imported columns are saved, whether ticked or not.')]), importBox, status);
       let found = null;
       const act = async (action, payload, message) => {
         try { draw(await post(route('/samples/' + action), payload)); if (action === 'add') importBox.replaceChildren(); status.textContent = message || ''; await changed(); }
@@ -2298,11 +2748,12 @@
             const name = node('button', {type:'button', class:'studio-item-name studio-file', text:row.image, title:row.image_path + (row.path ? '\nMatched table: ' + row.path : '') + '\nOpen image', onclick:() => openRow(row)});
             const stateLabel = {saved:'✓ Corrected', stale:'Inputs changed', legacy:'Saved · unverified', excluded:'No cells retained', not_run:'Not run', missing:'No table', ambiguous:'Multiple tables'}[row.status] || 'Not run';
             const state = node('span', {}, [workingChip(current, row.roi),
+              node('span', {class:'correction-row-state'}, [
               chip(stateLabel, row.corrected ? 'ok' : ['stale', 'legacy', 'excluded', 'missing', 'ambiguous'].includes(row.status) ? 'warn' : '',
                 row.result ? row.result + (row.corrected_cells != null ? ' · ' + row.corrected_cells.toLocaleString() + ' cells with output values' : '') +
                   '. Saved results use that run’s settings; green means saved, not scientifically validated.' : 'No saved correction result for this table'),
-              row.tagged ? chip('Tagged', 'ok', 'From the Cell tagging output folder') : null]);
-            const line = node('tr', {'data-roi':row.roi, class:openRoi === row.roi ? 'selected' : ''});
+              row.tagged ? chip('Tagged', 'ok', 'From the Cell tagging output folder') : null])]);
+            const line = node('tr', {'data-roi':row.roi,'data-view-path':row.image_path||''});
             line.addEventListener('click', event => { if (!event.target.closest('button, select, input')) openRow(row); });
             fill(line, node('td', {}, [tick]), node('td', {}, [name]),
               node('td', {class:'muted correction-table-file', text:row.table || '–', title:row.candidates.join('\n')}),
@@ -2336,21 +2787,24 @@
         method.addEventListener('change', describeMethod); describeMethod();
         const markerBox = node('details', {class:'studio-borders'}), markerSummary = node('summary'), markerList = node('div', {class:'studio-markers'});
         const describeMarkers = () => { markerSummary.textContent = chosen.size + ' markers selected'; markerSummary.title = Array.from(chosen).join(', '); drawList(); };
-        plan.common.forEach(name => {
-          const input = node('input', {type:'checkbox', 'aria-label':'Correct ' + name}); input.checked = chosen.has(name);
-          input.addEventListener('change', () => { if (input.checked) chosen.add(name); else chosen.delete(name); describeMarkers(); });
-          markerList.append(node('label', {}, [input, node('span', {text:name, title:name})]));
-        });
-        describeMarkers(); markerBox.append(markerSummary, markerList);
+        const markerFilter = node('input', {type:'search', placeholder:'Find a marker…', 'aria-label':'Find correction markers'});
+        const markerSelect = node('span');
+        const drawMarkers = () => {
+          const names = plan.common.filter(name => name.toLowerCase().includes(markerFilter.value.trim().toLowerCase()));
+          markerSelect.replaceChildren(pickAll(names, chosen, () => { drawMarkers(); describeMarkers(); }));
+          markerSelect.querySelector('input').setAttribute('aria-label', 'Select matching correction markers');
+          markerList.replaceChildren(...names.map(name => {
+            const input = node('input', {type:'checkbox', 'aria-label':'Correct ' + name}); input.checked = chosen.has(name);
+            input.addEventListener('change', () => { if (input.checked) chosen.add(name); else chosen.delete(name); describeMarkers(); drawMarkers(); });
+            return node('label', {}, [input, node('span', {text:name, title:name})]);
+          }));
+        };
+        markerFilter.addEventListener('input', drawMarkers); drawMarkers();
+        describeMarkers(); markerBox.append(markerSummary, node('div', {class:'row'}, [markerSelect, markerFilter]), markerList);
         const protect = node('div', {class:'row wrap'});
         const biologyHelp = name => {
-          const key = name.toLowerCase().replace(/[ -]/g, '_');
-          if (/^(arm|treatment|treatment_group|condition)$/.test(key)) return 'Treatment group. Tick to account for treatment differences you want to keep. Each treatment-and-timepoint group should be represented on more than one technical batch.';
-          if (/^(timepoint|time_point|visit)$/.test(key)) return 'When the sample was collected, such as before or after treatment. Tick to account for these differences. Check that treatment-and-timepoint groups occur across batches.';
-          if (/^(patient|patient_id|patientid)$/.test(key)) return 'Patient identity. Leave off for an initial treatment/timepoint correction. Consider ticking only when patient samples span technical batches and you need to account for patient differences. Patient ID is still saved when unticked.';
-          if (/^(response|outcome)$/.test(key)) return 'Clinical outcome. Keep this column for later comparisons. Tick only if your analysis plan also uses response in the correction and the response groups overlap across batches; it is optional.';
-          if (/^(slide|slide_id|slideid|batch|batch_id|batchid)$/.test(key)) return 'Usually a technical ID. Choose the technical batch under Correct between. Leave its ID off here: the same difference cannot be both removed and preserved.';
-          return 'Tick only if this column describes biological groups you want the correction to account for. Those groups need overlap across technical batches. The column is still saved when unticked.';
+          if (name === unit.value) return 'Leave this off: it is selected in Correct between. The same difference cannot be both removed and kept.';
+          return 'Tick if you want to keep differences between these sample groups and they share slides. If each group has separate slides, the correction cannot tell group differences from slide effects. See How to assign the data for examples. This column is saved even when unticked.';
         };
         const drawProtect = () => fill(protect, ...(plan.covariate_options.length ? plan.covariate_options.map(name => {
           const tip = biologyHelp(name);
@@ -2359,17 +2813,30 @@
           return node('label', {class:'chip', title:tip}, [input, node('span', {text:name})]);
         }) : [node('span', {class:'muted', text:'Add columns in Samples.'})]));
         drawProtect();
+        unit.addEventListener('change', drawProtect);
         const setupHelp = node('details', {class:'studio-options'}, [node('summary', {text:'How to assign the data'}),
+          node('p', {class:'muted', text:'What should I tick? These examples assume Correct between = slide. Tick only differences you want to keep. For another correction unit, apply the same rule to that unit.'}),
+          node('table', {class:'studio-counts studio-biology-examples', 'aria-label':'Examples of which biological differences to keep'}, [
+            node('thead', {}, [node('tr', {}, [node('th', {text:'Your samples'}), node('th', {text:'Tick?'})])]),
+            node('tbody', {}, [
+              ['T1 and T2 samples share each slide, repeated across slides.', 'Yes — keep the timepoint difference.'],
+              ['T1 samples are only on some slides; T2 only on different slides.', 'No — timepoint and slide cannot be separated.'],
+              ['Groups A and B share slides.', 'Yes — keep the group difference.'],
+              ['A uses slides 1–6; B uses slides 7–12.', 'No — several slides per group is not enough.'],
+              ['Each patient appears on only one slide.', 'No for patient — patient and slide cannot be separated.'],
+              ['Patients A and B both have samples on slides 1 and 2.', 'Yes for patient, if you want to keep patient differences.'],
+            ].map(([example, answer]) => node('tr', {}, [node('td', {text:example}), node('td', {text:answer})]))),
+          ]),
+          node('p', {class:'muted', text:'If each group has separate slides, leaving its box unticked does not solve the problem: correction may remove real group differences. Repeated patients also need shared slides; separate sets of slides per patient do not help.'}),
+          node('p', {class:'muted', text:'Not every slide needs every group: shared groups can connect slides. With several boxes ticked, Studio checks their combinations too. More ticks are not automatically better. Run notes report where a selected difference could not be kept.'}),
           node('ol', {class:'muted'}, [
-            'Choose Images (ROI images), Cell tables (Segmentation or Cell tagging results), and Output above. Check each image has a matching table; tick the ROIs to include.',
-            'Open Samples. Check the parent slides from the ROI step. Add your table with patient, arm (treatment), timepoint and response. For one patient/timepoint per ROI, choose Your column: roi → Match in dataset: ROI name.',
-            'If one ROI mixes samples, match a unique sample ID already present in its cell table instead, such as sample_id → Cell tables · sample_id. Patient ID alone cannot distinguish different timepoints. Do not assign patient data by slide when that slide contains several patients.',
-            'Preview the import, check the matches and values, then Add these columns. A manual value in Samples applies to every cell in that ROI; Varies by cell means the import kept different values for different cells.',
-            'Correct between selects the technical difference to remove: choose slide if each slide is a separate staining/acquisition batch, or your staining-run column if several slides share a batch.',
-            'For a treatment/timepoint study, start with arm and timepoint under Keep biological differences only when the treatment-and-timepoint groups overlap across batches. Leave slide_id and batch_id off. Patient and response are optional; hover over their boxes for guidance. More ticks are not automatically better.',
-            'Choose cyCombine and the raw marker measurements to correct. Click Correct: Selected. Review Distribution checks and Run notes, then Use this table in Studio when you want the new output used downstream.',
+            'Choose the input folders and output folder. Tick the images to include.',
+            'In Samples, add your sample information. Match by ROI name if every cell in an ROI shares those values; otherwise match a sample ID already recorded for each cell. Preview the matches before importing.',
+            'Correct between: choose slide if slides were processed separately, or the processing-run column if several slides were processed together. Leave that same column unticked under Keep biological differences.',
+            'Choose the biological differences using the examples above. Unticked columns are still saved.',
+            'Choose cyCombine and raw marker measurements. Run Correct: Selected, review Distribution checks and Run notes, then select Use this table in Studio.',
           ].map(text => node('li', {text}))),
-          node('p', {class:'muted', text:'All imported metadata columns are saved, even when unticked. These boxes ask the model to account for biological differences; they do not guarantee those differences are preserved. Several ticks combine into one group, for example treatment A + before treatment. Those groups need enough support across batches.'})]);
+        ]);
         const number = (key, label, step, min, max) => {
           const input = node('input', {type:'number', step, min, max, value:String(settings[key]), 'aria-label':label});
           input.addEventListener('change', () => { const value = Number(input.value); if (Number.isFinite(value) && value >= min && value <= max) settings[key] = step === '1' ? Math.round(value) : value; else input.value = String(settings[key]); });
@@ -2381,44 +2848,106 @@
         parametric.addEventListener('change', () => { settings.parametric = parametric.checked; });
         const norm = choice([['scale', 'Z-score within each batch'], ['rank', 'Rank within each batch'], ['none', 'None']], settings.norm_method || 'scale', 'SOM normalization');
         norm.addEventListener('change', () => { settings.norm_method = norm.value; });
+        const paired = (...items) => node('div', {class:'correction-fields'}, items);
         const cyOnly = [field('SOM passes', number('som_rlen', 'SOM passes', '1', 1, 1000), 'Passes over all cells when training the cyCombine SOM. Default 10.'),
           field('Seed', number('cycombine_seed', 'SOM seed', '1', 0, 2147483647), 'Random seed for the cyCombine SOM. Default 473; kept with each saved result.')];
         const advanced = node('details', {class:'studio-options'}, [node('summary', {text:'Advanced'}),
           field('Corrected names', suffix, 'Each corrected marker is saved beside its raw one with this ending: CD45 and CD45' + (settings.corrected_suffix || '_corr') +
             '. Corrected values are in arcsinh space, not raw intensities. The selected cofactor is saved with each result.'),
           field('SOM normalization', norm, 'For grouping cells only. Z-score suits similar acquisitions; ranks can help with stronger batch effects. ComBat still corrects the original arcsinh values.'),
-          field('SOM grid', number('som_grid_dim', 'SOM grid size', '1', 2, 50), 'The SOM is N × N groups of similar cells (cyCombine uses 8).'),
-          ...cyOnly,
+          paired(field('SOM grid', number('som_grid_dim', 'SOM grid size', '1', 2, 50), 'The SOM is N × N groups of similar cells (cyCombine uses 8).'), cyOnly[0]),
+          paired(cyOnly[1], field('Arcsinh cofactor', number('arcsinh_cofactor', 'Arcsinh cofactor', 'any', 0.01, 65535), 'Input must be raw measured intensities. Applies arcsinh(value / cofactor) once, with the same cofactor across slides. Five is conventional for CyTOF, not a validated imaging default. Review negative and positive marker populations. Flow’s dynamic reference percentile is not a background estimate.')),
           ...(onlyOthers.push(field('SOM steps', number('som_iterations', 'SOM iterations', '1', 1000, 500000), 'Training steps of the SOM (Monotonic and the earlier approximation; cyCombine makes 10 passes over the cells).'),
             field('Fewest cells', number('min_cells_per_cluster', 'Fewest cells per group', '1', 1, 500), 'Groups with fewer cells of a unit are not used to estimate its shift (Monotonic and the earlier approximation).')), onlyOthers),
-          field('Arcsinh cofactor', number('arcsinh_cofactor', 'Arcsinh cofactor', 'any', 0.01, 65535), 'Input must be raw measured intensities. Applies arcsinh(value / cofactor) once. The paper uses 5 for CyTOF; there is no universal imaging cofactor. Review marker distributions for your assay.'),
           node('label', {class:'row'}, [parametric, node('span', {text:'Parametric ComBat (faster)'})])]);
         const syncCy = () => cyOnly.forEach(row => { row.hidden = method.value !== 'cycombine'; });
         method.addEventListener('change', syncCy); syncCy();
         describeMethod();  // now that its settings exist, hide the ones cyCombine does not use
+        const filterColumn = (key, label, columns) => {
+          const names = Array.from(new Set(['None', settings[key], ...columns].filter(Boolean)));
+          const input = choice(names.map(name => [name, name === 'None' ? 'Off' : name]), settings[key], label);
+          input.addEventListener('change', () => { settings[key] = input.value; });
+          return input;
+        };
+        const toggle = (key, label) => {
+          const input = node('input', {type:'checkbox', 'aria-label':label}); input.checked = !!settings[key];
+          input.addEventListener('change', () => { settings[key] = input.checked; });
+          return input;
+        };
+        const tissue = filterColumn('tissue_col', 'Filter column', plan.filter_columns || plan.common);
+        const tissueValue = node('input', {type:'text', value:String(settings.tissue_val), maxlength:'256', 'aria-label':'Keep filter value'});
+        tissueValue.addEventListener('change', () => {
+          const text = tissueValue.value.trim(), numeric = Number(text);
+          settings.tissue_val = text && Number.isFinite(numeric) ? numeric : text;
+        });
+        const syncTissue = () => { tissueValue.disabled = tissue.value === 'None'; };
+        tissue.addEventListener('change', syncTissue); syncTissue();
+        const area = filterColumn('area_col', 'Area column', plan.common);
+        const areaLow = number('area_min_pct', 'Area lower percentile', 'any', 0, 100);
+        const areaHigh = number('area_max_pct', 'Area upper percentile', 'any', 0, 100);
+        const syncArea = () => { areaLow.disabled = areaHigh.disabled = area.value === 'None'; };
+        area.addEventListener('change', syncArea); syncArea();
+        const range = (low, high) => node('div', {class:'inline correction-filter-range'}, [low, node('span', {text:'–'}), high, node('span', {text:'%'} )]);
+        const indicator = toggle('add_corrected_indicator', 'Add corrected indicator');
+        const indicatorName = node('input', {type:'text', value:settings.corrected_indicator_col, maxlength:'128', 'aria-label':'Corrected indicator column'});
+        indicatorName.addEventListener('change', () => { settings.corrected_indicator_col = indicatorName.value.trim(); });
+        const syncIndicator = () => { indicatorName.disabled = !indicator.checked; };
+        indicator.addEventListener('change', syncIndicator); syncIndicator();
+        const qc = toggle('enable_post_qc', 'Post-correction QC');
+        const relative = toggle('filter_overcorrected', 'Exclude above distance percentile');
+        const relativeValue = number('qc_percentile_threshold', 'Correction distance percentile', 'any', 80, 99.9);
+        const absolute = toggle('filter_distance', 'Exclude above distance limit');
+        const absoluteValue = number('max_correction_distance', 'Maximum correction distance', 'any', 0.1, 100);
+        const syncQC = () => {
+          relative.disabled = absolute.disabled = !qc.checked;
+          relativeValue.disabled = !qc.checked || !relative.checked;
+          absoluteValue.disabled = !qc.checked || !absolute.checked;
+        };
+        [qc, relative, absolute].forEach(input => input.addEventListener('change', syncQC)); syncQC();
+        const qcDetails = node('details', {class:'studio-options correction-post-qc'}, [
+          node('summary', {}, [qc, node('span', {text:'Post-correction QC'}), help('Optional screening by Mahalanobis distance of correction vectors in arcsinh space. A large correction is not proof of an error. Leave off until you have reviewed the results; enabled alone does not exclude cells.')]),
+          paired(field('Percentile', node('div', {class:'inline'}, [relative, relativeValue]), 'Exclude corrected values above this distance percentile. At 95, approximately the largest 5% are excluded by definition, not because overcorrection has been established.'),
+            field('Distance limit', node('div', {class:'inline'}, [absolute, absoluteValue]), 'Exclude corrected values above this Mahalanobis distance. This is a covariance-scaled correction distance, not raw intensity. Both enabled QC criteria apply.'))]);
+        qc.addEventListener('change', () => { if (qc.checked) qcDetails.open = true; });
+        const filters = node('details', {class:'studio-options studio-correction-filters'}, [
+          node('summary', {}, [node('span', {text:'Cell filters (shared with classic)'}), help('Saved in the same settings as classic. Applied in order: filter column, area percentiles, then marker outliers. Percentiles use the pooled selected cells remaining at that step. Excluded cells stay in the output with blank corrected values.')]),
+          field('Filter', node('div', {class:'inline'}, [tissue, node('span', {text:'='}), tissueValue]), 'Keep this value, for example tissue = 1. Off skips this filter. As in classic, tables without the selected column are kept; check the inputs if tissue filtering must apply to every image.'),
+          paired(field('Area', area, 'Cell-size column. Off skips the area filter. If present, missing/nonfinite areas are excluded; if absent from all inputs the filter is skipped.'),
+            field('Percentiles', range(areaLow, areaHigh), 'Lower and upper percentiles of area after the first filter. 0–100 keeps all finite areas. These are percentiles, not area units.')),
+          field('Marker range', range(number('outlier_low', 'Marker lower percentile', 'any', 0, 100), number('outlier_high', 'Marker upper percentile', 'any', 0, 100)), 'Exclude cells above the upper percentile in more than half the chosen markers, or below the lower percentile in more than half. 0–100 disables these percentile exclusions; nonfinite marker measurements are still excluded.'),
+          field('Indicator', node('div', {class:'inline'}, [indicator, indicatorName]), 'Optional new column: 1 for cells retained after correction and QC, 0 for excluded cells. Choose a name not already used by an input column.'),
+          qcDetails]);
+        const outputName = node('input', {type:'text', value:settings.output_name, maxlength:'120', 'aria-label':'Output file name'});
+        outputName.addEventListener('change', () => { settings.output_name = outputName.value.trim(); });
+        const csv = toggle('export_csv', 'Save CSV too');
+        const outputOptions = field('Output name', node('div', {class:'inline'}, [outputName, node('label', {class:'inline-check'}, [csv, node('span', {text:'Save CSV too'})])]),
+          'Base filename in the Output folder above. A date and unique suffix are added for each run to keep existing files. Parquet is always saved; optionally save the same table as CSV now, or export it later from Jobs → Saved results. CSV takes additional time and disk space.');
+        // Output controls live with the destination, and share the same autosave and run snapshot as Settings.
+        foldersBox.append(outputOptions);
         body.replaceChildren(
-          field('Correct between', unit, 'Which technical difference should be removed? Choose slide when each slide is a separate staining/acquisition batch. If several slides share a run, use that run’s batch_id instead. Do not choose patient, treatment or timepoint to remove technical effects. ROI names identify images; they are not automatically technical batches.'),
-          field('Method', node('div', {class:'inline grow'}, [method, methodNote])),
+          paired(field('Correct between', unit, 'Which technical difference should be removed? Choose slide when each slide is a separate staining/acquisition batch. If several slides share a run, use that run’s batch_id instead. Do not choose patient, treatment or timepoint to remove technical effects. ROI names identify images; they are not automatically technical batches.'),
+            field('Method', node('div', {class:'inline grow'}, [method, methodNote]))),
           node('div', {class:'row field'}, [node('label', {class:'lbl', text:'Markers'}), markerBox, help('Choose the measured marker columns to correct.')]),
           node('div', {class:'field-block'}, [node('div', {class:'row'}, [node('span', {class:'lbl', text:'Keep biological differences'}),
-            help('Which biological differences should the model try to keep? For example, tick arm and timepoint to account for treatment and collection time. Unticked columns are still saved. The groups must overlap across technical batches: if all before-treatment samples are on one slide and all after-treatment samples on another, the model cannot tell time from slide. Multiple ticks form combined groups; some cell groups may lack enough support, reported in Run notes.')]), protect]),
-          setupHelp, advanced, node('details', {class:'studio-options'}, [node('summary', {text:'Cell filters (shared with classic)'}),
-            node('p', {class:'muted', text:'Area: ' + plan.filters.area_col + ', percentiles ' + plan.filters.area_min_pct + '–' + plan.filters.area_max_pct +
-              '. Marker outliers: ' + plan.filters.outlier_low + '–' + plan.filters.outlier_high + ' in most markers. Tissue: ' + plan.filters.tissue_col +
-              (plan.filters.tissue_col !== 'None' ? ' = ' + plan.filters.tissue_val : '') + '. Post-correction QC: ' + (plan.filters.enable_post_qc ? 'on' : 'off') +
-              '. Edit these in classic Batch correction. Excluded cells stay in the output with blank corrected values.'})]));
+            help('Tick differences you want to keep when the groups share slides: for example, A and B on the same slides. If each group has its own slides, group differences cannot be separated from slide effects. Unticked columns are still saved. Examples: open How to assign the data. For another Correct between unit, use the same rule for that unit.')]), protect]),
+          setupHelp, advanced, filters);
         const changes = () => ({...settings, correction_mode:method.value, batch_unit_col:unit.value, covariates:Array.from(keep)});
-        let saveTimer = null, saving = Promise.resolve(), revision = 0;
+        let saveTimer = null, saving = Promise.resolve(), revision = 0, saveError = '';
         const persist = () => {
           clearTimeout(saveTimer); const version = ++revision, payload = {changes:changes(), markers:Array.from(chosen)};
           savedChip.textContent = 'Saving…';
           saving = saving.catch(() => {}).then(() => post(route('/correction/save'), payload)).then(() => {
-            if (version === revision) { savedChip.textContent = 'Saved'; savedChip.className = 'chip ok'; }
-          }).catch(error => { savedChip.textContent = 'Not saved'; savedChip.className = 'chip warn'; status.textContent = error.message; throw error; });
+            if (version === revision) {
+              savedChip.textContent = 'Saved'; savedChip.className = 'chip ok';
+              if (saveError && status.textContent === saveError) status.textContent = '';
+              saveError = '';
+            }
+          }).catch(error => { savedChip.textContent = 'Not saved'; savedChip.className = 'chip warn'; saveError = error.message; status.textContent = saveError; throw error; });
           return saving;
         };
         const scheduleSave = () => { savedChip.textContent = 'Not saved'; savedChip.className = 'chip warn'; clearTimeout(saveTimer); saveTimer = setTimeout(() => persist().catch(() => {}), 300); };
         body.addEventListener('change', () => { drawList(); scheduleSave(); });
+        outputOptions.addEventListener('change', scheduleSave);
         const refreshPlan = async () => {
           const next = await get(route('/correction'));
           if (!list.isConnected) return;
@@ -2466,7 +2995,7 @@
                   chip('Relative MAD change ' + done.mad.toFixed(2), '', 'Change in pooled batch spread. This does not validate biological preservation.'),
                   chip(done.units.length + ' ' + (done.unit === '(use batch column as-is)' ? 'ROIs' : done.unit + 's'))]),
                 node('p', {class:'muted', text:
-                  done.corrected_cells.toLocaleString() + ' of ' + done.cells.toLocaleString() + ' cells corrected (' + done.markers.length + ' markers), saved as ' + done.name + '.'}),
+                  done.corrected_cells.toLocaleString() + ' of ' + done.cells.toLocaleString() + ' cells corrected (' + done.markers.length + ' markers), saved as ' + done.name + (done.csv_output ? ' + CSV.' : '.') }),
                 done.warnings?.length ? node('details', {class:'studio-options'}, [node('summary', {text:'Run notes (' + done.warnings.length + ')'}),
                   ...done.warnings.map(text => node('p', {class:'hint', text}))]) : null,
                 node('div', {class:'row'}, [use])]));
@@ -2539,11 +3068,11 @@
       const correct = section('Settings', {tip:'Choose the technical batch to correct between and the markers to correct. ' +
         'Keep biological differences tells the model which sample groups to account for. Open How to assign the data for the steps. Settings are shared with classic.'});
       const about = section('Combined table', {tip:'The combined table Studio uses: every ROI’s cells in one table, with each marker ' +
-        'as measured and corrected (<marker>_corr, or the ending chosen in Advanced).'});
+        'as measured and corrected (<marker>_corr, or the ending chosen in Advanced). This summarizes the active saved result, not the next run’s settings. Source groups (often ROIs in batch_id) can differ from the technical units used for correction.'});
       const checks = section('Distribution checks', {tip:'Pooled diagnostics on approximately 300 cells per ROI, comparing the same cells before and after. ' +
         'EMD reduction measures closer pooled distributions. Relative MAD change measures pooled spread changes. These differ from cyCombine’s ' +
         'population-level benchmark scores and cannot establish preservation of biology. Click a marker to colour the cells ' +
-        'by it, corrected (it is added to Cells and maps in Layers), and to show its histograms.'});
+        'by it, corrected (it is added to Cells in Layers), and to show its histograms.'});
       const sheet = section('Samples', {tip:'One row per ROI. The slide each ROI was cut from comes from the ROI step. ' +
         'Add patient, treatment, timepoint and response by ROI or a sample ID recorded in the cell tables. ' +
         'Match by slide only for values shared by every sample on that slide. All imported columns are saved in new combined outputs, even when unticked under Keep biological differences.'});
@@ -2559,7 +3088,7 @@
         if (sheet.box.querySelector('details').open && !samplesLoaded) { samplesLoaded = true; samplesPanel(sheet.body, () => current.refreshItems?.()); }
       });
       correctionPanel(tablesSec.body, correct.body, current, () => document.querySelector('[data-step=tab6]')?.click());
-      current.body.append(tablesSec.box, freshnessNote(['tagging', 'combined']), correct.box, about.box, checks.box, sheet.box);
+      current.body.append(tablesSec.box, sheet.box, freshnessNote(['tagging', 'combined'], true), correct.box, about.box, checks.box);
       about.body.append(node('p', {class:'muted', text:'Reading the saved result…'}));
       let checksLoaded = false;
       const loadChecks = async () => {
@@ -2569,11 +3098,9 @@
         catch (error) { checksLoaded = false; about.body.replaceChildren(node('p', {class:'hint', text:error.message})); checks.body.replaceChildren(node('p', {class:'muted', text:error.message})); return; }
         if (!about.box.isConnected) return;
         const pair = (label, value) => node('div', {class:'row field'}, [node('label', {class:'lbl', text:label}), node('span', {class:'grow studio-value', text:value, title:value})]);
-        about.body.replaceChildren(pair('Table', found.table), pair('Cells', found.cells.toLocaleString() + ' in ' + found.batches.length + ' batches'),
-          pair('Batches by', found.batch_column),
-          pair('Measured between', found.measured_by === found.batch_column ? 'ROIs' : found.measured_by + 's (' + new Set(Object.values(found.unit_of)).size + ')'),
-          pair('Method', found.method + ' · arcsinh cofactor ' + found.cofactor),
-          pair('Corrected', found.markers.length + ' markers'));
+        about.body.replaceChildren(pair('Table', found.table), pair('Cells', found.cells.toLocaleString() + ' · ' + found.batches.length + ' groups (' + found.batch_column + ')'),
+          pair('Measured between', (found.measured_by === found.batch_column ? 'ROIs' : found.measured_by + 's (' + new Set(Object.values(found.unit_of)).size + ')') + ' · ' + found.markers.length + ' markers'),
+          pair('Method', found.method + ' · arcsinh cofactor ' + found.cofactor));
         let distributions = null;
         const paint = marker => { if (cellsState()) colourCells(marker + (found.suffix || '_corr')); else showResult({message:'Open an image with its cells to colour them by ' + marker + '.'}); };
         const markerRows = found.per_marker.slice().sort((a, b) => a.emd_reduction - b.emd_reduction).map(item => node('button',
@@ -2809,7 +3336,7 @@
             onclick:() => { select(); chooseImage(image); }}) : node('span', {class:'studio-file', text, title:text});
           const matches = row.registered ? node('button', {class:'btn small ghost', text:'Matches', title:'Show the points palom matched ' +
             'between CODEX and H&E for this pair, joined by lines', onclick:() => showMatches(row.sample)}) : null;
-          const line = node('tr', {'data-sample':row.sample, class:row.sample === chosenPair ? 'selected' : ''});
+          const line = node('tr', {'data-sample':row.sample,'data-view-paths':JSON.stringify([...Object.values(row.images),...(row.extra_images||[])].map(image=>image?.path).filter(Boolean))});
           line.addEventListener('click', event => { if (!event.target.closest('button, select, input')) compare(); });
           fill(line, node('td', {}, [tick]),
             node('td', {}, [opener(row.sample, row.registered && row.images.merged, 'the registered image ' + row.output)]),
@@ -2826,7 +3353,7 @@
           return line;
         });
         const leftovers = (names, text) => names.length ? node('p', {class:'hint', text:text + names.join(', ')}) : null;
-        fill(pairing.body,
+        fill(pairing.body, 
           folderBox('codex', many ? 'CODEX (1)' : 'CODEX', 'The folder with the CODEX images (Tab 1’s CODEX directory). Type its path and press Enter.'),
           ...extraBoxes(),
           folderBox('he', 'H&E', 'The folder with the H&E images (Tab 1’s H&E directory). Type its path and press Enter.'),
@@ -3049,7 +3576,7 @@
           const state = node('span', {}, [workingChip(current, row.image), row.detected ? chip('Detected', '', 'Levels kept in the project') : null, row.levels ? chip('CSV', 'ok', 'Thresholds exported') : null,
             row.removed ? chip('Image', 'ok', 'Background-removed image written') : null, row.detected || row.levels || row.removed ? null : chip('Not run', '')]);
           const name = node('button', {type:'button', class:'studio-item-name studio-file', text:row.image, title:'Open ' + row.image, onclick:() => openRow(row)});
-          const line = node('tr', {'data-image':row.image, class:row.image === openImage ? 'selected' : ''});
+          const line = node('tr', {'data-image':row.image,'data-view-path':plan.folders.images+'/'+row.image});
           line.addEventListener('click', event => { if (!event.target.closest('button, select, input')) openRow(row); });
           fill(line, node('td', {}, [tick]), node('td', {}, [name, row.blanks.length ? node('span', {class:'studio-edited', text:' ⚑', title:'Blank cycles: ' + row.blanks.join(', ') + '. They can be subtracted from the markers (Background of the open image).'}) : null]),
             node('td', {}, [file]), node('td', {}, [cls || node('span', {class:'muted', text:row.annotation ? '' : '—'})]),
@@ -3230,7 +3757,7 @@
           const state = node('span', {}, [workingChip(current, row.image), chip(row.rois ? row.rois + ' ROI' + (row.rois === 1 ? '' : 's') : 'No ROIs', row.rois ? '' : 'warn'),
             row.rois ? chip(row.extracted + ' extracted', row.extracted === row.rois ? 'ok' : '') : null]);
           const name = node('button', {type:'button', class:'studio-item-name studio-file', text:row.image, title:'Open ' + row.image + ' with its ROIs', onclick:() => openRow(row)});
-          const line = node('tr', {'data-image':row.image, class:row.image === openImage ? 'selected' : ''});
+          const line = node('tr', {'data-image':row.image,'data-view-path':plan.folders.images+'/'+row.image});
           line.addEventListener('click', event => { if (!event.target.closest('button, select, input')) openRow(row); });
           fill(line, node('td', {}, [tick]), node('td', {}, [name]), node('td', {}, [file]),
             node('td', {}, [state, row.edited ? node('span', {class:'studio-edited', text:' ✎', title:'Markers chosen for this image'}) : null]));
@@ -3549,7 +4076,7 @@
           const tick = node('input', {type:'checkbox', 'aria-label':'Pick ' + row.image}); tick.checked = picked.has(row.image);
           tick.addEventListener('change', () => { tick.checked ? picked.add(row.image) : picked.delete(row.image); head.sync(); });
           const name = node('button', {type:'button', class:'studio-item-name studio-file', text:row.image, title:'Open ' + row.image + ' with its annotations', onclick:() => openRow(row)});
-          const line = node('tr', {'data-image':row.image, class:row.image === openImage ? 'selected' : ''});
+          const line = node('tr', {'data-image':row.image,'data-view-path':plan.folders.images+'/'+row.image});
           line.addEventListener('click', event => { if (!event.target.closest('button, select, input')) openRow(row); });
           fill(line, node('td', {}, [tick]), node('td', {}, [name, row.drawn || row.edited ? node('span', {class:'studio-edited', text:' ✎', title:'Annotations edited by hand'}) : null]),
             node('td', {}, [workingChip(current, row.image) || workingChip(current, row.sample), strip(row)]));
@@ -3683,7 +4210,7 @@
         if(!window.confirm('Take '+items.length+' imported file'+(items.length===1?'':'s')+' off their images? Studio’s copies are kept in outputs/studio/deleted; your own files are not touched.'))return;
         remove.disabled=true;
         try{const value=await post(route('/annotation_imports'),{action:'remove',items});ticked.clear();
-          said.textContent=value.removed+' removed. Open an image again to see it without them.';await load();onChange?.();}
+          said.textContent=value.removed+' removed.';await hooks.removeListedFiles?.(items.map(i=>i.path));await reloadAnnotations?.();await lists?.invalidate();await load();onChange?.();}
         catch(e){said.textContent=e.message;}finally{remove.disabled=false;}}});
       const load=async()=>{try{files=(await get(route('/annotation_imports'))).files;draw();}catch(e){said.textContent=e.message;}};
       const manage=node('details',{class:'studio-options'},[node('summary',{text:'Manage imported files'}),node('div',{class:'row'},[filter,remove]),list]);
@@ -4635,33 +5162,54 @@
       const form = node('div', {id:'studio-seg', class:'studio-form'});
       const dirty = chip('Saved', 'ok');
       body.append(form); box.querySelector('.studio-sec-h').insertBefore(dirty, box.querySelector('.studio-sec-h .grow'));
-      const test = section('Test on the image', {tip:'Segments the visible area (its centre, up to 1,024 pixels square) with the ' +
-        'settings above, without saving anything. The first test loads the model and takes longer.'});
       const result = node('span', {class:'muted'});
       const run = node('button', {class:'btn primary', text:'Test on this view'});
       const clear = node('button', {class:'btn small', text:'Clear', hidden:true, onclick:() => { showSegPreview(null); clear.hidden = true; result.textContent = ''; }});
-      test.body.append(node('div', {class:'row'}, [run, clear]), result);
-      current.body.append(place.box, box, test.box);
+      body.append(node('div', {class:'row wrap'}, [run, clear,
+        help('Tests the active model on the visible area, up to 1,024 pixels square. Results are temporary. The first test loads the model.')]), result);
+      current.body.append(place.box, box);
       const note = node('p', {class:'muted', role:'status'});
       const picked = new Set();
-      let plan = null, openImage = null, saved = null, values = {}, tagging = 0;
+      let plan = null, openImage = null, saved = null, values = {}, tagging = 0, planRequest = 0;
+      let writes = Promise.resolve(), pendingModel = null, modelRequest = 0;
+      const write = task => { const next = writes.then(task); writes = next.catch(() => {}); return next; };
       // ---- folders and images
       const loadPlan = async () => {
-        try { plan = await get(route('/segmentation_images')); if (place.box.isConnected) { tagging = plan.tagging_rules; syncTag(); drawImages(); draw(); } }
+        const request = ++planRequest;
+        try { const next = await get(route('/segmentation_images')); if (request !== planRequest || !place.box.isConnected) return;
+          plan = next; tagging = plan.tagging_rules; syncTag(); drawImages(); draw(); }
         catch (error) { fill(place.body, node('p', {class:'hint', text:error.message})); }
         get(route('/step/tab5')).then(value => showOutputs(current, value)).catch(() => {});  // the saved files, in Outputs
       };
-      const saveStep = async (changes, done) => {
+      const saveStep = (changes, done) => write(async () => {
         const folder = changes.folders ? Object.keys(changes.folders)[0] : null;
         note.textContent = folder ? 'Reading the new ' + folder + ' folder…' : 'Saving…';
         place.box.classList.add('studio-working');
         try {
-          plan = await post(route('/segmentation_images'), {changes}); drawImages(); draw();
+          await persistSettings();
+          const before = JSON.parse(JSON.stringify(values));
+          ++planRequest;
+          plan = await post(route('/segmentation_images'), {changes});
+          acceptSettings(await get(route('/segmentation_settings')), before);
+          drawImages(); draw();
           if (changes.model || changes.folders?.models) current.refreshTrainingModels?.();
-          note.textContent = done || (folder ? 'Folder changed. ' + plan.rows.length + ' images.' : 'Saved with the project.');
+          note.textContent = changes.model ? '' : done || (folder ? 'Folder changed. ' + plan.rows.length + ' images.' : 'Saved with the project.');
           return true;
-        } catch (error) { note.textContent = error.message; return false; }
+        } catch (error) { if (changes.model) { note.textContent = ''; throw error; } note.textContent = error.message; return false; }
         finally { place.box.classList.remove('studio-working'); }
+      });
+      const selectModel = async id => {
+        const request = ++modelRequest;
+        pendingModel = id; result.textContent = 'Saving model…'; draw();
+        try {
+          await saveStep({model:id}, '');
+          if (request === modelRequest) result.textContent = '';
+        } catch (error) {
+          if (request === modelRequest) result.textContent = error.message;
+          throw error;
+        } finally {
+          if (request === modelRequest) { pendingModel = null; draw(); }
+        }
       };
       const folderBox = (kind, label, tip) => {
         const input = node('input', {type:'text', value:plan.folders[kind], maxlength:'1024', class:'grow', 'aria-label':label + ' folder'});
@@ -4692,18 +5240,20 @@
           // One choice per image: the whole image or one of its annotations. A row left as it is follows Where to segment.
           const step = plan.layer || '__whole__';
           const now = row.area || step;
-          // Grouped as Annotation's Export: Local names, then Imported ones (whichever file was imported for the image).
+          // Shared names resolve only when unique; duplicate names offer an explicit file.
           const area = groupedChoice([['__whole__', 'Whole image']], row.saved_groups || [['This image', row.saved.map(name => [name, name])]],
             now, 'Where to segment ' + row.image);
-          if (!Array.from(area.options).some(option => option.value === now)) { area.append(node('option', {value:now, text:now + ' (not saved for this image)'})); area.value = now; }
-          area.title = 'Where this image is segmented: the whole image, or inside one of its annotations (all its polygons together)';
-          area.addEventListener('change', () => saveStep({areas:{[row.image]:area.value === step ? '' : area.value}}, row.image + ': segmented ' +
-            (area.value === '__whole__' ? 'in the whole image.' : area.value ? 'inside its ' + area.value + '.' : 'as Where to segment says.')));
+          if (!Array.from(area.options).some(option => option.value === now)) {
+            area.append(node('option', {value:now, text:row.ambiguous ? 'Choose source…' : now.startsWith('source:') ? 'Source unavailable' : now + ' (not saved for this image)', disabled:row.ambiguous})); area.value = now;
+          }
+          area.title = row.ambiguous ? 'Several GeoJSON files contain this annotation. Choose the file whose boundary you want to use.' :
+            'Where this image is segmented: the whole image, or one annotation from one source file.' + (row.area_source ? '\nSource: ' + row.area_source : '');
+          area.addEventListener('change', () => saveStep({areas:{[row.image]:area.value === step ? '' : area.value}}, 'Area saved.'));
           const state = node('span', {}, [workingChip(current, row.image),
             row.segmented ? chip(row.cells !== null ? row.cells.toLocaleString() + ' cells' : 'Segmented', 'ok', 'Segmented' + (row.outlines ? ', with cell outlines' : '')) : chip('Not run'),
-            row.missing ? chip('No ' + row.effective, 'warn', 'This image has no saved ' + row.effective + ' annotation: save it in the Annotation step, or choose another area') : null]);
+            row.ambiguous ? chip('Choose source', 'warn', area.title) : row.missing ? chip('No ' + row.effective, 'warn', 'This image has no saved ' + row.effective + ' annotation: save it in the Annotation step, or choose another area') : null]);
           const name = node('button', {type:'button', class:'studio-item-name studio-file', text:row.image, title:'Open ' + row.image + (row.segmented ? ' with its cells' : ''), onclick:() => openRow(row)});
-          const line = node('tr', {'data-image':row.image, class:row.image === openImage ? 'selected' : ''});
+          const line = node('tr', {'data-image':row.image,'data-view-path':plan.folders.images+'/'+row.image});
           line.addEventListener('click', event => { if (!event.target.closest('button, select, input')) openRow(row); });
           fill(line, node('td', {}, [tick]), node('td', {}, [name]), node('td', {}, [area]), node('td', {}, [state]));
           return line;
@@ -4711,7 +5261,7 @@
         // The area for several images at once: the ticked ones, or all when none is ticked.
         const everyGroup = new Map();
         plan.rows.forEach(row => (row.saved_groups || []).forEach(([group, items]) => {
-          if (group === 'Earlier choice') return;  // one image's own file: not a choice for all
+          if (!['Local', 'Imported'].includes(group)) return;  // an explicit file belongs to one image
           const label = group;
           const known = everyGroup.get(label) || new Map(); items.forEach(([value, text]) => known.set(value, text)); everyGroup.set(label, known); }));
         const setAll = groupedChoice([['', 'Area (set all)'], ['__whole__', 'Whole image']],
@@ -4730,7 +5280,7 @@
           outlinesFolder(),
           // Annotations to segment in, from GeoJSON files: imported here for every image at once, then chosen by name below.
           node('details', {class:'studio-options'}, [node('summary', {text:'Annotations from GeoJSON files'}), importsBox(() => loadPlan()),
-            node('p', {class:'muted', text:'Then choose “Area (set all)”: an Imported name (tissue, say) is each image’s own imported tissue.'})]),
+            help('Area selects one annotation source per image. When several files contain the same name, choose the file in the image’s row. Area (set all) applies shared names only where their source is unambiguous.')]),
           folderBox('models', 'Models', 'A folder with Cellpose models (yours, a colleague’s, or the model library): they are listed in Model below, ' +
             'with Cellpose’s own and the ones trained in this project. Nothing is copied.'),
           node('div', {class:'row'}, [chip(plan.rows.length + ' images'), chip(done + ' segmented', done ? 'ok' : ''),
@@ -4744,31 +5294,51 @@
       let saving = null;
       const changes = () => saved ? Object.fromEntries(SEG_KEYS.filter(key => JSON.stringify(values[key]) !== JSON.stringify(saved.values[key])).map(key => [key, values[key]])) : {};
       const mark = text => { const n = Object.keys(changes()).length; dirty.textContent = text || (n ? 'Not saved' : 'Saved'); dirty.className = 'chip ' + (n && !text ? 'warn' : 'ok'); };
-      const save = async () => {
+      const acceptSettings = (next, before) => {
+        const newer = Object.fromEntries(SEG_KEYS.filter(key => JSON.stringify(values[key]) !== JSON.stringify(before[key])).map(key => [key, values[key]]));
+        saved = next; values = {...JSON.parse(JSON.stringify(next.values)), ...newer}; mark();
+      };
+      const persistSettings = async () => {
+        clearTimeout(saving);
         const pending = changes();
         if (!Object.keys(pending).length) return true;
         mark('Saving…');
-        const next = await post(route('/segmentation_settings'), {changes:pending, revision:saved.revision});
-        saved = next; values = {...JSON.parse(JSON.stringify(next.values)), ...Object.fromEntries(Object.entries(changes()).filter(([key]) => !(key in pending)))};
-        mark(); return true;
+        const before = JSON.parse(JSON.stringify(values));
+        acceptSettings(await post(route('/segmentation_settings'), {changes:pending, revision:saved.revision}), before);
+        return persistSettings();
       };
+      const save = () => write(persistSettings);
       const set = (key, value) => {
         values[key] = value; mark();
         clearTimeout(saving); saving = setTimeout(() => save().catch(error => { mark(); note.textContent = error.message; }), 500);
       };
-      const reloadSettings = async () => { saved = await get(route('/segmentation_settings')); values = {...JSON.parse(JSON.stringify(saved.values)), ...changes()}; draw(); };
       const draw = () => {
         if (!saved || !plan) return;
         const markers = imageMarkers();
-        const nuclear = values.tab4_last_nuclear_names.find(name => markers.includes(name)) || markers.find(name => /dapi/i.test(name)) || markers[0] || '';
-        const borders = new Set(values.tab4_last_membrane_names);
+        const nuclear = new Set(values.tab4_last_nuclear_names.filter(name => markers.includes(name)));
+        if(!values.tab4_last_nuclear_names.length&&markers.length)nuclear.add(markers.find(name=>/dapi/i.test(name))||markers[0]);
+        const borders = new Set(values.tab4_last_membrane_names.filter(name=>!nuclear.has(name)));
+        const toggleRole=(role,name)=>{
+          if(role==='nuclear'){
+            if(nuclear.has(name)){if(nuclear.size===1)return;nuclear.delete(name);}
+            else{nuclear.add(name);borders.delete(name);set('tab4_last_membrane_names',Array.from(borders));}
+            set('tab4_last_nuclear_names',Array.from(nuclear));
+          }else{
+            if(nuclear.has(name))return;
+            borders.has(name)?borders.delete(name):borders.add(name);
+            set('tab4_last_membrane_names',Array.from(borders));
+          }
+          draw();
+        };
         const roles = markers.length ? node('div', {class:'studio-pairs-scroll studio-seg-markers'}, [node('table', {class:'studio-counts studio-pairs'}, [
           node('tr', {}, ['Marker', 'Nucleus', 'Border'].map(text => node('th', {text}))),
           ...markers.map(name => {
-            const isNucleus = node('input', {type:'radio', name:'studio-seg-nucleus', 'aria-label':'Nucleus marker ' + name}); isNucleus.checked = name === nuclear;
-            isNucleus.addEventListener('change', () => { set('tab4_last_nuclear_names', [name]); draw(); });
+            const isNucleus = node('input', {type:'checkbox', 'aria-label':'Nucleus marker ' + name}); isNucleus.checked = nuclear.has(name);
+            isNucleus.disabled=isNucleus.checked&&nuclear.size===1;
+            isNucleus.addEventListener('change', () => toggleRole('nuclear',name));
             const isBorder = node('input', {type:'checkbox', 'aria-label':'Cell border marker ' + name}); isBorder.checked = borders.has(name);
-            isBorder.addEventListener('change', () => { isBorder.checked ? borders.add(name) : borders.delete(name); set('tab4_last_membrane_names', Array.from(borders)); });
+            isBorder.disabled=nuclear.has(name);
+            isBorder.addEventListener('change', () => toggleRole('membrane',name));
             return node('tr', {}, [node('td', {class:'studio-file', text:name, title:name}), node('td', {}, [isNucleus]), node('td', {}, [isBorder])]);
           })])]) : node('p', {class:'muted', text:'Open an image to choose its markers’ roles.'});
         // One model list, as the artifact models: Cellpose's own, this project's trained versions, the Models folder's.
@@ -4778,11 +5348,8 @@
           const items = plan.models.filter(item => item.group === group);
           if (items.length) model.append(node('optgroup', {label:group}, items.map(item => node('option', {value:item.id, text:item.name, title:item.title || ''}))));
         });
-        model.value = plan.model;
-        model.addEventListener('change', async () => {
-          const chosen = plan.models.find(item => item.id === model.value);
-          if (await saveStep({model:model.value}, (chosen?.name || model.value) + ' is the model now (saved).')) await reloadSettings();
-        });
+        model.value = pendingModel || plan.model;
+        model.addEventListener('change', () => selectModel(model.value).catch(() => {}));
         const number = (key, label, step) => {
           const input = node('input', {type:'number', step, min:'0', value:String(values[key]), 'aria-label':label});
           input.addEventListener('change', () => { const value = Number(input.value); if (Number.isFinite(value) && value >= 0) set(key, value); else input.value = String(values[key]); });
@@ -4802,21 +5369,17 @@
           field('Batch', node('div', {class:'row grow'}, [batchMode, batch]), 'Auto tests block batches on the selected GPU and reuses a fast size. Manual sets a limit. Memory errors reduce the batch automatically.'),
           field('GPU index', device, 'The visible GPU to use, starting at 0. One GPU is used per job.')]);
         fill(form,
+          field('Active model', model, 'Used by Test on this view and all Segment actions. Choosing a model saves it immediately. Training creates versions in Model history; Use for segmentation activates one.'),
           node('div', {class:'row field'}, [node('label', {class:'lbl', text:'Markers'}), node('span', {class:'grow'}),
-            help('Nucleus: the marker Cellpose finds nuclei in (DAPI, usually). Border: markers combined to find where each cell ends; with none, ' +
-              'the nucleus marker is used. N and M on a marker in Layers (right) set the same.')]),
+            help('Nucleus: choose one or more nuclear markers. The brightest selected signal at each pixel is used. Border markers combine the same way; with none, the nuclear signal is used. H&E RGB needs stain separation first. N and M in Layers set the same choices.')]),
           roles,
-          field('Model', model, 'Choose a built-in model, a model trained in this project, or one from the Models folder.'),
           field('Diameter', number('tab4_diameter', 'Cell diameter', '1'), 'Expected cell diameter in pixels; 0 lets Cellpose estimate it.'),
           field('Flow', number('tab4_flow', 'Flow threshold', '0.1'), 'Reject cells whose predicted flows disagree with their shape. Lower values reject more cells.'),
           node('div', {class:'row field'}, [node('label', {class:'lbl', text:'GPU'}), gpu, node('span', {class:'grow'}),
             help('Use an available compatible GPU to speed up segmentation. Otherwise, use the CPU.')]), compute);
         mark();
-        if (setMarkerRoles) setMarkerRoles({nuclear, membrane:Array.from(borders), onChange:(role, name) => {
-          if (role === 'nuclear') set('tab4_last_nuclear_names', [name]);
-          else set('tab4_last_membrane_names', borders.has(name) ? Array.from(borders).filter(item => item !== name) : [...borders, name]);
-          draw();
-        }});
+        if (setMarkerRoles) setMarkerRoles({nuclear:Array.from(nuclear), membrane:Array.from(borders), onChange:toggleRole});
+        current.refreshTrainingSelection?.();
       };
       const load = async () => {
         try {
@@ -4832,11 +5395,14 @@
         const image = currentSpec?.id;
         run.disabled = true; result.textContent = 'Segmenting the visible area…';
         try {
+          await save();
           const found = await post(route('/segment_preview'), {bounds:area, settings:changes()});
           if (!form.isConnected || currentSpec?.id !== image) return;
           showSegPreview(found); clear.hidden = false;
           result.textContent = found.count.toLocaleString() + ' cells · ' + found.seconds + ' s · ' + found.device +
-            (found.model_loaded ? ' (model loaded)' : '');
+            (found.model_loaded ? ' (model loaded)' : '') +
+            (found.missing_markers?.length ? ' · ' + found.missing_markers.length + ' markers unavailable' : '');
+          result.title = found.missing_markers?.length ? 'Inputs omitted: ' + found.missing_markers.join(', ') : '';
         } catch (error) { result.textContent = error.message; }
         finally { run.disabled = false; }
       });
@@ -4889,30 +5455,56 @@
         const now = plan?.rows.find(row => row.image === shown());
         if (now && now.segmented && now.stamp !== before) openRow(now);  // new outlines (first time or again): show them
       });
-      cellposeTraining(current, {changes,
+      cellposeTraining(current, {changes, save,
+        activeModel:() => plan?.models.find(item => item.id === plan.model)?.path || plan?.model,
+        syncModels:models => { if (plan) { plan.models = models; draw(); } },
         useModel:async path => {
-          const id = 'project:' + path.split('/').pop();
-          if (!plan.models.some(item => item.id === id)) await loadPlan();
-          if (await saveStep({model:id}, path.split('/').pop() + ' is the model now (saved).')) await reloadSettings();
+          const item = plan?.models.find(item => item.path === path || item.id === path);
+          if (!item) throw Error('Model unavailable. Refresh the model list.');
+          await selectModel(item.id);
         }});
       loadPlan(); load();
     };
 
     // Cellpose training, as the user designed it: tiles of a chosen size are placed on the tissue, for training or for
     // validation; the model in training predicts a tile, its cells are corrected on the image and the tile is kept;
-    // Train makes the next version from the current one on every training tile, and that version predicts the next
-    // tile; Validate compares the predictions with the corrections. Use makes a version Segmentation's model.
+    // One Train action refreshes current inputs for all or selected training tiles. Validation stays held out.
     const TRAINING_LAYER = 'Cells to correct';
-    const cellposeTraining = (current, {changes, useModel}) => {
+    const cellposeTraining = (current, {changes, save, useModel, activeModel, syncModels}) => {
       const state = current.training || (current.training = {size:'512', role:'train'});
-      const {box, body} = section('Train Cellpose', {tip:'Make Cellpose better on your cells, round by round: place a tile, ' +
+      const {box, body} = section('Training', {tip:'Make Cellpose better on your cells, round by round: place a tile, ' +
         'correct the cells the model predicts (with the tools above the image: Freehand draws a missing cell, right-click deletes a wrong one, ' +
         'Merge joins two pieces of one cell, Split cuts two cells drawn as one, Ctrl+Z undoes), keep the tile, and Train. The new version predicts the next tile. Validation tiles, once corrected, ' +
-        'show how far the model is from your cells (Validate); they can then join training.'});
-      const line = node('p', {class:'muted', role:'status'});
-      const sessionBox = node('div'), tilesBox = node('div', {class:'studio-examples'}), checked = node('div'), versions = node('div', {class:'studio-examples'});
+        'score the starting and trained models without entering training. Use for segmentation activates a saved version.'});
+      box.classList.add('studio-training');
+      const line = node('p', {class:'muted studio-training-status', role:'status'});
+      const trainingStatus = node('div', {class:'studio-training-run', role:'status', 'aria-live':'polite', hidden:true});
+      const showTrainingStatus = (phase, text, detail = '') => {
+        trainingStatus.hidden = !text;
+        trainingStatus.dataset.phase = phase;
+        trainingStatus.textContent = text;
+        trainingStatus.title = detail;
+      };
+      const showTrainingJob = job => {
+        if (!job) {showTrainingStatus('', ''); return;}
+        const name = job.model_name || job.result?.name || state.trainingNames?.[job.id] ||
+          job.message?.match(/^Training (\S+) for \d+ epochs/)?.[1] || '';
+        const label = name ? ' · ' + name : '';
+        if (job.status === 'done') showTrainingStatus('done', 'Training complete' + label, job.message);
+        else if (job.status === 'failed') showTrainingStatus('failed', 'Training failed' + label + ': ' + (job.message || 'See Jobs for details.'));
+        else if (/cancel/.test(job.status)) showTrainingStatus('cancelled', 'Training cancelled' + label, job.message);
+        else if (job.status === 'stopping') showTrainingStatus('running', 'Stopping training' + label, job.message);
+        else showTrainingStatus('running', 'Training' + (name ? ' ' + name : '') + ' in the background.', job.message);
+      };
+      const sessionBox = node('div'), tilesBox = node('div', {class:'studio-examples'}), checked = node('div');
       const scoresBox = node('div', {class:'studio-scores'});
-      const scoreButton = node('button', {class:'btn small', text:'Score all versions', title:'Run the base model and every version on the same validation tiles'});
+      const historyTitle = node('summary', {text:'Model history'});
+      const history = node('details', {class:'studio-options studio-model-history'}, [historyTitle, scoresBox]);
+      const scoreButton = node('button', {class:'btn small', text:'Score all versions', title:'Compare all versions using the original saved validation images. This does not refresh inputs or test missing-marker scenarios.'});
+      const validationBox = node('div');
+      const validation = node('details', {class:'studio-options studio-training-validation'}, [node('summary', {text:'Validation'}), validationBox]);
+      validation.open = !!state.validationOpen;
+      validation.addEventListener('toggle', () => {state.validationOpen = validation.open;});
       const size = choice([['256', '256 px'], ['512', '512 px'], ['768', '768 px'], ['1024', '1,024 px']], state.size, 'Tile size');
       size.addEventListener('change', () => { state.size = size.value; });
       const role = choice([['train', 'Training'], ['validate', 'Validation']], state.role, 'Tile role');
@@ -4920,13 +5512,36 @@
       const place = node('button', {class:'btn', text:'Place a tile'});
       const keep = node('button', {class:'btn primary', text:'Keep tile', disabled:true});
       const discard = node('button', {class:'btn small ghost', text:'Discard', hidden:true});
-      const epochs = node('input', {type:'number', min:'1', max:'2000', step:'10', value:'100', 'aria-label':'Epochs'});
-      const trainButton = node('button', {class:'btn primary', text:'Train'});
-      const validateButton = node('button', {class:'btn', text:'Validate'});
+      const epochs = node('input', {type:'number', min:'1', max:'2000', step:'10', value:String(state.epochs || 100), 'aria-label':'Epochs'});
+      epochs.addEventListener('change', () => {state.epochs = epochs.value;});
+      const trainButton = node('button', {class:'btn primary', text:'Train', disabled:true, 'data-training-action':''});
+      const scope = choice([['all', 'All training tiles'], ['selected', 'Selected tiles']], state.trainScope || 'all', 'Training tiles');
+      const inputMode = choice([['fixed', 'Fixed markers'], ['optional', 'Allow missing markers / H&E']], state.missingMarkers ? 'optional' : 'fixed', 'Training input mode');
+      inputMode.addEventListener('change', () => {state.missingMarkers = inputMode.value === 'optional';});
+      const selectedTiles = new Set(state.selectedTiles || []);
+      let syncTileSelection = () => {};
+      const syncTrainAction = () => {
+        const count = scope.value === 'selected' ? selectedTiles.size : (found?.counts.train || 0);
+        scope.options[0].textContent = 'All training tiles (' + (found?.counts.train || 0) + ')';
+        scope.options[1].textContent = 'Selected tiles (' + selectedTiles.size + ')';
+        trainButton.disabled = !count || !found?.session || state.restart || state.trainingBusy || state.retrainSubmitting || !!state.tile;
+        trainButton.title = state.tile ? 'Keep or discard the current tile first.' :
+          'Continue the Training model on ' + count + ' saved training tiles using current Nucleus/Border inputs. Corrected cells stay unchanged; validation tiles are held out. Saves a new version; activate it separately.';
+      };
+      scope.addEventListener('change', () => {state.trainScope = scope.value; syncTrainAction();});
+      const selectScope = () => {scope.value = state.trainScope = 'selected';};
+      const validateButton = node('button', {class:'btn small', text:'Check saved predictions', title:'Compare the original tile predictions with your corrections. These may come from different older models; this does not evaluate the current model.'});
+      const savedChecks = node('details', {class:'studio-options'}, [node('summary', {text:'Original tile predictions'}), validateButton, checked]);
+      validation.append(savedChecks);
       body.append(sessionBox,
-        node('div', {class:'row wrap'}, [size, role, place]), node('div', {class:'row wrap'}, [keep, discard]), line, tilesBox,
-        field('Epochs', epochs, 'Training passes over the tiles each round (Cellpose’s trainer uses 100).'),
-        node('div', {class:'row'}, [trainButton, validateButton]), checked, versions, scoresBox);
+        node('div', {class:'row wrap studio-training-actions'}, [size, role, place, keep, discard, trainButton]),
+        trainingStatus,
+        node('div', {class:'row wrap studio-training-choices'}, [node('label', {class:'inline-check'}, [node('span', {text:'Train on'}), scope]),
+          node('label', {class:'inline-check'}, [node('span', {text:'Inputs'}), inputMode]),
+          help('Every Train uses current Nucleus/Border choices and rereads original tiles; corrected cells are preserved. Fixed markers: all selected channels must exist. Allow missing markers / H&E: requires DAPI and also trains without H&E, with fewer markers, and with DAPI alone. Use it for varying panels. It can trade full-panel accuracy for better performance with missing inputs; it is not always better. About four times as many training examples. Compare the saved Validation scores for your target inputs.')]), line,
+        node('details', {class:'studio-options'}, [node('summary', {text:'Training settings'}),
+          field('Epochs', epochs, 'Training passes over the tiles each round (Cellpose’s trainer uses 100).')]),
+        tilesBox, validation, history);
       current.body.append(box);
       let found = null, loadRequest = 0;
       const model = () => found?.session?.current || '';
@@ -4934,33 +5549,58 @@
       // The model in training as Segmentation's settings, for predicting a tile.
       const modelSettings = () => { const m = model(); return m.includes('/') ? {tab4_model_type:'custom', tab4_custom_model:m} : m ? {tab4_model_type:m} : {}; };
       // The kept tiles on the open image, and (when asked) the corrected cells inside them; both can be hidden.
-      if (state.showTiles === undefined) state.showTiles = true;
-      let cellsRequest = 0;
+      if (state.showTiles === undefined) state.showTiles = recall('training-tile-outlines', 'true') === 'true';
+      if (state.showTileCells === undefined) state.showTileCells = recall('training-saved-cells', 'false') === 'true';
+      let cellsRequest = 0, tileRequest = 0, cellsLoading = false, cellsError = '';
+      const savedTiles = () => (found?.examples || []).filter(item => item.image === found.open_image);
+      const setSavedCells = on => {state.showTileCells = on; remember('training-saved-cells', String(on)); drawTileCells();};
+      const setTileOutlines = on => {state.showTiles = on; remember('training-tile-outlines', String(on)); drawTiles();};
+      const syncTrainingView = () => {
+        if (!box.isConnected) return;
+        configureTrainingCells({savedCount:savedTiles().reduce((sum, item) => sum + item.cells, 0),
+          showSaved:!!state.showTileCells, showTiles:!!state.showTiles, loading:cellsLoading, error:cellsError,
+          onSaved:setSavedCells, onTiles:setTileOutlines});
+        const savedCheck = tilesBox.querySelector('[aria-label="Show the corrected cells in the tiles"]');
+        if (savedCheck) savedCheck.checked = !!state.showTileCells;
+        const tilesCheck = tilesBox.querySelector('[aria-label="Show the tiles on the image"]');
+        if (tilesCheck) tilesCheck.checked = !!state.showTiles;
+      };
+      const tileBox = bounds => {const [x, y, w, h] = bounds; return [[x, y], [x + w, y], [x + w, y + h], [x, y + h]];};
+      const drawCurrentTileBox = () => showPreview('training-tile', state.showTiles && state.tile ? {outlines:[tileBox(state.tile)], kind:'example'} : null);
       const drawTiles = () => {
         const mine = state.showTiles ? (found?.examples || []).filter(item => item.image === found.open_image) : [];
-        const box_ = item => { const [x, y, w, h] = item.bounds; return [[x, y], [x + w, y], [x + w, y + h], [x, y + h]]; };
-        const of = kind => mine.filter(item => (item.role || 'train') === kind).map(box_);
+        const of = kind => mine.filter(item => (item.role || 'train') === kind).map(item => tileBox(item.bounds));
+        drawCurrentTileBox();
         showPreview('training-tiles-train', of('train').length ? {outlines:of('train'), colour:'#2ecc71', kind:'example'} : null);
         showPreview('training-tiles-validate', of('validate').length ? {outlines:of('validate'), colour:'#f0c35a', kind:'example'} : null);
-        drawTileCells();
+        syncTrainingView();
       };
       const drawTileCells = async () => {
         const request = ++cellsRequest;
-        if (!state.showTileCells || !found?.open_image) { showPreview('training-tile-cells', null); return; }
+        const image = currentSpec?.id;
+        cellsLoading = false; cellsError = '';
+        if (!state.showTileCells || !found?.open_image || !savedTiles().length) { showSavedTrainingCells(null); syncTrainingView(); return; }
+        const key = JSON.stringify([image, found.open_image, savedTiles().map(item => [item.name, item.cells, item.created])]);
+        if (state.savedCellCache?.key === key) { showSavedTrainingCells(state.savedCellCache.outlines); syncTrainingView(); return; }
+        showSavedTrainingCells(null); cellsLoading = true; syncTrainingView();
         try {
           const value = await get(route('/training?outlines=1'));
-          if (request !== cellsRequest || !box.isConnected) return;
-          showPreview('training-tile-cells', value.outlines?.length ? {outlines:value.outlines, colour:'#00e5ff'} : null);
-        } catch (error) { line.textContent = error.message; }
+          if (request !== cellsRequest || !box.isConnected || currentSpec?.id !== image) return;
+          state.savedCellCache = {key, outlines:value.outlines || []};
+          showSavedTrainingCells(state.savedCellCache.outlines);
+        } catch (error) { if (request === cellsRequest && box.isConnected) { cellsError = error.message; line.textContent = error.message; } }
+        finally { if (request === cellsRequest && box.isConnected) { cellsLoading = false; syncTrainingView(); } }
       };
       const drawSession = () => {
         const session = found.session;
+        syncTileSelection(); syncTrainAction();
         if (session && !state.restart) {
-          const last = session.versions[session.versions.length - 1];
-          sessionBox.replaceChildren(node('div', {class:'row'}, [chip(last ? last.name : 'not trained yet', last ? 'ok' : ''),
-            node('span', {class:'muted grow', text:last ? 'from ' + modelLabel(session.base) + ' · ' + session.versions.length + ' round' +
-              (session.versions.length === 1 ? '' : 's') : 'starts from ' + modelLabel(session.base)}),
-            node('button', {class:'btn small ghost', text:'Start over', onclick:() => { state.restart = true; load(); }})]));
+          sessionBox.replaceChildren(field('Training model', node('div', {class:'inline grow'}, [node('span', {class:'studio-training-model grow', text:modelLabel(session.current),
+              title:session.current, 'data-training-model':session.current}),
+            node('button', {class:'btn small ghost', text:'New training', title:'Start a new training series; saved models and tiles are kept',
+              onclick:() => { state.restart = true; syncTrainAction(); load(); }})]),
+            'Predicts correction tiles and starts the next training round. Base: ' + modelLabel(session.base) +
+              '. Completed rounds: ' + session.versions.length + '. Active model above controls testing and segmentation.'));
           return;
         }
         const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
@@ -4980,7 +5620,7 @@
         const refresh = node('button', {class:'btn small', text:'↻', 'aria-label':'Refresh starting models',
           title:'Refresh saved models and the Models folder', onclick:load});
         const go = node('button', {class:'btn primary', text:'Start', onclick:async () => {
-          try { await post(route('/training/start'), {name:name.value.trim(), base:base.value}); state.restart = false; delete state.draftBase; delete state.draftName; line.textContent = 'Session started. Place a tile.'; load(); }
+          try { await post(route('/training/start'), {name:name.value.trim(), base:base.value}); state.restart = false; delete state.draftBase; delete state.draftName; line.textContent = 'Ready. Place a tile.'; load(); }
           catch (error) { line.textContent = error.message; }
         }});
         sessionBox.replaceChildren(field('Model name', name, 'Versions are saved as this name with _v1, _v2 and so on.'),
@@ -4993,60 +5633,120 @@
         try { next = await get(route('/training')); } catch (error) { if (request === loadRequest) tilesBox.replaceChildren(node('p', {class:'hint', text:error.message})); return; }
         if (!box.isConnected || request !== loadRequest) return;
         found = next;
-        drawSession(); drawTiles();
+        syncModels(found.starting_models || []);
+        drawSession(); drawTiles(); drawTileCells();
         const counts = found.counts;
         // The tiles: shown on the image or not, their cells or not; the list folded, scrolling when long.
         const showTiles = node('input', {type:'checkbox', 'aria-label':'Show the tiles on the image'}); showTiles.checked = state.showTiles;
-        showTiles.addEventListener('change', () => { state.showTiles = showTiles.checked; drawTiles(); });
+        showTiles.addEventListener('change', () => setTileOutlines(showTiles.checked));
         const showCells = node('input', {type:'checkbox', 'aria-label':'Show the corrected cells in the tiles'}); showCells.checked = !!state.showTileCells;
-        showCells.addEventListener('change', () => { state.showTileCells = showCells.checked; drawTileCells(); });
+        showCells.addEventListener('change', () => setSavedCells(showCells.checked));
         const list = node('details', {class:'studio-options studio-tile-list'});
         list.open = !!state.tilesOpen;
         list.addEventListener('toggle', () => { state.tilesOpen = list.open; });
-        list.append(node('summary', {text:'Tiles · ' + counts.train + ' training · ' + counts.validate + ' validation · ' + found.cells.toLocaleString() + ' cells'}),
-          node('div', {class:'studio-tile-scroll'}, found.examples.map(item => node('div', {class:'studio-folder'}, [
+        const eligible = found.examples.filter(item => item.role !== 'validate');
+        for (const name of selectedTiles) if (!eligible.some(item => item.name === name)) selectedTiles.delete(name);
+        const all = node('input', {type:'checkbox', 'aria-label':'Select all matching training tiles'});
+        const search = node('input', {type:'search', value:state.tileSearch || '', placeholder:'Find tiles…', 'aria-label':'Find training tiles'});
+        const selectedCount = node('span', {class:'muted'});
+        const controls = node('span', {class:'studio-tile-actions'}, [all, search, selectedCount]);
+        controls.addEventListener('click', event => event.stopPropagation());
+        controls.addEventListener('keydown', event => event.stopPropagation());
+        const rows = found.examples.map(item => {
+          const tick = node('input', {type:'checkbox', 'aria-label':'Retrain tile ' + item.name,
+            disabled:item.role === 'validate', title:item.role === 'validate' ? 'Held out for validation; never included by select all.' : 'Reuse these corrected cells with the current input channels.'});
+          tick.addEventListener('change', () => {tick.checked ? selectedTiles.add(item.name) : selectedTiles.delete(item.name); selectScope(); syncTileSelection();});
+          return {item, tick, row:node('div', {class:'studio-folder'}, [tick,
             chip(item.role === 'validate' ? 'Validation' : 'Training', item.role === 'validate' ? 'warn' : 'ok'),
-            node('span', {class:'grow', text:item.image + ' · ' + item.cells + ' cells', title:item.name}),
+            node('span', {class:'grow', text:item.image + ' · ' + item.cells + ' cells', title:[item.image_path || item.image, item.name].join('\n')}),
             item.image === found.open_image ? node('button', {class:'btn small', text:'Go', title:'Zoom to this tile', onclick:() => zoomAnnotationBox?.(item.bounds)}) : null,
             node('button', {class:'btn small ghost', text:'Delete', onclick:async () => {
-              try { await post(route('/training/delete'), {name:item.name}); load(); } catch (error) { line.textContent = error.message; }
-            }})]))));
-        tilesBox.replaceChildren(node('div', {class:'row wrap'}, [node('label', {class:'inline-check'}, [showTiles, node('span', {text:'Show tiles'})]),
-            node('label', {class:'inline-check', title:'The corrected cells kept with each tile on this image'}, [showCells, node('span', {text:'Show their cells'})])]),
+              try { await post(route('/training/delete'), {name:item.name}); state.savedCellCache = null; load(); } catch (error) { line.textContent = error.message; }
+            }})])};
+        });
+        const matches = item => (item.image + ' ' + item.name).toLowerCase().includes(search.value.trim().toLowerCase());
+        syncTileSelection = () => {
+          const visible = eligible.filter(matches), count = visible.filter(item => selectedTiles.has(item.name)).length;
+          all.checked = !!visible.length && count === visible.length; all.indeterminate = count > 0 && count < visible.length;
+          all.disabled = !visible.length;
+          rows.forEach(({item, tick, row}) => {tick.checked = selectedTiles.has(item.name); row.hidden = !matches(item);});
+          state.selectedTiles = Array.from(selectedTiles); state.tileSearch = search.value;
+          selectedCount.textContent = selectedTiles.size + ' selected';
+          syncTrainAction();
+        };
+        search.addEventListener('input', syncTileSelection);
+        all.addEventListener('change', () => {eligible.filter(matches).forEach(item => all.checked ? selectedTiles.add(item.name) : selectedTiles.delete(item.name)); selectScope(); syncTileSelection();});
+        list.append(node('summary', {}, [node('span', {text:'Tiles · ' + counts.train + ' training · ' + counts.validate + ' validation · ' + found.cells.toLocaleString() + ' cells'}), controls]),
+          node('div', {class:'studio-tile-scroll'}, rows.map(({row}) => row)));
+        tilesBox.replaceChildren(node('div', {class:'row wrap'}, [node('label', {class:'inline-check'}, [showTiles, node('span', {text:'Tile outlines'})]),
+            node('label', {class:'inline-check', title:'The corrected cells kept with each tile on this image'}, [showCells, node('span', {text:'Saved cells'})])]),
           list);
-        const session = found.session;
-        // The versions in one list, newest first (as the artifact models), with Use to segment with the chosen one.
-        const made = (session?.versions || []).slice().reverse();
-        const pick = choice(made.map(item => [item.path, item.name + ' · ' + (item.ap_after !== null && item.ap_after !== undefined ?
-          'validation AP ' + (item.ap_before ?? 0).toFixed(2) + ' → ' + item.ap_after.toFixed(2) : item.training_tiles + ' tiles')]), made[0]?.path || '', 'Trained version');
-        versions.replaceChildren(...(made.length ? [field('Versions', node('div', {class:'inline grow'}, [pick, node('button', {class:'btn small', text:'Use',
-          title:'Segment with this version (it becomes the Model above)', onclick:async () => {
-            const item = made.find(entry => entry.path === pick.value);
-            try { await useModel(item.path); line.textContent = item.name + ' is now Segmentation’s model (saved).'; } catch (error) { line.textContent = error.message; }
-          }})]), 'Each round of training makes a new version; the newest is first. Use makes the chosen one Segmentation\u2019s model.')] : []));
-        state.rounds = (session?.versions || []).length;
+        syncTileSelection();
         drawScores();
       };
-      // One row per version, all on the same validation tiles: is each round still helping?
+      // History reviews saved models; only Active model controls segmentation.
+      const drawValidation = () => {
+        const versions = [...(found?.session?.versions || [])].reverse();
+        if (!versions.length) {
+          validationBox.replaceChildren(node('span', {class:'muted', text:'Keep validation tiles, then Train to score the new model.'}));
+          return;
+        }
+        const item = versions.find(item => item.path === state.validationModel) || versions[0];
+        const select = choice(versions.map(item => [item.path, item.name]), item.path, 'Validation model');
+        select.addEventListener('change', () => {state.validationModel = select.value; drawValidation();});
+        const scenarioNames = {full:'Available inputs', without_he:'Without H&E', fewer_markers:'Fewer markers', dapi_only:'DAPI only'};
+        const scenarios = item.subset_validation || {full:{before:item.ap_before, after:item.ap_after}};
+        const value = ap => typeof ap === 'number' ? ap.toFixed(2) : '—';
+        const table = node('table', {class:'studio-counts studio-model-table studio-subset-scores', 'data-model':item.path}, [
+          node('tr', {}, [node('th', {text:'Inputs'}), node('th', {text:'Starting model', title:modelLabel(item.from || found.session.base)}),
+            node('th', {text:'Trained model', title:item.name})]),
+          ...Object.entries(scenarios).map(([mode, score]) => node('tr', {}, [
+            node('td', {text:scenarioNames[mode] || mode}), node('td', {text:value(score.before)}), node('td', {text:value(score.after)})]))]);
+        validationBox.replaceChildren(node('div', {class:'row studio-training-result'}, [select,
+          help('AP at cell overlap ≥ 0.5: matched cells / (matched + extra + missed), higher is better. Starting model: ' +
+            modelLabel(item.from || found.session.base) + '. Trained model: ' + item.name + '. Both evaluated on the same held-out tiles and recorded inputs for this round. ' +
+            'These are saved training-time results, not a fresh test of current settings. Scores from different rounds may use different tiles or inputs and must not be ranked as if identical. ' +
+            'Use the scenario matching your target images; allowing missing markers can improve some scenarios and worsen others.')]),
+          item.validation_tiles ? table : node('span', {class:'muted', text:'No validation tiles · performance unverified'}),
+          node('span', {class:'muted', text:(item.validation_tiles || 0) + ' validation tiles · saved at training', title:item.created || ''}));
+      };
       const drawScores = () => {
         const scores = found?.scores, session = found?.session;
-        if (!session || !session.versions.length) { scoresBox.replaceChildren(); return; }
+        drawValidation();
+        history.hidden = !session?.versions.length;
+        if (history.hidden) { scoresBox.replaceChildren(); return; }
+        historyTitle.textContent = 'Model history · ' + session.versions.length + ' versions';
         const percent = value => Math.round(100 * value) + '%';
-        const parts = [node('div', {class:'row'}, [node('span', {class:'lbl grow', text:'Scores of each version'}),
-          help('All on the same validation tiles. Found correctly: the share of your cells the model found. Wrong: cells it drew that ' +
-            'you did not. Missed: your cells it did not find. The best version has the fewest wrong and missed together (F1).'), scoreButton])];
-        if (scores) {
-          const best = scores.rows.length > 1 ? scores.rows.reduce((top, row) => row.f1 > top.f1 ? row : top, scores.rows[0]) : null;
-          const table = node('table', {class:'studio-counts'});
-          table.append(node('tr', {}, ['Version', 'Found correctly', 'Wrong', 'Missed'].map(text => node('th', {text}))));
-          scores.rows.forEach(row => table.append(node('tr', {class:row === best ? 'best' : '', title:'Precision ' + percent(row.precision) +
-              ' · F1 ' + row.f1.toFixed(2) + ' · AP ' + row.ap.toFixed(2)}, [node('td', {text:row.name + (row === best ? ' (best)' : '')}),
-            node('td', {text:percent(row.recall)}), node('td', {text:String(row.fp)}), node('td', {text:String(row.fn)})])));
-          const tiles = scores.tiles.length + ' validation tile' + (scores.tiles.length === 1 ? '' : 's') + ' (' + scores.cells.toLocaleString() + ' of your cells)';
-          parts.push(table, node('p', {class:scores.current ? 'muted' : 'hint', text:'On ' + tiles +
-            (scores.current ? '.' : '. Tiles or versions changed since: score again.')}));
-        } else parts.push(node('p', {class:'muted', text:'Compare the base model and every version on the same validation tiles.'}));
-        scoresBox.replaceChildren(...parts);
+        const common = !!scores?.current;
+        const table = node('table', {class:'studio-counts studio-model-table'});
+        table.append(node('tr', {}, ['Model', common ? 'AP · same tiles' : 'AP · saved', ...(common ? ['Found', 'Wrong', 'Missed'] : []), ''].map(text => node('th', {text}))));
+        const search = node('input', {type:'search', placeholder:'Find model…', value:state.modelSearch || '', 'aria-label':'Find training models'});
+        const rows = [...session.versions].reverse().map(item => ({...item, model:item.path}));
+        rows.push({name:modelLabel(session.base) + ' (base)', model:session.base});
+        rows.forEach(item => {
+          const score = common ? scores.rows.find(row => row.model === item.model) : null;
+          const ap = score?.ap ?? item.ap_after;
+          const active = activeModel() === item.model;
+          const use = node('button', {class:'btn small', text:active ? 'Active' : 'Use for segmentation', disabled:active,
+            'aria-label':(active ? 'Active model ' : 'Use for segmentation ') + item.name,
+            onclick:async () => {
+              use.disabled = true; line.textContent = '';
+              try { await useModel(item.model); }
+              catch (error) { line.textContent = error.message; }
+              finally { drawScores(); }
+            }});
+          table.append(node('tr', {'data-model':item.model}, [node('td', {text:item.name, title:item.model}),
+            node('td', {text:ap == null ? '—' : ap.toFixed(2), title:score ? 'Same validation tiles for every model' : 'Saved at training time'}),
+            ...(common ? [node('td', {text:score ? percent(score.recall) : '—'}), node('td', {text:score?.fp ?? '—'}), node('td', {text:score?.fn ?? '—'})] : []),
+            node('td', {}, [use])]));
+        });
+        const filter = () => {state.modelSearch = search.value; table.querySelectorAll('[data-model]').forEach(row => {row.hidden = !row.dataset.model.toLowerCase().includes(search.value.trim().toLowerCase());});};
+        search.addEventListener('input', filter); filter();
+        scoresBox.replaceChildren(node('div', {class:'row studio-training-result'}, [search, scoreButton,
+          help('Score all versions compares models on the original saved validation images; it does not refresh markers or simulate missing inputs. AP measures matched cells at overlap ≥ 0.5; higher is better. Saved training scores may use different tiles or inputs and are not a common ranking. Use for segmentation changes Active model immediately; it does not restart training or change saved cell outlines.')]),
+          node('div', {class:'studio-pairs-scroll studio-model-scroll'}, [table]),
+          node('span', {class:'muted', text:common ? scores.tiles.length + ' validation tile' + (scores.tiles.length === 1 ? '' : 's') + ' · ' + scores.cells.toLocaleString() + ' cells' :
+            scores ? 'Scores out of date' : 'Saved scores · tiles and inputs may differ'}));
       };
       scoreButton.addEventListener('click', async () => {
         scoreButton.disabled = true;
@@ -5065,48 +5765,79 @@
         finally { scoreButton.disabled = false; }
       });
       const reset = () => {
+        ++tileRequest;
         dropCells(TRAINING_LAYER); showPreview('training-tile', null);
         state.tile = null; state.predicted = null; keep.disabled = true; discard.hidden = true;
+        syncTrainAction();
       };
       place.addEventListener('click', async () => {
         if (!found?.session || state.restart) { line.textContent = 'Start a session first: name the model and choose where it starts from.'; return; }
+        const placement = ++tileRequest, placementImage = currentSpec?.id;
         const point = await pickPoint();
+        if (!box.isConnected || placement !== tileRequest || currentSpec?.id !== placementImage) return;
         const image = imageSize();
         if (!point || !image) { line.textContent = 'No tile placed.'; return; }
         const side = Math.min(Number(state.size), image.width, image.height);
         const x = Math.round(Math.min(Math.max(0, point[0] - side / 2), image.width - side));
         const y = Math.round(Math.min(Math.max(0, point[1] - side / 2), image.height - side));
         reset(); state.tile = [x, y, side, side];
-        showPreview('training-tile', {outlines:[[[x, y], [x + side, y], [x + side, y + side], [x, y + side]]], kind:'example'});
+        syncTrainAction();
+        const request = ++tileRequest, imageId = currentSpec?.id, bounds = state.tile;
+        drawCurrentTileBox();
         discard.hidden = false; line.textContent = 'Predicting the tile with ' + modelLabel(model()) + '…';
         try {
-          const prediction = await post(route('/segment_preview'), {bounds:state.tile, settings:{...changes(), ...modelSettings()}});
+          await save();
+          if (!box.isConnected || request !== tileRequest || currentSpec?.id !== imageId) return;
+          const prediction = await post(route('/segment_preview'), {bounds, settings:{...changes(), ...modelSettings()}});
+          if (!box.isConnected || request !== tileRequest || currentSpec?.id !== imageId) return;
           state.predicted = prediction.outlines; state.model = model();
           const count = editCells(TRAINING_LAYER, prediction.outlines);
           keep.disabled = false;
-          line.textContent = modelLabel(model()) + ' found ' + count + ' cells (' + prediction.seconds + ' s). Correct them with the tools ' +
-            'above the image: Freehand draws a missing cell, right-click deletes one, Merge joins pieces, Split cuts; Ctrl+Z undoes. Then Keep tile.';
-        } catch (error) { line.textContent = error.message; }
+          line.textContent = modelLabel(model()) + ' found ' + count + ' cells · ' + prediction.seconds + ' s. Correct, then Keep tile.';
+        } catch (error) { if (request === tileRequest && box.isConnected) line.textContent = error.message; }
       });
       keep.addEventListener('click', async () => {
         const polygons = readCells(TRAINING_LAYER) || [];
+        const request = tileRequest, image = currentSpec?.id;
         keep.disabled = true; line.textContent = 'Keeping ' + polygons.length + ' cells…';
         try {
           const saved = await post(route('/training/examples'), {bounds:state.tile, polygons, predicted:state.predicted, role:state.role,
             model:state.model, settings:changes()});
-          reset(); line.textContent = 'Kept ' + saved.saved_cells + ' cells as a ' + (state.role === 'validate' ? 'validation' : 'training') + ' tile.'; load();
-        } catch (error) { line.textContent = error.message; keep.disabled = false; }
+          state.savedCellCache = null;
+          if (!box.isConnected || currentSpec?.id !== image) return;
+          if (request === tileRequest) {reset(); line.textContent = 'Kept ' + saved.saved_cells + ' cells as a ' + (state.role === 'validate' ? 'validation' : 'training') + ' tile.';}
+          load();
+        } catch (error) { if (box.isConnected && request === tileRequest) {line.textContent = error.message; keep.disabled = false;} }
       });
       discard.addEventListener('click', () => { reset(); line.textContent = 'Tile discarded.'; });
       trainButton.addEventListener('click', async () => {
-        trainButton.disabled = true;
-        try {
-          const answer = await runCommand('train_cellpose', {epochs:Math.round(Number(epochs.value))}, {confirmed:true});
-          showResult(answer); line.textContent = answer.message;
-          if (answer.status === 'done') { await refreshJobs(); follow(); }
-        } catch (error) { line.textContent = error.message; }
-        finally { trainButton.disabled = false; }
+        const names = scope.value === 'selected' ? Array.from(selectedTiles) :
+          (found?.examples || []).filter(item => item.role !== 'validate').map(item => item.name);
+        if (trainButton.disabled || !names.length) return;
+        await launchRetrain(names);
       });
+      const launchRetrain = async names => {
+        const rounds = Math.round(Number(epochs.value)), missing = !!state.missingMarkers;
+        state.retrainSubmitting = true; syncTrainAction();
+        const name = found?.session ? found.session.name + '_v' + (found.session.versions.length + 1) : '';
+        state.trainingStartError = '';
+        let launched = false;
+        showTrainingStatus('running', 'Preparing training' + (name ? ' · ' + name : '') + '…');
+        line.textContent = '';
+        try {
+          await save();
+          const {job} = await post(route('/training/retrain'), {names, epochs:rounds, missing_markers:missing});
+          launched = true;
+          state.trainingNames ||= {}; state.trainingNames[job.id] = name;
+          showTrainingJob(job);
+          state.trainingBusy = true; trainButton.disabled = true;
+          await refreshJobs();
+        } catch (error) {
+          if (launched) line.textContent = 'Could not refresh job status: ' + error.message;
+          else {state.trainingStartError = error.message; showTrainingStatus('failed', 'Training could not start: ' + error.message);}
+        }
+        finally { state.retrainSubmitting = false; syncTrainAction(); }
+      };
       validateButton.addEventListener('click', async () => {
         try {
           const result = await post(route('/training/validate'), {});
@@ -5115,10 +5846,9 @@
             try { await post(route('/training/role'), {names:result.tiles.map(item => item.name), role:'train'}); checked.replaceChildren(); load(); line.textContent = 'The validation tiles now train the model too.'; }
             catch (error) { line.textContent = error.message; }
           }});
-          checked.replaceChildren(node('div', {class:'row wrap'}, [chip('AP ' + all.ap.toFixed(2), all.ap >= 0.8 ? 'ok' : 'warn'),
+          checked.replaceChildren(node('div', {class:'row wrap'}, [chip('Saved predictions · AP ' + all.ap.toFixed(2)),
             chip('Precision ' + percent(all.precision)), chip('Recall ' + percent(all.recall)), chip('F1 ' + all.f1.toFixed(2))]),
-            node('p', {class:'muted', text:all.tp + ' cells found as you drew them, ' + all.fp + ' extra, ' + all.fn + ' missed, over ' + result.tiles.length +
-              ' validation tile' + (result.tiles.length === 1 ? '' : 's') + '.'}),
+            node('p', {class:'muted', text:all.tp + ' found · ' + all.fp + ' extra · ' + all.fn + ' missed · ' + result.tiles.length + ' validation tile' + (result.tiles.length === 1 ? '' : 's')}),
             ...result.tiles.map(item => node('div', {class:'studio-folder'}, [node('span', {class:'grow', text:item.image + ' · ' + modelLabel(item.model), title:item.name}),
               node('span', {class:'muted', text:item.predicted + ' predicted / ' + item.corrected + ' yours · F1 ' + item.f1.toFixed(2)})])),
             node('div', {class:'row'}, [add]));
@@ -5126,16 +5856,38 @@
       });
       // Another image: its own tiles are drawn, and a tile being corrected is left behind.
       current.refreshTrainingModels = load;
+      current.refreshTrainingSelection = drawScores;
       const markersBefore = current.refreshMarkers;
-      current.refreshMarkers = () => { markersBefore?.(); reset(); load(); };
-      // After Train, look again until the new version is listed.
-      let timer = null;
-      const follow = async () => {
-        clearTimeout(timer);
-        const before = state.rounds || 0; await load();
-        if (box.isConnected && (state.rounds || 0) === before) timer = setTimeout(follow, 5000);
-        else if (box.isConnected) line.textContent = 'Trained ' + modelLabel(model()) + '. Place the next tile: this version predicts it.';
+      current.refreshMarkers = () => { markersBefore?.(); reset(); ++cellsRequest; found = null; configureTrainingCells(null); load(); };
+      // Share job notifications, including training started in another window.
+      // Refresh the catalogue at status transitions, without polling tiles forever.
+      const jobsBefore = current.jobsChanged;
+      const trainingJobs = jobs => jobs.filter(job => ['train_cellpose', 'score_cellpose'].includes(job.kind));
+      const stamp = jobs => JSON.stringify(trainingJobs(jobs).map(job => [job.id, job.status]));
+      let jobStamp = stamp(lastJobs);
+      current.jobsChanged = jobs => {
+        jobsBefore?.(jobs);
+        state.trainingBusy = trainingJobs(jobs).some(job => job.kind === 'train_cellpose' && ACTIVE_JOBS.includes(job.status));
+        const runs = jobs.filter(job => job.kind === 'train_cellpose');
+        if (!state.retrainSubmitting) {
+          const activeRun = runs.find(job => ACTIVE_JOBS.includes(job.status));
+          if (activeRun) state.trainingStartError = '';
+          if (state.trainingStartError) showTrainingStatus('failed', 'Training could not start: ' + state.trainingStartError);
+          else showTrainingJob(activeRun || runs[0]);
+        }
+        syncTrainAction();
+        const next = stamp(jobs);
+        if (next !== jobStamp && box.isConnected) {
+          jobStamp = next;
+          load();
+          const latest = trainingJobs(jobs)[0];
+          if (latest?.kind === 'score_cellpose') {
+            if (latest.status === 'done') line.textContent = 'Scores updated.';
+            else if (/failed|cancel/.test(latest.status)) line.textContent = latest.message;
+          }
+        }
       };
+      current.jobsChanged(lastJobs);
       load();
     };
 
@@ -5144,16 +5896,57 @@
       const controls = node('div'), counts = node('div', {class:'row wrap'}), status = node('p', {class:'muted', role:'status'});
       const rows = node('div', {class:'studio-pairs-scroll'});
       let found;
-      body.append(controls, counts, rows, status);
+      current.selectTableForImage=async image=>{
+        if(!found?.per_image)return false;
+        const row=found.rows.find(item=>item.roi===image.sample||item.image===image.name);
+        if(!row?.table_path||row.table_path===found.path)return false;
+        draw(await post(route('/phenotyping_inputs'),{table:row.table_path}));
+        return true;
+      };
+      const modelFolder=node('input',{type:'text',class:'grow','aria-label':'Phenotyping models folder'});
+      const modelNote=node('span',{class:'muted',role:'status'});
+      const useModelFolder=async()=>{
+        try{const setup=await post(route('/reference_setup'),{action:'folder',folder:modelFolder.value,timezone:Intl.DateTimeFormat().resolvedOptions().timeZone});
+          modelFolder.value=setup.folder;modelNote.textContent=setup.models.length?setup.models.length+' models in this folder.':'No models in this folder.';
+          document.dispatchEvent(new CustomEvent('spacemap-reference-setup',{detail:setup}));
+          if(setup.auto_reference)document.dispatchEvent(new CustomEvent('spacemap-auto-reference',{detail:setup.auto_reference}));
+        }catch(error){modelNote.textContent=error.message;}
+      };
+      const modelFolders=field('Models',node('div',{class:'inline'},[modelFolder,node('button',{class:'btn small',text:'Use',onclick:useModelFolder})]),
+        'Folder of trained or shared SPACEMAP phenotyping models. Choose and load a model under Model training. Only load models from people you trust.');
+      modelFolder.addEventListener('keydown',event=>{if(event.key==='Enter')useModelFolder();});
+      get(route('/reference_setup')).then(setup=>{modelFolder.value=setup.folder;}).catch(error=>{modelNote.textContent=error.message;});
+      body.append(controls, modelFolders, modelNote, counts, rows, status);
+      const scopeNote=node('div',{class:'hint',role:'status','data-phenotyping-image-scope':''});
+      body.insertBefore(scopeNote,rows);
+      const saveImages=()=>{
+        const images=[...found.selected_images];
+        imageSelectionSave=imageSelectionSave.catch(()=>{}).then(()=>post(route('/phenotyping_inputs'),{selected_images:images})).then(value=>{
+          document.dispatchEvent(new CustomEvent('spacemap-phenotyping-images',{detail:value}));
+        });
+        imageSelectionSave.catch(error=>{status.textContent=error.message;});
+        drawRows();
+      };
       const drawRows = () => {
         if (!found) return;
+        scopeNote.textContent=found.selected_images.length+' images selected · Used by training and phenotyping.';
+        const all=node('input',{type:'checkbox','aria-label':'Select all phenotyping images'});
+        const available=found.rows.filter(row=>row.table_path);
+        all.checked=available.length>0&&available.every(row=>found.selected_images.includes(row.roi));
+        all.indeterminate=found.selected_images.length>0&&!all.checked;
+        all.onchange=()=>{found.selected_images=all.checked?available.map(row=>row.roi):[];saveImages();};
         rows.replaceChildren(node('table', {class:'studio-counts studio-pairs studio-phenotyping-pairs'}, [
-          node('tr', {}, ['ROI image', 'Slide', 'Cells', 'Methods'].map(text => node('th', {text}))),
+          node('tr', {}, [node('th',{},[all]),...['Image', ...(found.per_image ? ['Cell table'] : []), 'Slide', 'Cells', 'Methods'].map(text => node('th', {text}))]),
           ...found.rows.map(row => {
             const openImage = async () => {
+              const request=stepRequest;
               if (!row.image_path) return;
+              const tableChanged = row.table_path && row.table_path !== found.path;
+              if (tableChanged) draw(await post(route('/phenotyping_inputs'), {table:row.table_path}));
               const added = await post('/session/' + encodeURIComponent(session) + '/add-image', {path:row.image_path});
               await chooseImage(added.images.find(item => item.id === added.added));
+              if (tableChanged&&selected==='tab7'&&request===stepRequest) await chooseStep('tab7');
+              return tableChanged;
             };
             const open = node('button', {class:'studio-item-name studio-file', text:row.image || row.roi, title:row.image_path || 'No matching ROI image', disabled:!row.image_path, onclick:async () => {
               try {
@@ -5161,27 +5954,40 @@
               } catch (error) { status.textContent = error.message; }
             }});
             const badges = node('span', {class:'studio-stages-done'});
-            (found.methods || []).forEach(item => {
+            (row.methods || found.methods || []).forEach(item => {
               const column = item.columns.find(c => row.results[c] > 0) || item.columns[0];
               const count = row.results[column] || 0;
               const title = item.name + ': ' + (count ? count.toLocaleString() + ' / ' + row.cells.toLocaleString() + ' cells in ' + column : 'No saved result') + '. Click to open this method.';
               const badge = node('b', {'data-phenotyping-method':item.id, role:'button', tabindex:'0',text:item.letter,
                 class:count ? (count >= row.cells ? 'done' : 'classified') : '',title,'aria-label':title});
               const go = async () => {
-                try { await openImage(); current.selectMethod?.(item.id); if (column) { await hooks.refreshPhenotypingLinks?.(); await colourCells(column); await loadColours(current); current.colour.value=column; } }
+                try { method=item.id;remember('method',method);if(await openImage())return; current.selectMethod?.(item.id); if (column) { await hooks.refreshPhenotypingLinks?.(); await colourCells(column); await loadColours(current); current.colour.value=column; } }
                 catch(error){status.textContent=error.message;}
               };
               badge.addEventListener('click',go);
               badge.addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();go();}});
               badges.append(badge);
             });
-            return node('tr', {'data-roi':row.roi}, [node('td', {}, [open]), node('td', {text:row.slide || '–'}), node('td', {class:'mono', text:row.cells ? row.cells.toLocaleString() : 'No cells'}), node('td', {}, [badges])]);
+            const pair=choice([['','Choose a table…'],...found.tables.map(path=>[path,path.split('/').pop()])],row.table_path||'','Cell table for '+row.roi);
+            pair.title=row.table_path||'Matched by filename. Choose a table to fix the pairing.';
+            pair.onchange=async()=>{
+              pair.disabled=true;status.textContent='Saving pairing…';
+              try{draw(await post(route('/phenotyping_inputs'),{pair:{image:row.roi,table:pair.value}}));await hooks.refreshPhenotypingLinks?.();}
+              catch(error){status.textContent=error.message;pair.disabled=false;pair.value=row.table_path||'';}
+            };
+            const include=node('input',{type:'checkbox','aria-label':'Process image '+row.roi,disabled:!row.table_path});
+            include.checked=found.selected_images.includes(row.roi);
+            include.onchange=()=>{found.selected_images=include.checked?[...found.selected_images,row.roi]:found.selected_images.filter(name=>name!==row.roi);saveImages();};
+            return node('tr', {'data-roi':row.roi,'data-view-path':row.image_path||''}, [node('td',{},[include]),node('td', {}, [open]),...(found.per_image?[node('td',{},[pair])]:[]),node('td', {text:row.slide || '–'}), node('td', {class:'mono','data-cell-count':'',text:row.cells == null ? (row.table_path&&!row.count_error?'Counting…':'—') : row.cells.toLocaleString(), title:row.count_error||(!row.table_path?'Pair a cell table with this image':'Cells in the paired table')}), node('td', {}, [badges])]);
           })]));
       };
-      const draw = value => {
+      const draw = (value, summaryOnly=false) => {
         found = value;
         status.textContent = (found.warnings || []).join(' ');
         current.tablePath = value.path;
+        current.columns = value.columns;
+        syncColour(current);
+        if (!summaryOnly) {
         const mutate = async (payload, tableChanged=false) => {
           status.textContent = 'Saving…';
           try {
@@ -5202,41 +6008,93 @@
           return field(label, input, tip);
         };
         const tables = Array.from(new Set([found.path, ...found.tables].filter(Boolean)));
-        const table = choice([['', 'Choose a combined table…'], ...tables.map(path => [path, path.split('/').pop()])], found.path, 'Phenotyping combined table');
+        const table = choice([['', 'Choose a cell table…'], ...tables.map(path => [path, path.split('/').pop()])], found.path, 'Phenotyping cell table');
         table.title = found.path;
         table.addEventListener('change', () => { if (table.value) mutate({table:table.value}, true); });
         const roles = node('details', {class:'studio-options'}, [node('summary', {text:'Column roles'})]);
-        const roleDraft = {...found.roles, label:found.segmentation_label || ''};
-        [['roi', 'ROI', 'The column identifying the image or ROI for each cell.'],
-         ['slide', 'Slide', 'The column identifying the physical slide containing each ROI, usually slide. Patient/timepoint sample IDs may identify a different grouping.'],
-         ['cell_id', 'Cell ID', 'The unique ID of each cell across the combined table. Batch correction creates cell_id. Local segmentation labels repeat between images and cannot be used here.'],
-         ['label', 'Segmentation label', 'The original numbered cell in the mask or boundaries, usually label. Together with ROI it connects each measurement to its polygon. This differs from the unique merged Cell ID.']].forEach(([key, label, tip]) => {
-          const pick = choice([['', key === 'slide' ? 'No slide column' : 'Choose a column…'], ...found.columns.map(name => [name, name])], roleDraft[key], 'Phenotyping ' + label + ' column');
+        const roleDraft = {...found.roles, label:found.segmentation_label || '', image:found.single_image || ''};
+        [['roi', 'Image', 'Optional. Use an image-name column for a merged table. Tissue-piece numbers such as tissue_roi are not image names.'],
+         ['slide', 'Slide', 'Optional. Groups images from the same slide.'],
+         ['cell_id', 'Cell ID', 'Unique across this table. For a single image, label usually works.'],
+         ['label', 'Segmentation label', 'Cell number in the segmentation, usually label. Links each row to its cell.']].forEach(([key, label, tip]) => {
+          const pick = choice([['', key === 'slide' ? 'No slide column' : key === 'roi' ? 'No image column — one image per table' : 'Choose a column…'], ...found.columns.map(name => [name, name])], roleDraft[key], 'Phenotyping ' + label + ' column');
           pick.addEventListener('change', () => {
             roleDraft[key] = pick.value;
-            if (!roleDraft.roi || !roleDraft.cell_id) { status.textContent = 'Choose the ROI and Cell ID columns to save.'; return; }
+            if (!roleDraft.roi && !roleDraft.cell_id && found.columns.includes('label')) roleDraft.cell_id = 'label';
+            if (!roleDraft.cell_id) { status.textContent = 'Choose a unique Cell ID column to save.'; return; }
             mutate({roles:{...roleDraft}});
           });
           roles.append(field(label, pick, tip));
         });
+        if (!roleDraft.roi) {
+          const image = choice([['', 'Choose an image…'], ...found.rows.filter(row => row.image_path).map(row => [row.roi, row.image])], roleDraft.image, 'Phenotyping table image');
+          image.addEventListener('change', () => mutate({roles:{...roleDraft, image:image.value}}));
+          roles.append(field('Table image', image, 'Matched by filename. Choose the image here if the table has a different name.'));
+        }
         fill(controls,
-          directory('images', 'Images', 'ROI images to open in the viewer. They are matched to the ROI names in the combined table.'),
-          directory('tables', 'Tables', 'Folder containing combined CSV or Parquet measurements. Choose the Batch correction output below.'),
-          field('Cell table', table, 'The combined input for whole-table phenotyping. Batch correction’s Use this table selects it here and remembers it across restarts. Image layer choices do not change the input for whole-table clustering.'),
-          directory('output', 'Output', 'Phenotyping output folder shared with classic. Result columns are saved beside the selected combined table; jobs and their logs remain in the project’s Jobs list.'), roles);
+          directory('images', 'Images', 'Images to open in the viewer.'),
+          directory('tables', 'Tables', 'CSV or Parquet cell tables from Segmentation, Cell tagging, or Batch correction.'),
+          ...(found.per_image ? [] : [field('Cell table', table, 'Phenotyping uses this table. Batch correction is optional.')]),
+          directory('output', 'Output', 'Folder for phenotyping exports. New columns are saved beside the cell table.'), roles);
+        if(found.per_image)roles.prepend(field('Active table',table,'Opening an image selects its paired table. These column roles apply to this table.'));
         controls.append(node('button', {class:'btn small',text:'View data',onclick:() => hooks.showCombinedData?.()}));
-        fill(counts, chip(found.rows.length + ' ROIs'), chip(found.cells.toLocaleString() + ' cells'),
-          found.cell_id_column ? chip('Cell IDs available', 'ok', 'Cell IDs are checked for missing or repeated values before a run.') : chip('Choose Cell ID', 'warn', 'Choose the unique Cell ID column under Column roles, or select the merged output from Batch correction.'),
+        }
+        fill(counts, chip(found.rows.length + ' images'), chip(found.cells == null ? 'Counting…' : found.cells.toLocaleString() + ' cells in table'),
+          found.cell_id_column ? chip('Cell IDs available', 'ok', 'IDs are checked before a run.') : chip('Choose Cell ID', 'warn', 'Choose a unique Cell ID under Column roles.'),
           chip(found.result_columns.length + ' result columns'));
         drawRows();
+        if(found.per_image && found.summaries_ready !== false){
+          const snapshot=found;
+          // Count paired files independently, keeping the controls usable while large CSVs are read.
+          const pending=found.rows.filter(row=>row.table_path);
+          const worker=async()=>{
+            while(pending.length&&body.isConnected&&found===snapshot){
+              const row=pending.shift();
+              try{const summary=await get(route('/phenotyping_inputs')+'?image='+encodeURIComponent(row.roi));
+                if(found!==snapshot||!body.isConnected)return;
+                if(summary.table_path===row.table_path)Object.assign(row,summary);
+              }catch(error){row.count_error=error.message;}
+              if(found===snapshot&&body.isConnected){drawRows();
+                const ready=found.rows.filter(item=>item.table_path&&item.cells!=null);
+                if(ready.length===found.rows.filter(item=>item.table_path).length)
+                  fill(counts,chip(found.rows.length+' images'),chip(ready.reduce((n,item)=>n+item.cells,0).toLocaleString()+' cells'),chip(ready.length+' tables paired'));
+              }
+            }
+          };worker();worker();
+        }
       };
       const load = async () => {
-        try { const value = await get(route('/phenotyping_inputs')); if (body.isConnected) draw(value); }
+        try {
+          const value = await get(route('/phenotyping_inputs')+'?summaries=0');
+          if (!body.isConnected) return;
+          draw(value);
+          // Counts must not delay controls, marker choices, or opening Flow.
+          const snapshot=found;
+          get(route('/phenotyping_inputs')).then(summary=>{
+            if (!body.isConnected || found!==snapshot) return;
+            // Preserve any image checkboxes changed while counting.
+            summary.selected_images=found.selected_images;
+            draw(summary,true);
+          }).catch(error=>{if(body.isConnected && found===snapshot)status.textContent=error.message;});
+        }
         catch (error) { if (body.isConnected) status.textContent = error.message; }
       };
-      const refresh = async () => { await load(); await hooks.refreshPhenotypingLinks?.(); loadColours(current); };
-      current.refreshItems = refresh;
-      followJobs(current, ['leiden', 'som', 'vortex', 'mr_ml', 'name_clusters', 'consensus_ml', 'subphenotype', 'resolve_all'], refresh);
+      current.referenceSaved=detail=>{
+        if(!found||detail.table!==found.path||!detail.labels)return;
+        const row=found.rows.find(item=>item.roi===detail.roi || item.image===detail.roi ||
+          (found.per_image&&item.table_path===detail.table));
+        if(!row)return;
+        const delta=detail.labels.reduce((n,label)=>n+(String(detail.values[String(label)]||'').trim()?1:0)-(String(detail.previous[String(label)]||'').trim()?1:0),0);
+        row.results[detail.column]=Math.max(0,(row.results[detail.column]||0)+delta);
+        const tr=[...rows.querySelectorAll('tr[data-roi]')].find(tr=>tr.dataset.roi===row.roi);
+        const badge=tr?.querySelector('[data-phenotyping-method="reference"]');
+        if(badge){const count=row.results[detail.column];badge.className=count?(count>=row.cells?'done':'classified'):'';
+          badge.title='Manual reference: '+count.toLocaleString()+(row.cells==null?'':' / '+row.cells.toLocaleString())+' cells in '+detail.column;}
+      };
+      // Progress updates the list only. Saved results refresh cell data once,
+      // through the shared job completion handler, whichever step is open.
+      current.refreshItems = load;
+      followJobs(current, CELL_RESULT_JOBS, load);
       load();
     };
     TOOLS.tab7 = current => {
@@ -5247,17 +6105,24 @@
       body.append(node('div', {class:'row field'}, [node('label', {class:'lbl', text:'Method'}), picker, tip]),
         field('Colour by', colour, 'Colour the cells on the image by any phenotype column of the table.'));
       const holder = node('div', {class:'studio-method'});
-      const cells = section('Folders and tables', {tip:'Choose the combined measurements from Batch correction. Click an ROI image to open it. L Leiden · S SOM · V Vortex · T Threshold/RESOLVE · C Consensus ML · M MR-ML · R Manual reference. Green means saved results exist; a dashed border means only some cells have values. Click a letter to open that method and its result.'});
+      const cells = section('Folders and tables', {tip:'Use a cell table directly; Batch correction is optional. Click an image to view it, or a method letter to see its results.'});
       current.body.append(cells.box, freshnessNote(['combined']), box, holder);
       phenotypingInputs(current, cells.body);
       current.colour = colour;
       colour.addEventListener('change', () => { if (colour.value !== '__live__') colourCells(colour.value); });
-      loadColours(current);
       const draw = () => {
         const chosen = METHODS.find(item => item.id === method) || METHODS.find(item => item.id === 'resolve');
         method = chosen.id; picker.value = method; setTip(tip, chosen.tip);
-        holder.replaceChildren(); selectionTools = null; current.runBar([]); current.sync = null; current.publicationRun = null; current.publicationUpdate?.(); clearFigures();
-        (PANELS[chosen.id] || classicMethod)(current, holder, chosen);
+        // Each method owns its panel and footer. An older asynchronous load may
+        // finish after the user switches methods; it must not claim the new UI.
+        const pane=node('div',{'data-phenotyping-panel':chosen.id});
+        holder.replaceChildren(pane); selectionTools = null; current.runBar([]); current.sync = null;
+        current.useReviewedMarkers=null;current.publicationRun = null; current.publicationUpdate?.(); clearFigures();
+        const owner=new Proxy(current,{
+          get:(target,key)=>key==='runBar'?((...args)=>{if(pane.isConnected)target.runBar(...args);}):target[key],
+          set:(target,key,value)=>{if(pane.isConnected)target[key]=value;return true;}
+        });
+        (PANELS[chosen.id] || classicMethod)(owner, pane, chosen);
       };
       picker.addEventListener('change', () => { method = picker.value; remember('method', method); draw(); });
       current.selectMethod = selected => { if (METHODS.some(item=>item.id===selected)) { method=selected;remember('method',method);draw(); } };
@@ -5335,10 +6200,10 @@
     };
 
     const loadColours = async current => {
-      const colour = current.colour;
+      const colour = current?.colour;
       if (!colour) return;
       try {
-        const available = await get(route(current.id === 'tab7' ? '/phenotyping_inputs' : '/selection_options'));
+        const available = await get(route(current.id === 'tab7' ? '/phenotyping_inputs' : '/selection_options')+(current.id === 'tab7'?'?summaries=0':''));
         current.columns = available.columns;
       } catch (_) { current.columns = []; }
       syncColour(current);
@@ -5347,15 +6212,16 @@
       const colour = current?.colour;
       if (!colour || !colour.isConnected || document.activeElement === colour) return;
       const cells = cellsState();
-      const options = [['', 'Single colour'], ...(current.columns || []).map(name => [name, name])];
+      const options = [['', 'Single colour'], ...(current.columns || []).filter(name=>!(cells?.stagedRemovedColumns||[]).includes(name)).map(name => [name, name])];
       if (cells?.live) options.unshift(['__live__', 'Live RESOLVE']);
-      if (cells?.color_by && !options.some(([key]) => key === cells.color_by)) options.push([cells.color_by, cells.color_by]);
+      if (cells?.color_by?.startsWith('preview:') && !options.some(([key]) => key === cells.color_by)) options.push([cells.color_by, cells.color_by]);
       colour.replaceChildren(...options.map(([key, text]) => node('option', {value:key, text})));
       colour.value = cells ? (cells.live ? '__live__' : cells.color_by) : '';
       colour.disabled = !cells;
     };
 
     const PANELS = {};
+    PANELS.flow = (current, holder) => window.launchFlowWorkspace?.(holder);
     PANELS.resolve = async (current, holder) => {
       holder.append(node('p', {class:'muted', text:'Reading RESOLVE settings…'}));
       let saved;
@@ -5522,6 +6388,7 @@
       selectionTools = window.createStudioSelection({holder:rules, node, get, session, runCommand, showResult, setSelectionTool});
       selectionTools.update(currentSpec);
     };
+    window.addEventListener('studio-reference-assessment',async()=>{remember('viz-part','agreement');await chooseStep('tab9');});
     let referencePredictionIntent = null;
     window.addEventListener('studio-reference-method', async event => {
       if (!['reference','mr_ml'].includes(event.detail?.method)) return;
@@ -5529,9 +6396,15 @@
       method=event.detail.method;remember('method',method);
       await chooseStep('tab7');
     });
-    document.addEventListener('spacemap-reference-updated', () => {
+    document.addEventListener('spacemap-reference-updated', event => {
       const current=frame;
-      if(current?.id==='tab7') { loadColours(current); clearTimeout(current.referenceCountsTimer); current.referenceCountsTimer=setTimeout(()=>current.refreshItems?.(),600); }
+      if(current?.id!=='tab7')return;
+      const column=event.detail?.column;
+      if(column&&!current.columns?.includes(column))current.columns=[...(current.columns||[]),column];
+      // Labels change cell values, not image/table pairing or total cell counts.
+      // Keep those controls in place while the viewer repaints the affected cells.
+      syncColour(current);
+      current.referenceSaved?.(event.detail || {});
     });
     PANELS.mr_ml = (current, holder) => {
       current.mrmlIntent = referencePredictionIntent; referencePredictionIntent = null;
@@ -5664,7 +6537,8 @@
         try { const found = await get(route('/marker_choices') + '?method=' + encodeURIComponent(method)); groups = found.groups || []; roles = found.roles || {}; } catch (_) { /* whole table only */ }
         const options = [['', 'The whole table'], ...groups.map(name => [name,
           name === roles.roi ? 'Each ROI (' + name + ')' : name === roles.slide ? 'Each slide (' + name + ')' : 'Each value of ' + name])];
-        if (values.batch_id_col && !options.some(([key]) => key === values.batch_id_col)) options.push([values.batch_id_col, values.batch_id_col]);
+        if (values.batch_id_col && !options.some(([key]) => key === values.batch_id_col))
+          options.push([values.batch_id_col, 'The whole table (' + values.batch_id_col + ' unavailable)']);
         within.replaceChildren(...options.map(([key, text]) => node('option', {value:key, text})));
         within.value = values.batch_id_col || '';
       };
@@ -5704,23 +6578,32 @@
     const PALETTE = ['#e6194b', '#3cb44b', '#4363d8', '#f58231', '#911eb4', '#46f0f0', '#f032e6', '#bcf60c', '#fabebe', '#008080',
       '#e6beff', '#9a6324', '#fffac8', '#800000', '#aaffc3', '#808000', '#ffd8b1', '#000075', '#a9a9a9', '#ffe119'];
     const colourKey = name => String(name).replace(/[^A-Za-z0-9_]+/g, '_').replace(/^_+|_+$/g, '') || 'item';
-    const groupList = ({results, holder, state, kind, noun, running, none}) => {
+    const groupList = ({results, state, kind, noun, running, none}) => {
       state.names = state.names || {}; state.colours = state.colours || {};
-      let savedColours = null, presetNames = [];
-      const look = async () => {
-        let jobs;
-        try { jobs = (await get(route('/jobs'))).jobs || []; } catch (_) { return false; }
-        try { const palette = await get(route('/colours')); savedColours = palette.colours; presetNames = palette.phenotypes || []; } catch (_) { savedColours ||= {}; }
+      state.restoredNames ||= new Set(); state.nameEdits ||= {};
+      const nameRequests = new Map();
+      let savedColours = {}, presetNames = [], requestSequence = 0, renderVersion = 0, renderedStamp = '';
+      const look = async suppliedJobs => {
+        const sequence = ++requestSequence;
+        let jobs = suppliedJobs;
+        try { jobs ||= (await get(route('/jobs'))).jobs || []; } catch (_) { return false; }
         const going = jobs.find(job => job.kind === kind && ['starting', 'running'].includes(job.status));
         const table = frame?.tablePath || (await post(route('/phenotyping_link'), {})).table?.path;
-        const last = jobs.find(job => job.kind === kind && job.status === 'done' && job.result?.clusters && (!table || job.result.table === table));
-        if (!holder.isConnected) return true;
-        if (!last) { results.body.replaceChildren(node('p', {class:'muted', text:going ? running + ': ' + (going.message || '') : none})); return !going; }
-        const result = last.result, inputs = {}, swatches = {};
-        if (!Object.prototype.hasOwnProperty.call(state.names, last.id)) {
-          try { state.names[last.id] = (await get(route('/cluster_names') + '?job_id=' + encodeURIComponent(last.id))).names || {}; }
-          catch (_) { state.names[last.id] = {}; }
+        const last = jobs.find(job => job.kind === kind && job.status === 'done' && job.result?.clusters && (!table || job.result.table === table || job.result.tables?.includes(table)));
+        if (!results.body.isConnected || sequence !== requestSequence) return true;
+        if (!last) {
+          renderedStamp = ''; ++renderVersion;
+          figures.querySelector('[data-figure="'+kind+'"]')?.remove();
+          results.body.replaceChildren(node('p', {class:'muted', text:going ? running + ': ' + (going.message || '') : none}));
+          return !going;
         }
+        const stamp = JSON.stringify([last.id, last.result]);
+        if (stamp === renderedStamp) return !going && !last.result.profile_pending;
+        renderedStamp = stamp;
+        const version = ++renderVersion, isCurrent = () => results.body.isConnected && version === renderVersion;
+        const result = last.result, inputs = {}, swatches = {};
+        const resultTable = () => result.image_tables?.[openTableName(Object.keys(result.image_tables || {}))] || result.table;
+        const restoreNames = !state.restoredNames.has(last.id), touchedNames = state.nameEdits[last.id] ||= new Set();
         const names = state.names[last.id] = state.names[last.id] || {};
         state.phenotypeColourEdits ||= {};
         const colours = state.phenotypeColourEdits[last.id] ||= {};
@@ -5732,17 +6615,22 @@
           // Unnamed CN/cluster IDs use the same durable palette as cell layers and maps.
           const values = Array.from(new Set([...result.clusters.map(item => item.name), ...Object.values(names).filter(Boolean)]));
           const palette = values.length ? await post(route('/colours'), {names:values}) : await get(route('/colours'));
+          if (!isCurrent()) return;
           savedColours = palette.colours; presetNames = palette.phenotypes || [];
         };
-        await refreshPalette();
         const note = node('p', {class:'muted', role:'status'}), detail = node('div', {class:'studio-group-detail'});
         const known = () => Array.from(new Set([...Object.values(names).filter(Boolean), ...presetNames]));
         const colourOf = group => sharedColour(names[group] || group) || '#888888';
+        const syncAppearance = () => hooks.clusterAppearance?.({job:last.id, table:resultTable(), column:result.column,
+          names:{...names}, colours:Object.fromEntries(result.clusters.map(item => [item.name, colourOf(item.name)]))});
         let picked = state.picked?.[last.id] || [];
+        const reviewButtons=[];
+        const reviewButton=()=>{const b=node('button',{class:'btn small',text:'Flag for review',disabled:!picked.length,title:'Flag the selected groups in each image of this run. Add suggested names afterwards in Review.',onclick:async()=>{b.disabled=true;try{await window.SpacemapReview.flagResult(last.id,[...picked]);}finally{b.disabled=!picked.length;}}});reviewButtons.push(b);return b;};
         // Suggestions from the reference cells in each cluster and the reference model's marker vote (not for
         // neighbourhoods, which are made of phenotypes).
-        const suggests = kind !== 'neighbourhoods';
-        let hints = null, heat = null;
+        const storedHints = kind === 'subphenotype' ? result.guidance : null;
+        const suggests = kind !== 'neighbourhoods' && !storedHints;
+        let hints = storedHints || null, heat = null;
         const hintBoxes = {};
         const summaryBoxes = {};
         const drawSummaries = mode => {
@@ -5762,23 +6650,34 @@
           });
         };
         const clusterHints = group => hints?.clusters?.[group] || null;
+        let askSequence = 0;
         const askClusters = async groups => {
           if (chatState.busy) { note.textContent = 'Wait for the Assistant’s current reply.'; return; }
+          const sequence = ++askSequence, source = sourcePick.value;
+          const currentAsk = () => sequence === askSequence && isCurrent() && sourcePick.value === source;
+          if (suggests && /^(model|library):/.test(sourcePick.value) && (readySource !== sourcePick.value || hintRequest?.source === sourcePick.value)) {
+            await loadHints();
+            if (!hints?.model_id || readySource !== sourcePick.value) return;
+          }
+          if (!currentAsk()) return;
           await onPick(groups, true);
           await hooks.imageSettled?.(5000);
+          if (!currentAsk() || picked.length !== groups.length || !groups.every((group, i) => picked[i] === group)) return;
           await send('Suggest phenotype names for ' + (groups.length ? groups.join(', ') : 'all clusters') +
             ' from the ' + kind + ' run ' + last.id + '. Compare their full marker profiles with the other clusters, reference labels and ROI distribution. ' +
-            'Use the attached cluster heatmap and current view as supporting context, explain uncertainty, and fill the cluster name boxes for review. The numerical profiles are supplied in RESULTS; use cluster_profiles or sample_cells if more evidence is needed. Return a name_clusters action. Do not infer marker positivity from display colour alone.', null, 'suggest',
+            'Use the attached cluster heatmap, selected trained-model predictions and manual labels as supporting evidence. Model votes are not independent accuracy; explain disagreements and uncertainty, and fill the cluster name boxes for review. The numerical profiles are supplied in RESULTS; use cluster_profiles or sample_cells if more evidence is needed. Return a name_clusters action. Do not infer marker positivity from display colour alone.', null, 'suggest',
             {job_id:last.id,clusters:groups,image:heat?.capture?.()});
         };
         const rows = result.clusters.map((item, index) => {
           const suggestion = (item.top_markers || []).slice(0, 2).map(marker => marker + '+').join(' ');
           const list = node('datalist', {id:'names-' + kind + '-' + index});
           const name = node('input', {type:'text', maxlength:'60', placeholder:item.name, value:names[item.name] || '', list:list.id, 'aria-label':noun + ' of ' + item.name});
+          name.addEventListener('input', () => touchedNames.add(item.name));
           name.addEventListener('focus', () => list.replaceChildren(...Array.from(new Set([...(clusterHints(item.name)?.suggestions || []).map(s => s.label),
             suggestion, ...known(), ...(hints?.labels || []).map(entry => entry.label)])).filter(Boolean).map(value => node('option', {value}))));
           const swatch = node('input', {type:'color', value:colourOf(item.name, index), 'aria-label':'Colour of ' + item.name});
           name.addEventListener('change', async () => {
+            touchedNames.add(item.name);
             names[item.name] = name.value.trim();
             drawHeatmap();
             try { await refreshPalette(); drawHeatmap(); }
@@ -5811,10 +6710,11 @@
           line.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); line.click(); } });
           const hint = node('div', {class:'studio-hints'}); hintBoxes[item.name] = hint;
           return node('div', {class:'studio-class-row'}, [line, node('div', {class:'studio-class-name'}, [name, list, swatch,
-            node('button', {class:'btn small',text:'Ask AI','aria-label':'Ask AI about ' + item.name,title:'Review this cluster using all marker profiles, reference labels and the current view',onclick:() => askClusters([item.name])})]), hint]);
+            !suggests ? node('button', {class:'btn small',text:'Ask AI','aria-label':'Ask AI about ' + item.name,title:'Review this cluster using all marker profiles, reference labels and the current view',onclick:() => askClusters([item.name])}) : null].filter(Boolean)), hint]);
         });
         const show = node('button', {class:'btn small', text:'Show on the image', onclick:async () => {
-          try { showResult(await runCommand('show_job_result', {job_id:last.id})); } catch (error) { showResult({message:error.message}); }
+          try { await hooks.refreshPhenotypingLinks?.(); await onPick(picked, true); }
+          catch (error) { note.textContent = error.message; }
         }});
         const save = node('button', {class:'btn primary', text:'Save names', onclick:async () => {
           Object.entries(inputs).forEach(([group, input]) => { names[group] = input.value.trim(); });
@@ -5845,17 +6745,32 @@
           catch (error) { note.textContent = error.message; }
           finally { save.disabled = false; }
         }});
-        const referencePick = node('select', {'aria-label':'Reference column for suggestions'});
-        const hintNote = node('span', {class:'muted grow'});
-        results.body.replaceChildren(...[node('p', {class:'muted', text:result.clusters.length + ' groups in ' + result.column + ' · ' + result.cells.toLocaleString() +
-            ' cells · click a group to see it (Shift or Ctrl for several)'}),
+        const sourcePick = node('select', {'aria-label':'Cluster naming model'});
+        let hintGeneration = 0, readySource = '', sourceModels = [], hintRequest = null;
+        const hintNote = node('span', {class:'muted grow',role:'status'});
+        const suggestButton = node('button', {class:'btn small',text:'Suggest names',disabled:true,onclick:() => loadHints()});
+        const namingHelp = 'Models are the same saved versions used in Manual reference. Predictions use matching features in this clustering and the model’s preprocessing; missing training features use a cached model fitted to the shared features. No AI is needed. Reference cells use existing manual labels and nearby marker profiles instead. Click a suggestion to fill its name, then Save names. Scores are not accuracy. Ask AI compares the model evidence with the heatmap. Details are in each suggestion’s ?.';
+        const namingControls = node('div', {class:'studio-cluster-suggestions'}, [
+          node('div', {class:'row'}, [node('strong', {class:'grow',text:'Name suggestions'}),help(namingHelp)]),
+          node('div', {class:'row'}, [node('label', {class:'lbl',text:'Model'}), sourcePick]),
+          node('div', {class:'row wrap'}, [suggestButton,
+            node('button',{class:'btn small',text:'Ask AI','aria-label':'Ask AI about clusters',title:'Review selected clusters, or all clusters when none are selected',onclick:() => askClusters(picked)}),hintNote])]);
+        const counts=node('div',{class:'row wrap'},[
+          node('span',{class:'muted',text:result.clusters.length+' groups · '+result.cells.toLocaleString()+' cells'}),
+          help('Column: '+result.column+'. Click a group to show it. Shift or Ctrl selects several. Give groups the same name to merge them, then Save names.')
+        ]);
+        if(kind==='subphenotype'){
+          const checks=result.checks||[],stability=Object.entries(result.stability||{}).filter(([,v])=>Number.isFinite(v));
+          if(checks.length)counts.append(chip('Checks '+checks.filter(c=>c.verdict==='keep').length+'/'+checks.length),
+            help('Groups passing size, batch coverage and marker separation checks. These checks do not validate biological names.'));
+          stability.forEach(([name,value])=>counts.append(chip((stability.length>1?name+' · ':'')+'Stability '+value.toFixed(2))));
+          if(stability.length)counts.append(help('Agreement across repeated clustering runs (adjusted Rand index). Near 1 is consistent; near 0 is poor agreement. This is separate from the cluster checks.'));
+        }
+        results.body.replaceChildren(...[counts,
           result.profile_notice ? node('p', {class:'muted',text:result.profile_notice}) : null,
-          result.summary ? node('p', {class:'muted', text:result.summary + '.'}) : null,
-          node('div', {class:'row'}, [show, node('button',{class:'btn small',text:'Ask AI',title:'Review selected clusters, or all clusters when none are selected',onclick:() => askClusters(picked)})]),
-          suggests ? node('div', {class:'row wrap'}, [node('label', {class:'lbl', text:'Suggest from'}), referencePick, help('Your reference cells (a column you labelled in ' +
-            'Manual reference) name the clusters two ways: which clusters hold them (the top three per cluster, as a share of each label’s ' +
-            'reference cells), and the reference model’s vote on each cluster’s markers, as when labelling cells. The more reference cells a ' +
-            'cluster holds, the more they count.'), hintNote]) : null,
+          result.summary && kind!=='subphenotype' ? node('p', {class:'muted', text:result.summary + '.'}) : null,
+          node('div', {class:'row'}, [show, reviewButton(), !suggests ? node('button',{class:'btn small',text:'Ask AI',title:'Review selected clusters, or all clusters when none are selected',onclick:() => askClusters(picked)}) : null].filter(Boolean)),
+          suggests ? namingControls : null,
           node('div', {class:'studio-classes'}, rows), detail, node('div', {class:'row'}, [save]), note].filter(Boolean));
         // The picked group: its cells on the image, its top markers, and where it is.
         const openRoi = async (roi, shown) => {
@@ -5866,7 +6781,7 @@
           note.textContent = 'Opening ' + roi + '…';
           await chooseImage(image);
           for (let i = 0; i < 150; i++) {
-            if (await showCellGroups(result.column, shown, result.profile?.rows || result.clusters.map(item => item.name))) { note.textContent = 'Showing ' + shown.join(', ') + ' in ' + roi + '.'; return; }
+            if (await showCellGroups(result.column, shown, result.profile?.rows || result.clusters.map(item => item.name), {table:resultTable()})) { note.textContent = 'Showing ' + shown.join(', ') + ' in ' + roi + '.'; return; }
             await new Promise(resolve => setTimeout(resolve, 200));
           }
           note.textContent = roi + ' has no cells in this table.';
@@ -5895,7 +6810,7 @@
           }});
           detail.replaceChildren(node('div', {class:'studio-import'}, [
             node('div', {class:'row'}, [node('b', {text:(names[group] ? names[group] + ' (' + group + ')' : group)}), node('span', {class:'muted grow', text:item.top_markers.join(', ')}), top]),
-            places.length ? node('p', {class:'lbl', text:'Where: ' + places.length + ' ROI' + (places.length === 1 ? '' : 's') + ' (most cells first; click to open)'}) : null,
+            places.length ? node('p', {class:'lbl', text:'Where: ' + places.length + ' ROI' + (places.length === 1 ? '' : 's'),title:'Most cells first. Click an ROI to open it.'}) : null,
             places.length ? node('div', {class:'studio-where'}, places.slice(0, 24).map(place => node('button', {type:'button', class:'studio-measure', onclick:() => openRoi(place.roi, [group])}, [
               node('span', {class:'grow', text:place.roi}), node('span', {class:'mono', text:place.cells.toLocaleString()})]))) : null]));
         };
@@ -5905,6 +6820,7 @@
           value = String(value || '').trim();
           if (!value) return;
           groups.forEach(group => {
+            touchedNames.add(group);
             names[group] = value;
             if (inputs[group]) inputs[group].value = value;
           });
@@ -5916,6 +6832,21 @@
         const combined = groups => {
           // The picked clusters' suggestions together: reference cells added up, marker votes weighted by size.
           const sizes = Object.fromEntries(result.clusters.map(item => [item.name, item.cells]));
+          if(storedHints || hints?.model_id){
+            const guidance = hints;
+            const scores={}, refs={};let total=0;
+            groups.forEach(group=>{const row=clusterHints(group), weight=guidance.model_id?sizes[group]:1;
+              const votes=guidance.model_id?row?.model_votes:row?.reference_counts;
+              if(votes&&Object.keys(votes).length){total+=guidance.model_id?weight:Object.values(votes).reduce((a,b)=>a+b,0);
+                Object.entries(votes).forEach(([label,value])=>{scores[label]=(scores[label]||0)+value*weight;});}
+              Object.entries(row?.reference_counts||{}).forEach(([label,n])=>{refs[label]=(refs[label]||0)+n;});
+            });
+            const ranked=Object.entries(scores).sort((a,b)=>b[1]-a[1]);
+            if(guidance.allowed&&ranked.length&&!guidance.allowed.includes(ranked[0][0]))return [];
+            return ranked.filter(([name])=>!guidance.allowed||guidance.allowed.includes(name)).slice(0,4).map(([label,score])=>({
+              label,score:score/Math.max(total,1),reference:refs[label]||0,
+              of:(refs[label]||0)/Math.max(guidance.labels.find(r=>r.label===label)?.cells||0,1)}));
+          }
           const byLabel = {};
           groups.forEach(group => (clusterHints(group)?.suggestions || []).forEach(entry => {
             const one = byLabel[entry.label] || (byLabel[entry.label] = {label:entry.label, score:0, weight:0, reference:0, of:0});
@@ -5925,8 +6856,8 @@
         };
         const drawNamer = () => {
           if (!picked.length) {
-            namer.replaceChildren(node('p', {class:'muted', text:'Pick clusters here or in the list (Shift or Ctrl for several), then name them together.'}),
-              node('button',{class:'btn small',text:'Ask AI',onclick:() => askClusters([])}));
+            namer.replaceChildren(...(suggests ? [] : [node('p', {class:'muted', text:'Select clusters to name.'}),
+              node('button',{class:'btn small',text:'Ask AI',onclick:() => askClusters([])})]));
             return;
           }
           const input = node('input', {type:'text', maxlength:'60', placeholder:'Name for ' + picked.length + ' cluster' + (picked.length === 1 ? '' : 's'), 'aria-label':'Name the picked clusters'});
@@ -5936,26 +6867,32 @@
           const apply = node('button', {class:'btn small primary', text:'Name ' + picked.length, onclick:() => nameGroups(picked, input.value)});
           input.addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); apply.click(); } });
           const chips = combined(picked).map(entry => node('button', {type:'button', class:'btn small ghost studio-suggestion',
-            title:'Score ' + entry.score.toFixed(2) + ' · ' + entry.reference + ' reference cells in ' + (picked.length === 1 ? 'this cluster' : 'these clusters') +
+            title:(hints?.model_id?'Mean model score, not accuracy. ':'')+'Score ' + entry.score.toFixed(2) + ' · ' + entry.reference + ' reference cells in ' + (picked.length === 1 ? 'this cluster' : 'these clusters') +
               ' (' + Math.round(100 * entry.of) + '% of all ' + entry.label + ' references)', text:entry.label + ' · ' + Math.round(100 * entry.score) + '%',
             onclick:() => nameGroups(picked, entry.label)}));
-          namer.replaceChildren(node('div', {class:'row wrap'}, [node('b', {text:picked.length + ' picked'}), input, options, apply]),
-            chips.length ? node('div', {class:'row wrap'}, [node('span', {class:'muted', text:'Suggested:'}), ...chips]) : null);
-          namer.append(node('button',{class:'btn small',text:'Ask AI',onclick:() => askClusters(picked)}));
+          namer.replaceChildren(node('div', {class:'row wrap'}, [node('b', {text:picked.length + ' picked'}), input, options, apply, reviewButton()]),
+            ...(chips.length ? [node('div', {class:'row wrap'}, [node('span', {class:'muted', text:'Suggested:'}), ...chips])] : []));
+          if (!suggests) namer.append(node('button',{class:'btn small',text:'Ask AI',onclick:() => askClusters(picked)}));
         };
+        let pickSequence = 0;
         const onPick = async (chosen, fromList) => {
-          picked = chosen; state.picked = state.picked || {}; state.picked[last.id] = chosen;
+          const sequence = ++pickSequence;
+          syncAppearance();
+          picked = chosen; reviewButtons.forEach(b=>b.disabled=!picked.length); state.picked = state.picked || {}; state.picked[last.id] = chosen;
           results.body.querySelectorAll('[data-group]').forEach(line => line.classList.toggle('picked', chosen.includes(line.dataset.group)));
           drawDetail(); drawNamer();
           if (fromList) heat?.update({picked:chosen});
-          if (!(await showCellGroups(result.column, chosen, result.profile?.rows || result.clusters.map(item => item.name)))) {
-            note.textContent = 'Open an image whose cells are in this table to see them.'; return;
+          let shown;
+          try { shown = await showCellGroups(result.column, chosen, result.profile?.rows || result.clusters.map(item => item.name), {table:resultTable()}); }
+          catch (error) { if (sequence === pickSequence) note.textContent = error.message; return; }
+          if (sequence !== pickSequence || !results.body.isConnected) return;
+          if (!shown) {
+            note.textContent = 'Open an image linked to this table.'; return;
           }
-          note.textContent = chosen.length ? 'Showing ' + chosen.map(row => names[row] || row).join(', ') + ' on the image.' : 'Showing every group.';
+          note.textContent = chosen.length ? 'Showing ' + chosen.length + ' group' + (chosen.length===1?'':'s') + '.' : 'Showing all groups.';
           // One group picked: its top markers are turned on too (neighbourhoods are made of phenotypes, not markers).
           if (chosen.length === 1 && kind !== 'neighbourhoods') {
-            const shown = await showTop(chosen[0]);
-            if (shown) note.textContent += ' Markers: ' + shown.join(', ') + '.';
+            await showTop(chosen[0]);
           }
         };
         const looks = () => ({
@@ -5966,12 +6903,16 @@
           })),
           // Right of the colours: the reference label most of whose reference cells are in the cluster.
           notes:Object.fromEntries((result.profile?.rows || []).map(row => {
-            const top = clusterHints(row)?.top?.[0];
-            return [row, top ? top.label + ' ' + Math.round(100 * top.of_label) + '%' : ''];
+            const mine = clusterHints(row), top = hints?.model_id ? mine?.suggestions?.[0] : mine?.top?.[0];
+            return [row, top ? top.label + ' ' + Math.round(100 * (hints?.model_id ? top.score : top.of_label)) + '%' : ''];
           }).filter(([, text]) => text)),
         });
         const drawHeatmap = () => {
+          if (!isCurrent()) return;
           result.clusters.forEach((item, index) => { if (swatches[item.name]) swatches[item.name].value = colourOf(item.name, index); });
+          // Keep membership as raw cluster IDs even when several clusters share
+          // one edited name. Names and colours are a preview until Save names.
+          syncAppearance();
           if (!result.profile) { figures.querySelector('[data-figure="'+kind+'"]')?.remove(); return; }
           if (heat && heat.box.isConnected) { heat.update(looks()); return; }
           heat = heatmapFigure({key:kind, title:{leiden:'Leiden clusters', neighbourhoods:'Neighbourhoods', som:'SOM clusters', vortex:'VORTEX clusters', subphenotype:'Sub-phenotypes'}[kind] || 'Clusters',
@@ -5983,42 +6924,98 @@
             } : null,
             tip:'Each row is a group, each column a ' + (kind === 'neighbourhoods' ? 'phenotype. Share (%) shows composition; Relative (z-score) compares each phenotype across neighbourhood types. The three phenotypes on the left follow this choice. ' : 'marker; warm means higher than in the other groups, blue lower. ') +
               'Click a row to show its cells on the image (Shift or Ctrl for several), then name the picked rows together above. ' +
-              (suggests ? 'Right of the colours: the reference label with the largest share of its reference cells in that cluster. ' : '') +
+              (suggests ? 'Right of the colours: the selected source’s top suggestion. Model scores describe sampled cells, not independent accuracy. ' : '') +
               'Large view shows it over the image; Show all brings every group back.'});
         };
-        // Suggestions: loaded for the chosen reference column; each cluster's row gets its three best names.
-        const loadHints = async () => {
-          if (!suggests) return;
-          hintNote.textContent = 'Reading the reference cells…';
-          let found;
-          try { found = await get(route('/cluster_suggestions') + '?job_id=' + last.id + '&reference=' + encodeURIComponent(referencePick.value || '')); }
-          catch (error) { hints = null; hintNote.textContent = error.message; Object.values(hintBoxes).forEach(box => box.replaceChildren()); drawHeatmap(); drawNamer(); return; }
-          if (!results.body.isConnected) return;
-          hints = found;
-          hintNote.textContent = found.labelled.toLocaleString() + ' reference cells, ' + found.labels.length + ' labels' + (found.by_markers ? '' : ' (marker vote off: ' + found.note + ')');
+        const paintHints = () => {
           result.clusters.forEach(item => {
             const mine = clusterHints(item.name), box = hintBoxes[item.name];
             if (!box) return;
-            box.replaceChildren(...[
-              ...(mine?.suggestions || []).filter(entry => entry.score > 0.05).map(entry => node('button', {type:'button', class:'btn small ghost studio-suggestion',
-                title:(entry.by_markers !== null ? 'Markers vote ' + Math.round(100 * entry.by_markers) + '% · ' : '') + entry.reference_cells + ' reference cells here (' +
-                  Math.round(100 * entry.of_label) + '% of all ' + entry.label + ' references)', text:entry.label + ' · ' + Math.round(100 * entry.score) + '%',
-                onclick:() => nameGroups([item.name], entry.label)})),
-              mine?.top?.length ? node('span', {class:'muted', text:'Reference cells: ' + mine.top.map(entry => entry.label + ' ' + entry.cells + ' (' + Math.round(100 * entry.of_label) + '%)').join(', ')}) : null
-            ].filter(Boolean));
+            const ranked = (mine?.suggestions || []).filter(entry => entry.score > .05);
+            const top = ranked[0], trained = !!hints?.model_id;
+            const validation = hints?.validation?.phenotypes?.find(entry => entry.phenotype === top?.label);
+            const details = [trained ? 'Model: ' + hints.model.name + '. Mean prediction scores, not accuracy.' : 'Reference-cell and marker-neighbour scores, not accuracy.',
+              trained ? (mine?.model_scored || 0) + '/' + (mine?.model_sampled || 0) + ' sampled cells scored; ' + hints.features.length + ' feature' + (hints.features.length === 1 ? '.' : 's.') : '',
+              ranked.map(entry => entry.label + ': ' + Math.round(100 * entry.score) + '%').join('; '),
+              mine?.top?.length ? 'Manual labels: ' + mine.top.map(entry => entry.label + ' ' + entry.cells).join(', ') : 'No manual labels in this cluster.',
+              trained ? (validation?.cells ? 'Saved validation for ' + top.label + ': F1 ' + Number(validation.f1).toFixed(2) + ' (' + validation.cells + ' cells).' : 'No saved validation examples for this name.') : '',
+              top?.needs_checking ? 'Review: limited validation support or incomplete measurements.' : '',
+              hints?.missing?.length ? 'Training features not used: ' + hints.missing.join(', ') : '', hints?.note || ''].filter(Boolean).join(' ');
+            box.replaceChildren(...(top ? [node('button', {type:'button',class:'btn small ghost studio-suggestion',
+              title:trained ? 'Model suggestion; click to use this name' : 'Reference suggestion; click to use this name',
+              text:top.label + ' · ' + Math.round(100 * top.score) + '%',onclick:() => nameGroups([item.name], top.label)})] :
+              [node('span',{class:'muted',text:trained?'No prediction':'No suggestion'})]), help(details));
           });
           drawHeatmap(); drawNamer();
         };
+        const loadHints = async () => {
+          if (!suggests || !sourcePick.value) return;
+          if (hintRequest?.source === sourcePick.value && hintRequest.generation === hintGeneration) return hintRequest.done;
+          const generation = ++hintGeneration, source = sourcePick.value;
+          let finish;
+          const pending = {source, generation, done:new Promise(resolve => {finish=resolve;})};
+          hintRequest = pending;
+          const currentHint = () => isCurrent() && generation === hintGeneration && sourcePick.value === source;
+          const body = {job_id:last.id};
+          if(source.startsWith('model:'))body.model_id=source.slice(6);
+          else if(source.startsWith('library:'))body.model_key=source.slice(8);
+          else body.reference=source.slice(10);
+          suggestButton.disabled=true;hintNote.textContent='Checking clusters…';
+          try {
+            const found = await post(route('/cluster_suggestions'),body);
+            if (!currentHint()) return;
+            hints=found;readySource=source;
+            hintNote.textContent=found.model_id ? Object.keys(found.clusters).length + ' clusters scored' : found.labelled.toLocaleString() + ' labelled cells';
+            paintHints();
+          } catch(error) {
+            if (!currentHint()) return;
+            hints=null;readySource='';hintNote.textContent=error.message;
+            Object.values(hintBoxes).forEach(box=>box.replaceChildren());drawHeatmap();drawNamer();
+          } finally {
+            if(currentHint())suggestButton.disabled=false;
+            if(hintRequest===pending)hintRequest=null;
+            finish();
+          }
+        };
+        if(storedHints){
+          result.clusters.forEach(item=>{
+            const mine=clusterHints(item.name), box=hintBoxes[item.name];
+            if(!mine||!box)return;
+            const buttons=(mine.suggestions||[]).map(entry=>node('button',{type:'button',class:'btn small ghost studio-suggestion',
+              text:entry.label+(entry.source==='model'?' · model '+Math.round(100*entry.score)+'%'+(entry.needs_checking?' · check':''):' · '+entry.reference_cells+' labels'),
+              title:entry.source==='model'?'Mean model score on sampled cells, not accuracy. Check = limited validation or low agreement.':'Manually labelled cells in this cluster.',
+              onclick:()=>nameGroups([item.name],entry.label)}));
+            box.replaceChildren(...[...buttons,
+              mine.excluded_winner?node('span',{class:'hint',text:'Model favors '+mine.excluded_winner+' (excluded).'}):null,
+              storedHints.model_id?node('span',{class:'muted',text:'Sample: '+mine.model_scored+'/'+mine.model_sampled+' cells scored.'}):null,
+              mine.top.length?node('span',{class:'muted',text:'Manual labels: '+mine.top.map(r=>r.label+' '+r.cells).join(', ')}):null].filter(Boolean));
+          });
+        }
         if (suggests) {
-          referencePick.addEventListener('change', () => { remember('reference-column', referencePick.value); loadHints(); });
+          sourcePick.addEventListener('change', () => {
+            hintGeneration++;hints=null;readySource='';suggestButton.disabled=!sourcePick.value;hintNote.textContent='';
+            remember('cluster-naming-source',sourcePick.value);
+            Object.values(hintBoxes).forEach(box=>box.replaceChildren());drawHeatmap();drawNamer();
+          });
           (async () => {
-            let columns = [];
-            try { columns = (await get(route('/cluster_suggestions'))).reference_columns || []; } catch (_) { /* said by loadHints */ }
-            referencePick.replaceChildren(...(columns.length ? columns : ['']).map(column => node('option', {value:column, text:column || 'No reference column yet'})));
-            referencePick.disabled = !columns.length;
-            const saved = recall('reference-column', '');
-            if (columns.includes(saved)) referencePick.value = saved;
-            if (columns.length) loadHints(); else hintNote.textContent = 'Label some cells in Manual reference to get suggestions.';
+            try {
+              const found=await get(route('/cluster_suggestions')+'?job_id='+encodeURIComponent(last.id)+'&sources=1');
+              if(!isCurrent())return;
+              const columns=found.reference_columns||[];sourceModels=found.models||[];
+              const models=node('optgroup',{label:'Trained models'}),references=node('optgroup',{label:'Reference cells'});
+              sourceModels.forEach(model=>models.append(node('option',{
+                value:(model.key?'library:'+model.key:'model:'+model.id),disabled:!model.compatible,
+                text:referenceModelLabel(model),
+                title:model.features.length+'/'+model.total_features+' matching features'+(model.missing?.length?' · Not used: '+model.missing.join(', '):'')})));
+              columns.forEach(column=>references.append(node('option',{value:'reference:'+column,text:column})));
+              sourcePick.replaceChildren(...[models,references].filter(group=>group.children.length));
+              const enabled=[...sourcePick.options].filter(option=>!option.disabled);
+              const previous=recall('cluster-naming-source',''),active=sourceModels.find(m=>m.id===found.active_model&&m.compatible);
+              const preferred=previous || (active?(active.key?'library:'+active.key:'model:'+active.id):'reference:'+recall('reference-column',''));
+              sourcePick.value=enabled.some(option=>option.value===preferred)?preferred:enabled[0]?.value||'';
+              sourcePick.disabled=!enabled.length;suggestButton.disabled=!enabled.length;
+              if(!enabled.length){sourcePick.replaceChildren(node('option',{value:'',text:'No naming source'}));hintNote.textContent='Train a model or label cells in Manual reference.';}
+            }catch(error){if(isCurrent())hintNote.textContent=error.message;}
           })();
         }
         drawHeatmap(); drawDetail(); drawNamer();
@@ -6028,18 +7025,19 @@
           frame.publicationUpdate?.();
         }
         explorerNow = () => results.body.isConnected ? {job_id:last.id, method:kind, clusters_column:result.column, picked,
-          reference_column:referencePick.value, table:result.table,
+          reference_column:hints?.reference_column || (sourcePick.value.startsWith('reference:')?sourcePick.value.slice(10):''),
+          model_id:hints?.model_id || (sourcePick.value.startsWith('model:')?sourcePick.value.slice(6):''), table:result.table,
           typed:Object.fromEntries(Object.entries(inputs).map(([group, input]) => [group, input.value.trim()]).filter(([, value]) => value))} : null;
         if (state.cellPickListener) document.removeEventListener('spacemap-cells-picked', state.cellPickListener);
         let selectionSequence = 0;
         state.cellPickListener = async event => {
-          if (!results.body.isConnected) { document.removeEventListener('spacemap-cells-picked',state.cellPickListener); return; }
+          if (!isCurrent()) return;
           const {layer,labels} = event.detail || {};
           if (!layer?.combinedTable) return;
           const sequence = ++selectionSequence;
           try {
             const found = await post(route('/data/groups'), {source:{cells:layer.token,table:layer.combinedTable},rows:{this_image:true},column:result.column,labels:labels || []});
-            if (sequence !== selectionSequence || !results.body.isConnected) return;
+            if (sequence !== selectionSequence || !isCurrent()) return;
             picked = found.groups.filter(group => result.clusters.some(item => item.name === group));
             state.picked = state.picked || {}; state.picked[last.id] = picked;
             results.body.querySelectorAll('[data-group]').forEach(line => line.classList.toggle('picked',picked.includes(line.dataset.group)));
@@ -6050,8 +7048,9 @@
         // Assistant suggestions fill the fields immediately; job receipts mark them saved.
         if (state.namesListener) window.removeEventListener('studio-cluster-names', state.namesListener);
         state.namesListener = async event => {
-          if (event.detail.job_id !== last.id || !results.body.isConnected) return;
+          if (event.detail.job_id !== last.id || !isCurrent()) return;
           const value = event.detail;
+          (value.replace ? Object.keys(inputs) : [...(value.clear || []), ...Object.keys(value.names || {})]).forEach(group => touchedNames.add(group));
           if (value.replace) Object.keys(names).forEach(group => delete names[group]);
           (value.clear || []).forEach(group => delete names[group]);
           Object.entries(value.names || {}).forEach(([group, name]) => { if (inputs[group]) names[group] = name; });
@@ -6064,17 +7063,42 @@
         window.addEventListener('studio-cluster-names', state.namesListener);
         if (state.paletteListener) document.removeEventListener('spacemap-phenotype-presets', state.paletteListener);
         state.paletteListener = async () => {
-          if (!results.body.isConnected) return;
+          if (!isCurrent()) return;
           Object.keys(colours).forEach(key => delete colours[key]);
           try { await refreshPalette(); drawHeatmap(); }
           catch (error) { note.textContent = error.message; }
         };
         document.addEventListener('spacemap-phenotype-presets', state.paletteListener);
+        // The completed job already contains the heatmap. Restore names/colours
+        // independently; neither table refresh nor old requests may hold it back.
+        (async () => {
+          try {
+            await refreshPalette();
+            if (isCurrent()) drawHeatmap();
+          } catch (error) { if (isCurrent()) note.textContent = error.message; }
+        })();
+        if (restoreNames) (async () => {
+          try {
+            if (!nameRequests.has(last.id)) nameRequests.set(last.id, get(route('/cluster_names') + '?job_id=' + encodeURIComponent(last.id)));
+            const saved = await nameRequests.get(last.id);
+            if (!isCurrent()) return;
+            state.restoredNames.add(last.id);
+            Object.entries(saved.names || {}).forEach(([group, value]) => {
+              if (!inputs[group] || touchedNames.has(group)) return;
+              names[group] = value; inputs[group].value = value;
+            });
+            if (Object.keys(saved.names || {}).length) await refreshPalette();
+            if (isCurrent()) { drawHeatmap(); drawDetail(); drawNamer(); }
+          } catch (error) { nameRequests.delete(last.id); if (isCurrent()) note.textContent = error.message; }
+        })();
         return !going && !result.profile_pending;
       };
-      let timer = null;
-      const follow = async () => { clearTimeout(timer); if (!(await look()) && holder.isConnected) timer = setTimeout(follow, 4000); };
-      return follow;
+      const onJobs = jobs => {
+        if (!results.body.isConnected) { if (clusterJobsChanged === onJobs) clusterJobsChanged = null; return; }
+        look(jobs);
+      };
+      clusterJobsChanged = onJobs;
+      return () => look();
     };
 
     // Leiden (Tab 7): its saved settings, a job on the combined table, then a phenotype for every cluster.
@@ -6371,7 +7395,7 @@
         node('div', {class:'row field'}, [node('label', {class:'lbl', text:'Z-score'}), tick('use_z_normalization', 'Z-score markers within each ROI'),
           node('span', {class:'grow'}), help('Scale each marker within each ROI (batch) before learning.')]),
         node('div', {class:'row field'}, [node('label', {class:'lbl', text:'Tissue only'}), tick('enable_filter', 'Only cells in tissue'),
-          node('span', {class:'grow'}), help('Only cells marked as tissue (tissue = 1) are labelled, as classic does by default.')]),
+          node('span', {class:'grow'}), help('Optional: label only cells matching the saved tissue filter. Leave off to include all cells; a tissue column is not required.')]),
         field('Check against', check, 'Optional: your reference cells (Manual reference). They are held out of training and the result is scored against them.'),
         field('Low score', number('refined_confidence_threshold', 'Low score', '0.05', 0, 1), 'Below this score a cell is called Others in the _refined column (default 0.75).'),
         field('Save as', output, 'The result column; the score, agreement and refined columns take its name with _score, _consensus and _refined.'), overwrite.row);
@@ -6438,15 +7462,14 @@
     // Sub-phenotyping (Tab 7): chosen phenotypes split on the markers that vary inside each (found from the data,
     // editable), clustered and checked; the sub-clusters go to the shared cluster explorer. Settings: classic's file.
     const SUBPHENO_KEYS = ['parent_col', 'parent_values', 'markers', 'chosen_markers', 'method', 'resolution', 'n_neighbors', 'grid',
-      'k_neighbors', 'n_meta_clusters', 'use_gpu', 'check_stability', 'studio_output_col'];
+      'k_neighbors', 'n_meta_clusters', 'use_gpu', 'check_stability', 'studio_output_col', 'filters', 'reference_column',
+      'model_id', 'limit_model_phenotypes', 'model_phenotypes', 'figure_options', 'transform', 'cofactor', 'normalization', 'normalization_col'];
     PANELS.subphenotyping = async (current, holder) => {
       const state = current.subphenotyping || (current.subphenotyping = {names:{}});
-      const settings = section('Sub-phenotyping settings', {tip:'Each chosen ' +
-        'phenotype is split on its own, on the markers that really vary inside it.'});
-      const markersBox = section('Markers inside each phenotype', {tip:'Find markers scores every panel marker inside each phenotype: markers flat ' +
-        'there, driven by batch, or likely spillover from neighbouring cells are dropped (classic’s rules). Tick or untick before Run.'});
-      const results = section('Sub-clusters', {tip:'The sub-clusters of the last run, with their size, most raised markers and check. Click one to ' +
-        'see it on the image and where it is; name them, and Save names updates this run’s sub-phenotype column.'});
+      const settings = section('1. Choose cells', {tip:'Select a phenotype and optional region filters. Each phenotype is split separately.'});
+      const markersBox = section('2. Find subsets', {tip:'Choose identity and functional markers, then cluster the selected cells.'});
+      const results = section('3. Name and save', {tip:'Review markers and suggestions, then enter names. Use the same name to merge groups. Save names to keep them.'});
+      const markerControls=node('div'), markerReview=node('div');markersBox.body.append(markerControls,markerReview);
       const dirty = chip('Saved', 'ok');
       settings.box.querySelector('.studio-sec-h').insertBefore(dirty, settings.box.querySelector('.studio-sec-h .grow'));
       holder.append(settings.box, markersBox.box, results.box);
@@ -6457,9 +7480,44 @@
       if (!state.values) state.values = JSON.parse(JSON.stringify(saved.values));
       const values = state.values;
       values.chosen_markers = values.chosen_markers || {};
+      values.filters ||= [];values.model_phenotypes ||= [];
       const changes = () => Object.fromEntries(SUBPHENO_KEYS.filter(key => JSON.stringify(values[key]) !== JSON.stringify(saved.values[key])).map(key => [key, values[key]]));
       const mark = () => { const n = Object.keys(changes()).length; dirty.textContent = n ? 'Not saved' : 'Saved'; dirty.className = 'chip ' + (n ? 'warn' : 'ok'); };
-      let panel = null, discovery = null;
+      const scopeNote=node('p',{class:'hint',role:'status','data-subpheno-selection':''});
+      let scopeSequence=0, scopeTimer;
+      const preview=()=>{const sequence=++scopeSequence;clearTimeout(scopeTimer);scopeTimer=setTimeout(async()=>{
+        if(!values.parent_values.length){scopeNote.textContent='Choose a phenotype.';return;}
+        scopeNote.textContent='Counting selected cells…';
+        try{await imageSelectionSave;const result=await post(route('/subpheno_selection'),{parent_col:values.parent_col,parent_values:values.parent_values,filters:values.filters});
+          if(sequence===scopeSequence)scopeNote.textContent=result.cells.toLocaleString()+' cells selected';
+        }catch(error){if(sequence===scopeSequence)scopeNote.textContent=error.message;}
+      },250);};
+      const filters=node('div');
+      const drawFilters=()=>{
+        filters.replaceChildren(...values.filters.map((rule,index)=>{
+          const pick=choice([['','Choose column'],...(saved.columns||[]).map(c=>[c,c])],rule.column,'Cell filter '+(index+1)+' column');
+          const operation=choice([['in','is'],['not_in','is not']],rule.op,'Cell filter '+(index+1)+' comparison');
+          const value=choice([['','Choose value']],rule.values[0]||'','Cell filter '+(index+1)+' value');
+          const readValues=async()=>{
+            if(!pick.value)return;
+            try{const found=await get(route('/phenotype_values')+'?column='+encodeURIComponent(pick.value));
+              if(!pick.isConnected)return;
+              value.replaceChildren(node('option',{value:'',text:'Choose value'}),...found.values.map(v=>node('option',{value:v.name,text:v.name+' ('+v.cells.toLocaleString()+')'})));
+              value.value=rule.values[0]||'';
+            }catch(error){scopeNote.textContent=error.message;}
+          };
+          pick.onchange=()=>{rule.column=pick.value;rule.values=[];mark();readValues();preview();};
+          operation.onchange=()=>{rule.op=operation.value;mark();preview();};
+          value.onchange=()=>{rule.values=value.value?[value.value]:[];mark();preview();};
+          queueMicrotask(readValues);
+          return node('div',{class:'row field'},[pick,operation,value,node('button',{class:'btn small',text:'Remove',onclick:()=>{values.filters.splice(index,1);drawFilters();mark();preview();}})]);
+        }));
+      };
+      const filterBox=node('details',{class:'studio-options',open:values.filters.length>0},[node('summary',{text:'Region filters (optional)'}),
+        node('p',{class:'hint',text:'Use annotation columns such as tissue or tumor. Cells must match every filter.'}),filters,
+        node('button',{class:'btn small',text:'Add filter',onclick:()=>{values.filters.push({column:'',op:'in',values:[]});drawFilters();mark();}})]);
+      drawFilters();
+      let panel = null, syncFigureMarkers = () => {}, syncPreprocessing = () => {};
       const column = node('select', {'aria-label':'Phenotype column to split'});
       const phenotypesBox = node('div', {class:'studio-markers'}, [node('p', {class:'muted', text:'Choose the phenotype column.'})]);
       const loadPhenotypes = async () => {
@@ -6471,20 +7529,20 @@
           const input = node('input', {type:'checkbox', 'aria-label':'Split ' + item.name}); input.checked = values.parent_values.includes(item.name);
           input.addEventListener('change', () => {
             values.parent_values = input.checked ? [...values.parent_values, item.name] : values.parent_values.filter(name => name !== item.name);
-            mark();
+            drawMarkers();mark();preview();
           });
           return node('label', {title:item.cells.toLocaleString() + ' cells'}, [input, node('span', {text:item.name + ' (' + item.cells.toLocaleString() + ')'})]);
-        }));
+        }));preview();
       };
       (async () => {
         let found = {phenotypes:[]};
         try { found = await get(route('/marker_choices') + '?method=subphenotyping'); } catch (_) { /* said below */ }
-        const columns = (found.phenotypes || []).filter(name => !/(_score|_consensus|_clusters|_confidence)$/.test(name));
+        const columns = (found.phenotypes || []).filter(name => !/(_score|_clusters|_confidence)$/.test(name));
         column.replaceChildren(...columns.map(name => node('option', {value:name, text:name})));
         if (columns.includes(values.parent_col)) column.value = values.parent_col; else if (columns.length) { values.parent_col = column.value; mark(); }
         loadPhenotypes();
       })();
-      column.addEventListener('change', () => { values.parent_col = column.value; values.parent_values = []; mark(); loadPhenotypes(); });
+      column.addEventListener('change', () => { values.parent_col = column.value; values.parent_values = []; drawMarkers();mark(); loadPhenotypes(); });
       const method = choice([['Leiden', 'Leiden'], ['SOM', 'SOM'], ['Vortex', 'VORTEX']], values.method, 'Sub-clustering method');
       const number = (key, label, step, min, max) => {
         const input = node('input', {type:'number', 'data-setting':key, step, min:String(min), max:String(max), value:String(values[key]), 'aria-label':label});
@@ -6501,65 +7559,247 @@
       const tick = (key, label) => { const input = node('input', {type:'checkbox', autocomplete:'off', 'data-setting':key, 'aria-label':label}); input.checked = !!values[key];
         input.addEventListener('change', () => { values[key] = input.checked; mark(); }); return input; };
       const output = node('input', {type:'text', 'data-setting':'studio_output_col', value:values.studio_output_col, 'aria-label':'Sub-phenotype result column'});
-      const overwrite = overwriteOption([output]);
+      const overwrite = overwriteOption([output], 'Replace subclusters and names only for cells successfully split in this run, within the selected phenotypes, images and region filters. Other cells keep their existing labels. For example, splitting fibroblasts keeps earlier epithelial subtypes in the same column.');
       output.addEventListener('change', () => { values.studio_output_col = output.value.trim(); mark(); });
-      settings.body.append(field('Phenotype column', column, 'The phenotypes to split come from this column (Consensus ML’s result, say).'),
+      settings.body.append(field('Phenotype column', column, 'The existing column with broad cell types, for example phenotype_mr_ml.'),
         node('div', {class:'field-block'}, [node('div', {class:'row'}, [node('label', {class:'lbl grow', text:'Phenotypes to split'}),
-          help('Each is split on its own: clustering several together would let the differences between them dominate.')]), phenotypesBox]),
+          help('Each selected phenotype is clustered separately.')]), phenotypesBox]),filterBox,scopeNote);
+      let modelOptions=saved.models?.models||[], modelLoading=false;
+      const model=choice([['','No model'],...modelOptions.map(m=>[m.id,(m.name?m.name+' · ':'')+m.method+' · '+formatModelTime(m.trained)+' · '+m.id.slice(0,8)])],values.model_id||'','Sub-phenotyping model');
+      const reference=choice([['','No reference column'],...(saved.references||[]).map(c=>[c,c])],values.reference_column||'','Sub-phenotyping reference labels');
+      const modelTypes=node('div',{class:'studio-markers'});
+      const restrict=node('input',{type:'checkbox','aria-label':'Limit model suggestions'});restrict.checked=!!values.limit_model_phenotypes;
+      const modelNote=node('p',{class:'hint',role:'status'});
+      const drawTypes=async()=>{
+        modelTypes.replaceChildren();modelNote.textContent='';
+        if(!model.value)return;
+        const id=model.value;
+        try{const found=await post(route('/mrml_support'),{model_id:id});if(id!==model.value)return;
+          modelNote.textContent=found.features.length+' model features available'+(found.missing.length?' · '+found.missing.length+' missing':'');
+          modelTypes.replaceChildren(...found.phenotypes.map(p=>{
+            const input=node('input',{type:'checkbox','aria-label':'Suggest '+p.phenotype});input.checked=!restrict.checked||values.model_phenotypes.includes(p.phenotype);input.disabled=!restrict.checked;
+            input.onchange=()=>{values.model_phenotypes=[...modelTypes.querySelectorAll('input:checked')].map(n=>n.dataset.name);mark();};input.dataset.name=p.phenotype;
+            return node('label',{},[input,node('span',{text:p.phenotype+(p.suggested?'':' · check')})]);
+          }));
+        }catch(error){modelNote.textContent=error.message;}
+      };
+      model.onchange=async()=>{
+        values.model_id='';values.model_phenotypes=[];values.limit_model_phenotypes=false;restrict.checked=false;
+        if(!model.value){drawTypes();mark();return;}
+        const selected=modelOptions.find(m=>m.id===model.value);
+        modelLoading=true;model.disabled=true;modelNote.textContent='Loading model…';
+        try{const found=await post(route('/subpheno_model'),{key:selected?.key});
+          modelOptions=found.models.models;saved.models=found.models;
+          model.replaceChildren(node('option',{value:'',text:'No model'}),...modelOptions.map(m=>node('option',{
+            value:m.id,text:(m.name?m.name+' · ':'')+m.method+' · '+formatModelTime(m.trained)+' · '+m.id.slice(0,8)})));
+          model.value=values.model_id=found.model_id;drawTypes();mark();
+        }catch(error){modelNote.textContent=error.message;model.value='';mark();}
+        finally{model.disabled=false;modelLoading=false;}
+      };
+      reference.onchange=()=>{values.reference_column=reference.value;mark();};
+      restrict.onchange=()=>{values.limit_model_phenotypes=restrict.checked;if(restrict.checked)values.model_phenotypes=[...modelTypes.querySelectorAll('input:checked')].map(n=>n.dataset.name);drawTypes();mark();};
+      const guidance=node('details',{class:'studio-options',open:!!values.model_id||!!values.reference_column},[node('summary',{text:'Help name subsets (optional)'}),
+        field('Model',model,'Models from the Models folder above. Used to suggest names after clustering.'),
+        field('Manual labels',reference,'Shows your labelled cells in each cluster, separately from model votes.'),
+        node('label',{class:'row'},[restrict,node('span',{text:'Limit model suggestions'}),help('Choose names to consider, such as Tumor and Sarcomatoid. If an excluded type wins, it is flagged rather than forced into another type.')]),modelTypes,modelNote]);
+      if(saved.models?.base_model_id)guidance.insertBefore(node('button',{class:'btn small',text:'Use loaded model',onclick:()=>{
+        model.value=saved.models.base_model_id;model.dispatchEvent(new Event('change'));
+        if(!reference.value&&saved.references.includes('phenotype_ref1')){reference.value='phenotype_ref1';reference.dispatchEvent(new Event('change'));}
+      }}),guidance.children[2]);
+      settings.body.append(guidance);drawTypes();
+      const invalidateMarkers=()=>{drawMarkers();mark();};
+      const transform=choice([['auto','Arcsinh raw; keep corrected'],['stored','Use stored values']],values.transform,'Sub-phenotyping transformation');
+      const cofactorInput=number('cofactor','Sub-phenotyping arcsinh cofactor','any',.001,65535);
+      const normalization=choice([['zscore','Z-score each marker'],['robust','Median / IQR'],['none','None']],values.normalization,'Sub-phenotyping normalization');
+      const groupColumns=(saved.columns||[]).filter(c=>!['cell_id','label',values.parent_col,...values.markers].includes(c));
+      const normalizeWithin=choice([['','All selected cells'],...groupColumns.map(c=>[c,c])],values.normalization_col,'Normalize within');
+      const cofactorField=field('Cofactor',cofactorInput,'arcsinh(value / cofactor). 5 is a starting setting, not a universal imaging value. Inspect distributions and use the same cofactor across slides.');
+      const normalizeField=field('Within',normalizeWithin,'All selected cells preserves between-slide differences. Choose your Slide column only to remove technical shifts; this can also remove biological differences. ROIs with the same Slide value are pooled.');
+      const preprocess=node('details',{class:'studio-options','data-subpheno-preprocessing':''},[
+        node('summary',{text:'Preprocessing'}),
+        field('Transform',transform,'Raw intensity markers: arcsinh once. SPACEMAP *_corr columns are already transformed and stay unchanged. Use stored values for other already-transformed columns.'),
+        cofactorField,field('Normalize',normalization,'Applied separately within each parent phenotype, using only selected images and region filters. Z-score gives markers comparable weight; median/IQR reduces sensitivity to outliers. Missing values use the group center. Normalized values are clipped at ±5.'),normalizeField]);
+      syncPreprocessing=()=>{
+        cofactorField.hidden=values.transform!=='auto'||!values.markers.some(m=>!m.endsWith('_corr'));
+        normalizeField.hidden=values.normalization==='none';
+      };
+      [[transform,'transform'],[normalization,'normalization'],[normalizeWithin,'normalization_col']].forEach(([input,key])=>{
+        input.dataset.setting=key;input.onchange=()=>{values[key]=input.value;syncPreprocessing();invalidateMarkers();};
+      });
+      cofactorInput.addEventListener('change',invalidateMarkers);syncPreprocessing();
+      const imagesChanged=()=>{if(!holder.isConnected){document.removeEventListener('spacemap-phenotyping-images',imagesChanged);return;}invalidateMarkers();preview();};
+      document.addEventListener('spacemap-phenotyping-images',imagesChanged);
+      markerControls.append(
         node('div', {class:'field-block'}, [node('div', {class:'row'}, [node('label', {class:'lbl grow', text:'Marker panel'}),
-          help('The markers surveyed inside each phenotype; Find markers keeps those that carry structure there.')]),
+          help('Run uses all checked markers unless you explicitly choose a smaller set for a phenotype. Marker figures → Marker review helps you inspect and choose markers.')]),
           markerPicker({method:'subphenotyping', label:'Sub-phenotyping', values, changed:() => {
             // The picker's first draw only reads the panel; a new panel makes the markers found inside each phenotype stale.
             const now = JSON.stringify(values.markers);
-            if (panel !== null && now !== panel) { values.chosen_markers = {}; discovery = null; drawMarkers(); }
-            panel = now; mark();
+            if (panel !== null && now !== panel) { values.chosen_markers = {}; }
+            panel = now; drawMarkers(); syncFigureMarkers(); syncPreprocessing(); mark();
           }})]),
-        field('Method', method, 'Leiden: the general choice. SOM: an even granularity. VORTEX: tight, well-separated states.'), detailHolder,
+        preprocess,
+        node('details',{class:'studio-options'},[node('summary',{text:'Clustering options'}),field('Method', method, 'Leiden, SOM or VORTEX.'), detailHolder,
         field('Merge to', number('n_meta_clusters', 'Merge to', '1', 0, 60), 'Over-cluster, then merge look-alike sub-clusters down to this many per phenotype (0 keeps all; default 10).'),
         node('div', {class:'row field'}, [node('label', {class:'lbl', text:'Stability'}), tick('check_stability', 'Check stability'), node('span', {class:'grow'}),
           help('Re-runs the split on overlapping samples and reports how well it reproduces (slower).')]),
-        node('div', {class:'row field'}, [node('label', {class:'lbl', text:'GPU'}), tick('use_gpu', 'Use the GPU'), node('span', {class:'grow'}), help('Uses the GPU when this machine has one.')]),
+        node('div', {class:'row field'}, [node('label', {class:'lbl', text:'GPU'}), tick('use_gpu', 'Use the GPU'), node('span', {class:'grow'}), help('Uses the GPU when this machine has one.')])]),
         field('Save as', output, 'The sub-phenotype column for the names; the sub-clusters go in the same name with _clusters.'), overwrite.row);
       mark();
-      // Find markers: a job; its table per phenotype, ticks editable (saved with the settings).
+      // Explicit reviewed choices share the existing per-phenotype marker settings.
       const drawMarkers = () => {
-        if (!discovery) {
-          const kept = Object.entries(values.chosen_markers).filter(([, list]) => list.length);
-          markersBox.body.replaceChildren(node('p', {class:'muted', text:kept.length ? 'Run uses the markers kept earlier for ' + kept.map(([name, list]) => name + ' (' + list.length + ')').join(', ') +
-            '; Find markers to review them.' : 'Find markers to see which markers carry structure inside each phenotype; without it, Run uses classic’s suggestion.'}));
-          return;
-        }
-        markersBox.body.replaceChildren(...Object.entries(discovery).map(([phenotype, info]) => {
-          const box = node('details', {class:'studio-options', open:true});
-          if (!info.markers.length) { box.append(node('summary', {text:phenotype}), node('p', {class:'hint', text:info.note || 'No markers scored.'})); return box; }
-          const chosenNow = values.chosen_markers[phenotype] || info.markers.filter(row => row.recommended).map(row => row.marker);
-          if (!values.chosen_markers[phenotype]) values.chosen_markers[phenotype] = chosenNow.slice();
-          const summary = node('summary');
-          const describe = () => { summary.textContent = phenotype + ': ' + values.chosen_markers[phenotype].length + ' of ' + info.markers.length + ' markers kept'; };
-          const rows = info.markers.map(row => {
-            const input = node('input', {type:'checkbox', 'aria-label':'Use ' + row.marker + ' for ' + phenotype}); input.checked = values.chosen_markers[phenotype].includes(row.marker);
-            input.addEventListener('change', () => {
-              values.chosen_markers[phenotype] = input.checked ? [...values.chosen_markers[phenotype], row.marker] : values.chosen_markers[phenotype].filter(m => m !== row.marker);
-              describe(); mark();
-            });
-            return node('label', {class:'row', title:'Spread vs all cells ' + (row.spread ?? '—') + ' · batch share ' + (row.batch_share ?? '—') + ' · usable spread ' + row.score}, [input,
-              node('span', {class:'grow', text:row.marker}), row.flag ? node('span', {class:'muted', text:row.flag}) : chip(row.verdict, row.verdict === 'enriched' ? 'ok' : '')]);
-          });
-          describe(); box.append(summary, ...rows);
-          return box;
-        }));
+        const kept=Object.entries(values.chosen_markers).filter(([name])=>values.parent_values.includes(name));
+        markerReview.replaceChildren(...(kept.length?kept.map(([name,list])=>node('div',{class:'row'},[
+          node('span',{class:'muted grow',text:name+': '+list.filter(m=>values.markers.includes(m)).length+' of '+values.markers.length+' markers for clustering'}),
+          node('button',{class:'btn small',text:'Use all selected',onclick:()=>{delete values.chosen_markers[name];drawMarkers();mark();}}),
+          help('Review and edit this choice in Marker figures → Marker review.')
+        ])):[node('p',{class:'muted',text:'Clustering: all '+values.markers.length+' selected markers.'})]));
       };
+      markerControls.insertBefore(markerReview,preprocess);
       drawMarkers();
       const status = node('p', {class:'muted', role:'status'});
       const save = async () => {
-        readPhenotypingSettings(settings.body, values);
+        readPhenotypingSettings(holder, values);
         saved = await post(route('/subpheno_settings'), {changes:changes(), revision:saved.revision});
-        Object.assign(values, saved.values); state.values = values; mark();
+        Object.assign(values, JSON.parse(JSON.stringify(saved.values))); state.values = values; mark();
       };
+      current.useReviewedMarkers=async (request,markers)=>{
+        if(!holder.isConnected)throw Error('Open Sub-phenotyping again.');
+        await save();await imageSelectionSave;
+        await post(route('/marker_review'),{...request,action:'apply',markers,revision:saved.revision});
+        if(!holder.isConnected)return;
+        saved=await get(route('/subpheno_settings'));
+        values.chosen_markers=JSON.parse(JSON.stringify(saved.values.chosen_markers));drawMarkers();mark();
+      };
+      // One input selection for clustering and exploration; gallery marker choices only change the view.
+      const figureBox=node('details',{class:'studio-options studio-marker-settings','data-marker-figures':''});
+      const figureNote=node('p',{class:'hint',role:'status'});
+      figureBox.append(node('summary',{text:'Marker figures'}));
+      markerControls.insertBefore(figureBox,preprocess.nextSibling);
+      const figureInfo=await get(route('/subpheno_figures')).catch(error=>{figureNote.textContent=error.message;return {defaults:{}};});
+      if(!holder.isConnected)return;
+      const figureDefaults={patient_column:'',z:1.5,min_cells:100,
+        transform:'auto',cofactor:5,output_dir:figureInfo.defaults.output_dir||'',variation:'iqr',pair:[],stratify:[],
+        figures:figureInfo.defaults.figures||['dot']};
+      const figValues={...figureDefaults,...values.figure_options};
+      const figureChoices=Object.entries(figureInfo.figure_choices||{});
+      let selectedFigures=new Set(figValues.figures.filter(kind=>figureChoices.some(([key])=>key===kind)));
+      let updateFigureControls=()=>{},figureBusy=false;
+      const figureList=node('div',{class:'studio-markers studio-figure-choices','aria-label':'Figures to generate'});
+      const figureRequired=node('p',{class:'hint',role:'status',hidden:true});
+      const patients=choice([['','None'],...(saved.columns||[]).map(c=>[c,c])],figValues.patient_column,'Figure patient column');
+      let strata=figValues.stratify.slice();
+      const strataMenu=node('details',{class:'studio-marker-menu','aria-label':'Figure stratification columns'});
+      const strataSummary=node('summary',{text:strata.length?strata.join(', '):'None'});
+      const strataList=node('div',{class:'studio-markers'});
+      strataMenu.append(strataSummary,strataList);
+      const cutoff=node('input',{type:'number',min:'-5',max:'10',step:'0.1',value:figValues.z,'aria-label':'High expression Z cutoff'});
+      const directory=node('input',{type:'text',value:figValues.output_dir,'aria-label':'Marker figures output folder'});
+      const minimum=node('input',{type:'number',min:'1',max:'1000000',step:'1',value:figValues.min_cells,'aria-label':'Minimum cells per sample'});
+      const spread=choice([['iqr','IQR (middle 50%)'],['sd','Standard deviation'],['relative_iqr','IQR / reference SD']],figValues.variation,'Marker variation metric');
+      const pairX=choice([],'','Co-expression X'),pairY=choice([],'','Co-expression Y');
+      const readFigureOptions=()=>{
+        values.figure_options={patient_column:patients.value,z:Number(cutoff.value),min_cells:Number(minimum.value),
+          transform:values.transform,cofactor:values.cofactor,output_dir:directory.value.trim(),variation:spread.value,
+          pair:pairX.value&&pairY.value&&pairX.value!==pairY.value?[pairX.value,pairY.value]:[],stratify:strata,
+          figures:figureChoices.filter(([key])=>selectedFigures.has(key)).map(([key])=>key)};
+        mark();updateFigureControls();
+      };
+      syncFigureMarkers=()=>{
+        const markers=values.markers||[],previous=values.figure_options?.pair||figValues.pair||[];
+        [pairX,pairY].forEach((select,index)=>{
+          const selected=select.value||previous[index];
+          select.replaceChildren(node('option',{value:'',text:'None'}),...markers.map(m=>node('option',{value:m,text:m})));
+          select.value=markers.includes(selected)?selected:(markers.length>=2?markers[index]:'');
+        });
+        updateFigureControls();
+      };
+      syncFigureMarkers();
+      strataList.append(...(saved.columns||[]).map(c=>{
+        const tick=node('input',{type:'checkbox',checked:strata.includes(c),'aria-label':'Stratify by '+c});
+        tick.onchange=()=>{
+          strata=tick.checked?[...strata,c]:strata.filter(v=>v!==c);
+          strataSummary.textContent=strata.length?strata.join(', '):'None';readFigureOptions();
+        };
+        return node('label',{},[tick,node('span',{text:c})]);
+      }));
+      [patients,cutoff,directory,minimum,spread,pairX,pairY].forEach(input=>input.addEventListener('change',readFigureOptions));
+      figureList.append(...figureChoices.map(([key,label])=>{
+        const tick=node('input',{type:'checkbox',checked:selectedFigures.has(key),'aria-label':'Generate '+label});
+        tick.onchange=()=>{if(tick.checked)selectedFigures.add(key);else selectedFigures.delete(key);readFigureOptions();};
+        return node('label',{},[tick,node('span',{text:label})]);
+      }));
+      const selectFigures=all=>{
+        selectedFigures=new Set(all?figureChoices.map(([key])=>key):[]);
+        [...figureList.querySelectorAll('input')].forEach(tick=>{tick.checked=all;});
+        readFigureOptions();
+      };
+      const showSaved=node('button',{class:'btn small',text:'Show saved figures',hidden:!figureInfo.latest,
+        onclick:()=>{if(figureInfo.latest)markerFigureGallery(figureInfo.latest);}});
+      const generate=node('button',{class:'btn primary',text:'Generate selected',onclick:async()=>{
+        figureBusy=true;updateFigureControls();figureNote.textContent='Starting figures…';
+        try{
+          readFigureOptions();await save();await imageSelectionSave;
+          const found=await post(route('/subpheno_figures'),{revision:saved.revision});
+          await refreshJobs();
+          for(let i=0;i<2400;i++){
+            await new Promise(resolve=>setTimeout(resolve,1500));
+            if(!holder.isConnected)return;
+            const {job}=await get(route('/jobs/'+found.job.id));
+            figureNote.textContent=job.message||'Generating figures…';
+            if(ACTIVE_JOBS.includes(job.status))continue;
+            if(job.status==='done'){
+              figureInfo.latest=job;showSaved.hidden=false;markerFigureGallery(job);
+              figureNote.textContent=job.result.figures.length+' figures saved. '+(job.result.metadata.notes||[]).join(' ');
+              await refreshJobs();
+            }
+            break;
+          }
+        }catch(error){figureNote.textContent=error.message;}
+        finally{figureBusy=false;updateFigureControls();}
+      }});
+      const figureFields={
+        patient:field('Compare samples by',patients,'Optional: choose any sample category, such as subject, specimen, slide or batch. None keeps pooled measurements and needs no metadata. Sample differences can be biological or technical; they are not automatically removed. The patient heatmap requires a sample column.'),
+        strata:field('Stratify by',strataMenu,'Choose up to four category columns. Heatmaps separate each sample and category. Group comparisons average eligible sample percentages, or pool cells when no sample column is selected.'),
+        cutoff:field('High: Z >',cutoff,'Marker mean + Z × SD, across all selected cells. One fixed cutoff across patients and groups. Exploratory, not a validated positive gate.'),
+        minimum:field('Min. cells',minimum,'Minimum measured cells per sample and phenotype, for each marker. Smaller samples are flagged and excluded from sample averages. Marker review uses this minimum for its inspection shortlist.'),
+        variation:field('Variation',spread,'Middle 50% spread (IQR), or standard deviation. Relative IQR divides by marker SD across selected cells. Spread can reflect biology, staining differences or noise.'),
+        pairX:field('Pair X',pairX,'Choose two different markers from the Marker panel above.'),
+        pairY:field('Pair Y',pairY),
+      };
+      updateFigureControls=()=>{
+        const has=kind=>selectedFigures.has(kind);
+        const grouped=has('patients')||has('groups');
+        figureFields.patient.hidden=!(grouped||has('histogram')||has('review'));
+        figureFields.strata.hidden=!grouped;
+        figureFields.minimum.hidden=!(grouped||has('review')||(has('histogram')&&patients.value));
+        figureFields.cutoff.hidden=![...selectedFigures].some(kind=>!['variation','review'].includes(kind));
+        figureFields.variation.hidden=!has('variation');
+        figureFields.pairX.hidden=figureFields.pairY.hidden=!has('coexpression');
+        const reason=!selectedFigures.size?'Select at least one figure.':
+          has('patients')&&!patients.value?'Choose a sample column in Figure options.':
+          has('groups')&&!strata.length?'Choose a Stratify by column.':
+          has('coexpression')&&(!pairX.value||!pairY.value||pairX.value===pairY.value)?'Choose two different markers for co-expression.':'';
+        figureRequired.textContent=reason;figureRequired.hidden=!reason;
+        generate.disabled=figureBusy||!!reason;
+      };
+      figureBox.append(
+        node('div',{class:'row'},[node('strong',{class:'grow',text:'Figures to generate'}),
+          node('button',{class:'btn small',text:'All',onclick:()=>selectFigures(true)}),
+          node('button',{class:'btn small',text:'None',onclick:()=>selectFigures(false)})]),
+        figureList,figureFields.strata,figureFields.cutoff,figureFields.pairX,figureFields.pairY,
+        field('Save in',directory,'Saves only selected figure types as PNGs, PDFs and a figure book, plus Parquet summaries and settings. Each run gets a new folder.'),
+        node('details',{class:'studio-options'},[node('summary',{text:'Figure options'}),
+          figureFields.patient,figureFields.minimum,
+          figureFields.variation]),
+        figureRequired,
+        node('div',{class:'row'},[generate,showSaved,help('Uses the checked images, phenotypes, region filters, markers and transformation above. Untick any phenotype you want to exclude. Figures show expression before clustering normalization; per-phenotype clustering subsets do not limit them.')]),figureNote);
+      updateFigureControls();
       const start = async mode => {
-        const unlock = lockPhenotypingSettings(settings.body, [findButton,runButton]);
+        if(modelLoading)throw Error('Wait for the model to load.');
+        const unlock = lockPhenotypingSettings(holder, [runButton]);
         try {
-          readPhenotypingSettings(settings.body, values);
+          readPhenotypingSettings(holder, values);
           if (Object.keys(changes()).length) await save();
           const answer = await runCommand('run_subphenotyping', {mode, overwrite:mode==='run' && overwrite.input.checked, settings_revision:saved.revision}, {confirmed:true});
           showResult(answer); status.textContent = answer.message;
@@ -6569,29 +7809,12 @@
           return answer.data?.job?.id || null;
         } finally { unlock(); }
       };
-      const findButton = node('button', {class:'btn', text:'Find markers', onclick:async () => {
-        findButton.disabled = true;
-        try {
-          const id = await start('discover');
-          for (let i = 0; id && i < 1200; i++) {
-            await new Promise(resolve => setTimeout(resolve, 1500));
-            if (!holder.isConnected) return;
-            const job = ((await get(route('/jobs'))).jobs || []).find(item => item.id === id);
-            if (!job || ['starting', 'running'].includes(job.status)) { status.textContent = job?.message || status.textContent; continue; }
-            if (job.status !== 'done') { status.textContent = job.message || 'Finding markers stopped.'; break; }
-            discovery = job.result.discovery; values.chosen_markers = {}; drawMarkers(); mark();
-            status.textContent = 'Markers found; tick or untick, then Run.';
-            break;
-          }
-        } catch (error) { status.textContent = error.message; }
-        finally { findButton.disabled = false; }
-      }});
       const runButton = node('button', {class:'btn primary', text:'Run sub-phenotyping', onclick:async () => {
         runButton.disabled = true;
         try { if (await start('run')) follow(); } catch (error) { status.textContent = error.message; }
         finally { runButton.disabled = false; }
       }});
-      current.runBar([node('div', {class:'row'}, [findButton, runButton]), status], 'Runs on the whole combined table in the background.');
+      current.runBar([node('div', {class:'row'}, [runButton]), status], 'Uses the images checked above. Review and save names when done.');
       const follow = groupList({results, holder, state, kind:'subphenotype', noun:'Phenotype', running:'Sub-phenotyping is running', none:'No sub-phenotyping run yet.'});
       follow();
     };
@@ -6604,8 +7827,11 @@
 
     const trainingOptions = async (holder, current) => {
       const [available, initial] = await Promise.all([get(route('/selection_options')), get(route('/mrml_settings'))]);
+      if(!holder.isConnected)return;
       let saved = initial, models = initial.models || [];
       const values = JSON.parse(JSON.stringify(saved.values)), columns = initial.columns;
+      if(!values.model_id&&initial.loaded_model_id){values.model_id=initial.loaded_model_id;
+        values.keep_detailed_predictions=models.find(m=>m.model_id===values.model_id)?.keep_detailed_predictions!==false;}
       const form = node('div', {class:'studio-form'}), status = node('p', {class:'muted', role:'status'});
       const dirty = chip('Saved', 'ok');
       const changes = () => Object.fromEntries(Object.keys(values).filter(k => JSON.stringify(values[k]) !== JSON.stringify(saved.values[k])).map(k => [k, values[k]]));
@@ -6628,12 +7854,13 @@
       const source=select('ground_truth_col','Training reference column',referenceColumns.map(c=>[c,c]));
       const workflow=select('workflow','MR-ML workflow',[['saved_model','Use a saved reference model'],['classic','Classic MR-ML']]);
       const description=node('p',{class:'hint'}), classic=node('div'), stored=node('div');
+      stored.append(node('p',{class:'hint',text:'Runs on the images checked in the table above.'}));
       form.append(node('div',{class:'studio-sec-h'},[node('span',{text:'MR-ML settings'}),dirty,
         help('Use an existing Manual Reference model, or run Classic MR-ML to train on reference cells and optionally add F1-weighted votes from other methods. Both operate on the combined table across all ROIs.')]),field('Workflow',workflow),description,field('Reference',source),stored,classic);
       const model=select('model_id','Saved reference model',[]), modelInfo=node('p',{class:'hint'});
       const drawModels=()=>{
         model.replaceChildren(node('option',{value:'',text:models.length?'Choose a saved model…':'No compatible model yet'}),...models.map(m=>node('option',{
-          value:m.model_id,text:(m.auto_train?'Auto · ':'')+m.method+' · '+m.column+' · '+new Date(m.trained).toLocaleString(),
+          value:m.model_id,text:referenceModelLabel(m),
         })));
         if(!models.some(m=>m.model_id===values.model_id)){
           const replacement=models.find(m=>(m.replaces||[]).includes(values.model_id));
@@ -6652,9 +7879,79 @@
       stored.append(field('Model',model),modelInfo,node('div',{class:'row'},[
         node('button',{class:'btn small',text:'Refresh models',onclick:async()=>{try{models=(await get(route('/mrml_settings'))).models||[];drawModels();describeModel();mark();}catch(e){status.textContent=e.message;}}}),
         node('button',{class:'btn small',text:'Manual reference…',onclick:()=>window.dispatchEvent(new CustomEvent('studio-reference-method',{detail:{method:'reference'}}))})]),
-        tick('preserve_reference_labels','Keep existing reference labels','Keeps valid labels from the reference column below, with blank scores. Untick to predict every eligible cell. If that column is absent, all eligible cells are predicted.'),
+        tick('preserve_reference_labels','Keep existing reference labels','Keeps your manual labels in the output. Turn off when generating predictions for F1 assessment, so labelled cells receive model predictions too.'),
         tick('match_scale','Match marker scales between projects','Optional quantile matching to the training data. Use only when measurement scales differ. Morphology and H&E retain their measured scale.'));
+      const scope=choice([['all','All model phenotypes'],['selected','Selected phenotypes']],values.limit_phenotypes?'selected':'all','Phenotypes to predict');
+      const phenotypeList=node('div',{class:'studio-method-list'}), supportNote=node('p',{class:'hint',role:'status'});
+      const supportSummary=node('summary',{text:'Phenotypes to predict'});
+      const phenotypeSwitches=referencePhenotypeSwitches();
+      const outputSubset=node('details',{class:'studio-options',open:values.limit_phenotypes},[
+        node('summary',{},[node('span',{text:'Validation and output subset'}),help('Optional extra filter: if a type outside this subset wins, the result stays unassigned. Train / Predict switches above are shared with Manual reference; Predict off removes a type from competition without increasing other confidence scores.')]),
+        field('Output',scope),phenotypeList,supportNote]);
+      const supportBox=node('details',{class:'studio-options'},[supportSummary,outputSubset]);
+      form.insertBefore(phenotypeSwitches,stored);
+      let referenceNamesSequence=0;
+      const loadReferenceNames=async()=>{const token=++referenceNamesSequence;
+        try{const found=await get(route('/manual_reference')+'?column='+encodeURIComponent(source.value));
+          if(token===referenceNamesSequence&&form.isConnected&&workflow.value==='classic')phenotypeSwitches.setPhenotypes([
+            ...(found.phenotypes||[]),...(found.counts.groups||[]).map(([name])=>name),...values.exclude_phenotypes]);
+        }catch(error){status.textContent=error.message;}};
+      phenotypeSwitches.addEventListener('toggle',()=>{if(phenotypeSwitches.open&&workflow.value==='classic')loadReferenceNames();});
+      source.addEventListener('change',()=>{if(phenotypeSwitches.open&&workflow.value==='classic')loadReferenceNames();});
+      values.phenotype_groups ||= {};
+      const groupRows=node('div');
+      const grouping=node('details',{class:'studio-options',open:Object.keys(values.phenotype_groups).length>0},[
+        node('summary',{text:'Group output names (optional)'}),
+        node('p',{class:'hint',text:'Give several types the same output name, such as Epithelia. The saved model keeps its original types.'}),
+        tick('use_model_groups','Use groups saved in the model','Turn off to use detailed names, or define different groups below.'),
+        tick('keep_detailed_predictions','Save detailed labels too','Adds a second column ending in _detail with the strongest subtype within the predicted group.'),groupRows]);
+      let support=null, supportSequence=0;
+      const drawPhenotypes=()=>{
+        phenotypeList.replaceChildren();groupRows.replaceChildren();
+        if(workflow.value==='saved_model')phenotypeSwitches.setPhenotypes((support?.phenotypes||[]).map(item=>item.phenotype));
+        (support?.phenotypes||[]).forEach(item=>{
+          const box=node('input',{type:'checkbox','aria-label':'Include in output '+item.phenotype});
+          box.checked=!values.limit_phenotypes||values.prediction_phenotypes.includes(item.phenotype);
+          box.disabled=!values.limit_phenotypes;
+          box.onchange=()=>{values.prediction_phenotypes=[...phenotypeList.querySelectorAll('input:checked')].map(b=>b.dataset.phenotype);mark();};
+          box.dataset.phenotype=item.phenotype;
+          const score=item.cells?'Saved validation F1 '+item.f1.toFixed(2)+' · '+item.cells+' cells':'No saved validation examples';
+          phenotypeList.append(node('label',{title:score},[box,node('span',{text:item.phenotype+(item.suggested?' · suggested':' · needs checking')})]));
+          const output=node('input',{type:'text',value:values.phenotype_groups[item.phenotype]||'',placeholder:item.phenotype,
+            maxlength:60,'aria-label':'Output name for '+item.phenotype});
+          output.onchange=()=>{const name=output.value.trim();
+            if(name&&name!==item.phenotype)values.phenotype_groups[item.phenotype]=name;
+            else delete values.phenotype_groups[item.phenotype];mark();};
+          groupRows.append(field(item.phenotype,output));
+        });
+      };
+      scope.onchange=()=>{values.limit_phenotypes=scope.value==='selected';
+        if(values.limit_phenotypes&&!values.prediction_phenotypes.length)values.prediction_phenotypes=(support?.phenotypes||[]).map(p=>p.phenotype);
+        drawPhenotypes();mark();};
+      const inspectPanel=async()=>{
+        const sequence=++supportSequence;support=null;suggested.disabled=true;drawPhenotypes();
+        if(!model.value){supportNote.textContent='Choose a model to inspect its phenotypes.';return;}
+        supportNote.textContent='Checking available features on saved validation cells…';
+        try{const found=await post(route('/mrml_support'),{model_id:model.value});if(sequence!==supportSequence)return;
+          support=found;supportNote.textContent=found.features.length+' features available'+(found.missing.length?' · '+found.missing.length+' missing':'')+'. '+
+            'Check suggestions in this project. Unselected types stay unassigned.';
+          supportSummary.textContent='Phenotypes to predict · '+found.phenotypes.filter(p=>p.suggested).length+' suggested / '+found.phenotypes.length+' learned';
+          drawPhenotypes();suggested.disabled=!support.phenotypes.some(p=>p.suggested);
+        }catch(error){if(sequence===supportSequence)supportNote.textContent=error.message;}
+      };
+      const suggested=node('button',{class:'btn small',text:'Select supported phenotypes',disabled:true,onclick:()=>{
+        values.prediction_phenotypes=(support?.phenotypes||[]).filter(p=>p.suggested).map(p=>p.phenotype);
+        values.limit_phenotypes=true;scope.value='selected';drawPhenotypes();mark();
+      }});
+      outputSubset.append(node('div',{class:'row'},[suggested,help('Uses saved validation with the available markers: at least 3 cells, precision and recall ≥ 0.50. “Needs checking” means low agreement or too little validation.') ]));
+      stored.append(supportBox,grouping);
+      model.addEventListener('change',()=>{values.prediction_phenotypes=[];values.phenotype_groups={};values.limit_phenotypes=false;scope.value='all';suggested.disabled=true;
+        values.keep_detailed_predictions=models.find(m=>m.model_id===model.value)?.keep_detailed_predictions!==false;
+        grouping.querySelector('[data-setting="keep_detailed_predictions"]').checked=values.keep_detailed_predictions;
+        inspectPanel();mark();});
+      supportBox.addEventListener('toggle',()=>{if(supportBox.open&&!support)inspectPanel();});
       drawModels();describeModel();
+      if(model.value)inspectPanel();
       const mode=choice([['reference','Reference cells only'],['ensemble','Reference + F1-weighted methods']],values.phenotyping_methods.length?'ensemble':'reference','MR-ML mode');
       const methods=node('div',{class:'studio-method-list'}), picks=[];
       const drawMethods=()=>{
@@ -6702,11 +7999,7 @@
         field('Check against',select('validation_ground_truth_col','MR-ML validation reference',[['','Split training reference'],...referenceColumns.map(c=>[c,c])]),'External validation uses cells absent from training and F1 weighting. Cells labelled in both references are omitted from validation when the option below is on.'),
         tick('drop_overlapping_validation','Exclude overlapping validation cells'),
         tick('use_z_normalization','Z-score markers within each batch'),
-        field('Batch column',select('batch_normalization_col','MR-ML batch column',columns.map(c=>[c,c]))),
-        field('Exclude labels',input('exclude_phenotypes_text','MR-ML labels to predict',{value:values.exclude_phenotypes.join(', ')}),'Comma-separated labels excluded from training and method votes.'));
-      // This text control represents an array; it is not a separate persisted setting.
-      const excluded=advanced.querySelector('[data-setting="exclude_phenotypes_text"]');excluded.removeAttribute('data-setting');
-      excluded.oninput=()=>{delete values.exclude_phenotypes_text;values.exclude_phenotypes=excluded.value.split(',').map(x=>x.trim()).filter(Boolean);mark();};
+        field('Batch column',select('batch_normalization_col','MR-ML batch column',columns.map(c=>[c,c]))));
       classic.append(advanced);
       // A reference is optional only when applying an existing model.
       const filterFields=node('div',{},[field('Where',select('filter_col','MR-ML filter column',columns.map(c=>[c,c]))),field('Equals',input('filter_val','MR-ML filter value'))]);
@@ -6725,21 +8018,25 @@
         field('Below cutoff',input('refined_low_confidence_label','MR-ML low-score label'))]);
       form.append(field('Save as',output),outputs,overwrite.row);holder.append(form);
       const drawWorkflow=()=>{const useSaved=workflow.value==='saved_model';stored.hidden=!useSaved;classic.hidden=useSaved;
+        phenotypeSwitches.setLegacyTraining(useSaved?[]:values.exclude_phenotypes);
+        if(phenotypeSwitches.open&&!useSaved)loadReferenceNames();
+        if(useSaved)phenotypeSwitches.setPhenotypes((support?.phenotypes||[]).map(item=>item.phenotype));
         description.textContent=useSaved?'Apply an existing Manual Reference model across the cohort. No new model is trained unless missing features require adaptation.':
           'Classic MR-ML: train from reference cells, optionally adding F1-weighted votes from other phenotyping methods.';mark();};
       workflow.addEventListener('change',drawWorkflow);drawWorkflow();
-      const read=()=>{readPhenotypingSettings(form,values);form.querySelectorAll('[data-feature-weight]').forEach(box=>values.feature_weights[box.dataset.featureWeight]=Number(box.value));values.exclude_phenotypes=excluded.value.split(',').map(x=>x.trim()).filter(Boolean);delete values.exclude_phenotypes_text;
+      const read=()=>{readPhenotypingSettings(form,values);form.querySelectorAll('[data-feature-weight]').forEach(box=>values.feature_weights[box.dataset.featureWeight]=Number(box.value));delete values.exclude_phenotypes_text;
         if(mode.value==='reference')values.phenotyping_methods=[];mark();};
-      const save=async()=>{read();saved=await post(route('/mrml_settings'),{changes:changes(),revision:saved.revision});Object.assign(values,saved.values);mark();};
+      const save=async()=>{await phenotypeSwitches.flush();read();saved=await post(route('/mrml_settings'),{changes:changes(),revision:saved.revision});Object.assign(values,saved.values);mark();};
       const saveButton=node('button',{class:'btn',text:'Save settings',onclick:async()=>{try{await save();status.textContent='Saved for Studio and Classic MR-ML.';}catch(e){status.textContent=e.message;}}});
       const runButton=node('button',{class:'btn primary',text:'Run MR-ML',onclick:async()=>{
         const unlock=lockPhenotypingSettings(form,[saveButton,runButton]);
         try{read();if(values.workflow==='classic'&&mode.value==='ensemble'&&!values.phenotyping_methods.length)throw Error('Choose methods to combine, or use Reference cells only.');
-          await save();const answer=await runCommand('run_mr_ml',{settings_revision:saved.revision,overwrite:overwrite.input.checked},{confirmed:true});
+          await save();let answer;
+          answer=await runCommand('run_mr_ml',{settings_revision:saved.revision,overwrite:overwrite.input.checked},{confirmed:true});
           showResult(answer);status.textContent=answer.message;if(answer.status==='done'){overwrite.input.checked=false;await refreshJobs();showTab('jobs');}
         }catch(e){status.textContent=e.message;}finally{unlock();}
       }});
-      current.runBar([node('div',{class:'row'},[saveButton,runButton]),status],'Runs on the whole combined table in the background; results appear in Jobs.');
+      current.runBar([node('div',{class:'row'},[saveButton,runButton]),status],'Runs on the selected images. Results appear in Jobs.');
       if(current.mrmlIntent){
         const intent=current.mrmlIntent;values.workflow='saved_model';workflow.value='saved_model';values.enable_filter=false;form.querySelector('[data-setting="enable_filter"]').checked=false;filterFields.hidden=true;
         if(columns.includes(intent.column)){values.ground_truth_col=intent.column;source.value=intent.column;}
@@ -6751,26 +8048,46 @@
     // ------------------------------------------------------------ jobs
     // Saved results: Studio never rewrites the table on its own. Its columns wait beside the combined table (read with it
     // at once) until Write into the table; tables Studio makes are Parquet, with a CSV copy for classic on request.
-    const savedBox = section('Saved results', {tip:'What Studio saved: result columns wait beside the combined table (Parquet files) and are ' +
-      'read with it at once; classic sees them too. Write into the table puts them in for good (the CSV, or Studio’s Parquet table), in ' +
-      'the background. Tables Studio makes are Parquet; Save a CSV copy makes one for classic SPACEMAP.'});
+    const savedBox = section('Saved results', {tip:'Predictions and labels save automatically in Parquet and load with your table. ' +
+      'Write into the table combines them with the original file. CSV is written only when you request it.'});
     const savedStatus = node('p', {class:'muted', role:'status'});
     const drawSaved = value => {
       const rows = [];
+      if(value.annotations?.length){
+        const picked=new Set(),checks=[];
+        const write=node('button',{class:'btn small primary',text:'Write selected GeoJSON files',disabled:true,onclick:async()=>{
+          write.disabled=true;
+          try{
+            await post(route('/saved/write_annotations'),{items:value.annotations.filter(item=>picked.has(item.id)).map(({id,stamp})=>({id,stamp}))});
+            savedStatus.textContent='Writing annotation files in the background…';await refreshJobs();
+          }catch(error){savedStatus.textContent=error.message;write.disabled=!picked.size;}
+        }});
+        const all=node('input',{type:'checkbox','aria-label':'Select all pending annotation files'});
+        const sync=()=>{write.disabled=!picked.size;all.checked=checks.length>0&&checks.every(t=>t.checked);all.indeterminate=checks.some(t=>t.checked)&&!all.checked;};
+        all.onchange=()=>{checks.forEach(t=>{t.checked=all.checked;t.checked?picked.add(t.dataset.id):picked.delete(t.dataset.id);});sync();};
+        rows.push(node('div',{class:'row'},[all,node('strong',{text:'Pending annotation edits'}),help('Edited copies are already saved. Write replaces only the selected original GeoJSON files, retaining their filenames and an earlier version in History. Changed originals stop the write. Reviewer suggestions appear here only after Accept & apply.')]));
+        const files=node('div',{class:'studio-scroll',style:'max-height:180px;overflow:auto'});
+        for(const item of value.annotations){
+          const tick=node('input',{type:'checkbox','aria-label':'Write '+item.name,'data-id':item.id});checks.push(tick);
+          tick.onchange=()=>{tick.checked?picked.add(item.id):picked.delete(item.id);sync();};
+          files.append(node('div',{class:'row'},[tick,node('span',{class:'grow',text:item.name,title:item.image+' · '+item.source}),node('span',{class:'muted',text:item.missing?'Source missing':'Pending'})]));
+        }
+        rows.push(files,write);
+      }
       if (!value.table) rows.push(node('p', {class:'muted', text:'No combined table yet.'}));
       else {
         const fresh = value.pending.filter(item => !item.stale), stale = value.pending.filter(item => item.stale);
         rows.push(node('p', {class:'muted', text:value.table + ': ' + (fresh.length || value.labels ? fresh.length + ' column' + (fresh.length === 1 ? '' : 's') +
-          (value.labels ? ' and ' + value.labels + ' label' + (value.labels === 1 ? '' : 's') : '') + ' waiting to be written in' : 'nothing waiting')}));
+          (value.labels ? ' and ' + value.labels + ' label' + (value.labels === 1 ? '' : 's') : '') + ' saved in Parquet' : 'no separate saved changes')}));
         fresh.forEach(item => rows.push(node('div', {class:'studio-folder'}, [node('span', {class:'grow mono', text:item.column, title:(item.source || '') + ' · ' + (item.saved_at || '')}),
           node('button', {class:'btn small ghost', text:'Discard', onclick:async () => {
-            if (!confirm('Discard ' + item.column + '? It has not been written into the table, so it cannot be brought back.')) return;
-            try { drawSaved(await post(route('/saved/discard'), {columns:[item.column]})); savedStatus.textContent = item.column + ' discarded.'; } catch (error) { savedStatus.textContent = error.message; }
+            if (!confirm('Discard pending ' + item.column + '? ' + (item.in_table ? 'The existing values in the table will remain.' : 'This saved result will be removed.'))) return;
+            try { drawSaved(await post(route('/saved/discard'), {columns:[item.column]})); await tablesChanged(); savedStatus.textContent = item.column + ' discarded.'; } catch (error) { savedStatus.textContent = error.message; }
           }})])));
         if (stale.length) rows.push(node('div', {class:'studio-import'}, [node('p', {class:'hint', text:stale.length + ' saved column' + (stale.length === 1 ? '' : 's') +
             ' no longer match the table (it was rewritten). Re-apply them by cell ID, or discard them.'}),
           node('div', {class:'row'}, [node('button', {class:'btn small', text:'Re-apply by cell ID', onclick:async () => {
-            try { drawSaved(await post(route('/saved/reapply'), {})); } catch (error) { savedStatus.textContent = error.message; }
+            try { drawSaved(await post(route('/saved/reapply'), {})); await tablesChanged(); } catch (error) { savedStatus.textContent = error.message; }
           }})])]));
         const writing = value.writing?.state === 'writing';
         if (fresh.length || value.labels || writing) rows.push(node('div', {class:'row'}, [node('button', {class:'btn primary small', text:writing ? 'Writing…' : 'Write into the ' + (value.parquet ? 'table' : 'CSV'),
@@ -6793,12 +8110,20 @@
     };
     let savedTimer = null;
     const loadSaved = async () => { try { drawSaved(await get(route('/saved'))); } catch (error) { savedStatus.textContent = error.message; } };
+    const tablesChanged = async () => {
+      lists?.invalidate();
+      if(selected==='tab7'&&frame?.refreshItems)await frame.refreshItems();
+      await hooks.refreshPhenotypingLinks?.();
+      await loadColours(frame);
+      if(!jobsPane.hidden)await loadSaved();
+      loadOverview();
+    };
     const pollSaved = async () => {
       clearTimeout(savedTimer);
       let value; try { value = await get(route('/saved')); } catch (_) { return; }
       drawSaved(value);
       if (value.writing?.state === 'writing') savedTimer = setTimeout(pollSaved, 3000);
-      else if (value.writing?.state === 'done') savedStatus.textContent = 'Written into ' + value.table + '.';
+      else if (value.writing?.state === 'done') { await tablesChanged(); savedStatus.textContent = 'Written into ' + value.table + '.'; }
     };
     // This user's SPACEMAP servers, wherever they run: an old one left running can be stopped (from its own machine).
     const serversBox = section('SPACEMAP servers', {tip:'Every SPACEMAP you have running, on any node. An old one left running can keep ' +
@@ -6822,15 +8147,129 @@
           rows.length > 1 ? node('p', {class:'hint', text:rows.length + ' SPACEMAP servers are running: stop the ones you no longer use.'}) : null);
       } catch (error) { serversBox.body.replaceChildren(node('p', {class:'hint', text:error.message})); }
     };
-    onJobsShown = () => { loadSaved(); loadServers(); };
+    const cacheBox = section('Storage', {tip:'Review verified temporary files before cleaning. Performance caches are listed separately and kept. Hover for purpose and impact; right-click to copy a path. Sizes are measured only when requested.'});
+    let storageEpoch=0, temporaryRequest=0, cacheRequest=0;
+    const diskSize=bytes=>bytes>=1073741824?(bytes/1073741824).toFixed(2)+' GiB':bytes>=1048576?(bytes/1048576).toFixed(1)+' MiB':bytes>=1024?(bytes/1024).toFixed(1)+' KiB':bytes+' B';
+    const storagePathMenu=(row,path,status)=>{row.oncontextmenu=e=>{
+      e.preventDefault();e.stopPropagation();document.querySelector('.lists-context')?.remove();
+      const menu=node('div',{class:'lists-context',role:'menu'});
+      const copy=node('button',{class:'btn small',text:'Copy path',role:'menuitem',onclick:async()=>{
+        try{await navigator.clipboard.writeText(path);}catch(_){const input=node('textarea');input.value=path;document.body.append(input);input.select();document.execCommand('copy');input.remove();}
+        menu.remove();status.textContent='Path copied.';
+      }});menu.append(copy);document.body.append(menu);menu.style.left=Math.min(e.clientX,window.innerWidth-menu.offsetWidth-8)+'px';menu.style.top=Math.min(e.clientY,window.innerHeight-menu.offsetHeight-8)+'px';copy.focus();
+      setTimeout(()=>document.addEventListener('pointerdown',event=>{if(!menu.contains(event.target))menu.remove();},{once:true}),0);menu.onkeydown=event=>{if(event.key==='Escape')menu.remove();};
+    };};
+    const performanceCaches=node('details',{'data-performance-caches':'',class:'studio-storage'}), cacheRows=node('div');
+    const cacheStatus=node('span',{class:'muted grow',role:'status'});let cacheInventory=null;
+    const scanCaches=async()=>{
+      const request=++cacheRequest;cacheStatus.textContent='Measuring…';reviewCaches.disabled=true;
+      try{
+        const value=await get(route('/storage?caches=1'));if(request!==cacheRequest)return;cacheInventory=value;
+        cacheRows.replaceChildren(...value.groups.map(group=>{
+          const box=node('details',{class:'storage-group','data-cache-group':group.id}),rows=node('div',{class:'storage-file-list'});
+          const hint=group.path+'\n'+group.scope+' · '+group.purpose+'\n'+group.impact;
+          const summary=node('summary',{class:'row',title:hint},[node('span',{class:'grow storage-file-name',text:group.name}),node('span',{class:'muted',text:group.count+' · '+diskSize(group.bytes)})]);
+          storagePathMenu(summary,group.path,cacheStatus);
+          if(group.id==='flow_plots')summary.append(node('button',{class:'btn small cache-action',text:'Clear Flow cache',disabled:value.read_only,title:'Clear only generated Flow plots and memberships. Other performance caches stay.',onclick:async e=>{
+            e.preventDefault();e.stopPropagation();
+            if(!confirm('Clear the Flow cache for this project? Gates, labels and figures are kept. Plots rebuild as needed.'))return;
+            const epoch=storageEpoch;e.currentTarget.disabled=true;
+            try{await post(route('/flow_cache'),{action:'clear'});if(epoch!==storageEpoch)return;await scanCaches();cacheStatus.textContent='Cleared · rebuilds as needed.';}
+            catch(error){if(epoch===storageEpoch){await scanCaches();if(epoch===storageEpoch)cacheStatus.textContent=error.message;}}
+          }}));
+          let count=0;const more=node('button',{class:'btn small ghost',text:'More',onclick:()=>renderMore()});
+          const renderMore=()=>{
+            more.remove();const next=group.items.slice(count,count+100);count+=next.length;
+            rows.append(...next.map(item=>{
+              const row=node('div',{class:'row storage-file',title:item.path+'\n'+group.purpose+'\n'+group.impact},[node('span',{class:'grow storage-file-name',text:item.name}),node('span',{class:'muted',text:diskSize(item.bytes)})]);
+              storagePathMenu(row,item.path,cacheStatus);return row;
+            }));if(count<group.items.length)rows.append(more);
+          };
+          box.append(summary,rows);box.ontoggle=()=>{if(box.open&&!count)renderMore();};return box;
+        }));cacheStatus.textContent='Kept · '+diskSize(value.bytes);cacheStatus.title='Performance caches are separate from temporary-file cleanup. Shared caches may serve other projects too.';
+      }catch(error){if(request===cacheRequest)cacheStatus.textContent=error.message;}
+      finally{if(request===cacheRequest)reviewCaches.disabled=false;}
+    };
+    const reviewCaches=node('button',{class:'btn small ghost',text:'Refresh',onclick:e=>{e.preventDefault();e.stopPropagation();scanCaches();}});
+    performanceCaches.append(node('summary',{class:'row'},[node('strong',{text:'Performance caches'}),cacheStatus,reviewCaches]),cacheRows);
+    performanceCaches.ontoggle=()=>{if(performanceCaches.open&&!cacheInventory)scanCaches();};
+    const temporary=node('details',{'data-temporary-files':'',class:'studio-storage'}), temporaryRows=node('div');
+    const temporaryStatus=node('span',{class:'muted grow',role:'status'}), temporaryPicked=new Set();let temporaryPlan=null;
+    const scanTemporary=async()=>{
+      const request=++temporaryRequest;temporaryStatus.textContent='Checking saved outputs…';cleanTemporary.disabled=true;scanTemporaryButton.disabled=true;temporaryRows.inert=true;
+      try{
+        const value=await get(route('/storage'));if(request!==temporaryRequest)return;temporaryPlan=value;temporaryPicked.clear();
+        temporaryRows.replaceChildren(...temporaryPlan.groups.map(group=>{
+          const items=temporaryPlan.items.filter(item=>item.category===group.id),rows=node('div',{class:'storage-file-list'});
+          const groupBox=node('details',{class:'storage-group','data-storage-group':group.id});
+          const box=node('input',{type:'checkbox','aria-label':'Clean '+group.name,disabled:!group.count||temporaryPlan.read_only});
+          const sync=()=>{box.checked=!!items.length&&items.every(i=>temporaryPicked.has(i.id));box.indeterminate=!box.checked&&items.some(i=>temporaryPicked.has(i.id));cleanTemporary.disabled=!temporaryPicked.size;};
+          box.onclick=e=>e.stopPropagation();box.onchange=()=>{items.forEach(item=>box.checked?temporaryPicked.add(item.id):temporaryPicked.delete(item.id));renderRows();sync();};
+          const renderRows=()=>{rows.replaceChildren(...items.map(item=>{
+            const pick=node('input',{type:'checkbox','aria-label':'Clean '+item.name,disabled:temporaryPlan.read_only});pick.checked=temporaryPicked.has(item.id);
+            pick.onchange=()=>{pick.checked?temporaryPicked.add(item.id):temporaryPicked.delete(item.id);sync();};
+            const hint=item.path+'\n'+item.purpose+'\n'+item.impact;
+            const row=node('div',{class:'row storage-file',title:hint,'data-storage-file':item.id},[pick,node('span',{class:'grow storage-file-name',text:item.name}),node('span',{class:'muted',text:diskSize(item.bytes)})]);
+            storagePathMenu(row,item.path,temporaryStatus);return row;
+          }));};
+          groupBox.append(node('summary',{class:'row'},[box,node('span',{class:'grow',text:group.name}),node('span',{class:'muted',text:group.count+' · '+diskSize(group.bytes)})]),rows);
+          groupBox.ontoggle=()=>{if(groupBox.open)renderRows();};return groupBox;
+        }));
+        const retained=Object.entries(temporaryPlan.retained),total=temporaryPlan.groups.reduce((n,g)=>n+g.bytes,0);
+        temporaryStatus.textContent=diskSize(total)+' removable'+(retained.length?' · some retained':'');
+        temporaryStatus.title=retained.map(([reason,n])=>n+' · '+reason).join('\n');
+      }catch(error){if(request===temporaryRequest)temporaryStatus.textContent=error.message;}
+      finally{if(request===temporaryRequest){scanTemporaryButton.disabled=false;temporaryRows.inert=false;}}
+    };
+    const cleanTemporary=node('button',{class:'btn small',text:'Clean selected',disabled:true,onclick:async e=>{
+      e.preventDefault();e.stopPropagation();if(!temporaryPlan||!temporaryPicked.size)return;
+      const picked=temporaryPlan.items.filter(i=>temporaryPicked.has(i.id)),bytes=picked.reduce((n,i)=>n+i.bytes,0);
+      if(!confirm('Remove '+diskSize(bytes)+' of verified temporary files?'+(picked.some(i=>i.category==='history')?' Selected annotation Undo history will be discarded.':'')+' Saved outputs are kept.'))return;
+      const epoch=storageEpoch;cleanTemporary.disabled=true;scanTemporaryButton.disabled=true;temporaryRows.inert=true;temporaryStatus.textContent='Cleaning; preserving saved outputs and heatmaps…';
+      try{
+        const result=await post(route('/storage'),{token:temporaryPlan.token,categories:[...new Set(picked.map(i=>i.category))],ids:picked.map(i=>i.id)});
+        if(epoch!==storageEpoch)return;await scanTemporary();if(epoch!==storageEpoch)return;
+        temporaryStatus.textContent=diskSize(result.bytes)+' freed'+(result.skipped.length?' · '+result.skipped.length+' retained':'');temporaryStatus.title=result.skipped.join('\n');
+      }catch(error){if(epoch===storageEpoch){temporaryStatus.textContent=error.message;cleanTemporary.disabled=false;}}
+      finally{if(epoch===storageEpoch){temporaryRows.inert=false;scanTemporaryButton.disabled=false;}}
+    }});
+    const scanTemporaryButton=node('button',{class:'btn small ghost',text:'Review',onclick:e=>{e.preventDefault();e.stopPropagation();scanTemporary();}});
+    temporary.append(node('summary',{class:'row'},[node('strong',{text:'Temporary files'}),temporaryStatus,scanTemporaryButton,cleanTemporary]),temporaryRows);
+    temporary.ontoggle=()=>{if(temporary.open&&!temporaryPlan)scanTemporary();};cacheBox.body.append(temporary,performanceCaches);
+    const resetStorage=()=>{
+      storageEpoch++;temporaryRequest++;cacheRequest++;temporaryPlan=null;cacheInventory=null;temporaryPicked.clear();
+      temporaryRows.replaceChildren();cacheRows.replaceChildren();temporaryStatus.textContent=cacheStatus.textContent='';temporaryStatus.title=cacheStatus.title='';
+      cleanTemporary.disabled=true;scanTemporaryButton.disabled=reviewCaches.disabled=false;temporaryRows.inert=false;
+      if(!jobsPane.hidden){if(temporary.open)scanTemporary();if(performanceCaches.open)scanCaches();}
+    };
+    onJobsShown = () => { loadSaved(); loadServers(); if(temporary.open&&!temporaryPlan)scanTemporary();if(performanceCaches.open&&!cacheInventory)scanCaches(); };
     if (!jobsPane.hidden) { loadSaved(); loadServers(); }
     const jobRows = node('div');
     const jobCards = new Map(), jobsError = node('p', {class:'hint studio-pad', hidden:true});
-    const noJobs = node('p', {class:'muted studio-pad', text:'No Studio jobs yet.'});
-    jobsPane.append(savedBox.box, section('Background jobs', {tip:'Jobs keep running when you change step or close Studio (or restart it). Each records ' +
-      'time, CPU, memory and GPU in the run log. Stop one here if it would overwrite what you are editing.'}).box, jobsError, jobRows, serversBox.box);
+    const selectedJobs = new Set();
+    const clearJobs = async finished => {
+      clearSelected.disabled = clearFinished.disabled = true;
+      try {
+        await post(route('/jobs/clear'), finished ? {finished:true} : {ids:[...selectedJobs]});
+        selectedJobs.clear(); jobStamp = ''; await refreshJobs();
+      } catch(error) { jobsError.textContent = error.message; jobsError.hidden = false; }
+      finally { updateJobSelection(); }
+    };
+    const clearSelected = node('button', {class:'btn small', text:'Clear selected', disabled:true,
+      title:'Remove selected finished jobs from this list. Saved outputs are kept.', onclick:() => clearJobs(false)});
+    const clearFinished = node('button', {class:'btn small', text:'Clear finished', disabled:true,
+      title:'Clear all finished, failed and stopped jobs from this list. Saved outputs and running jobs are kept.', onclick:() => clearJobs(true)});
+    const updateJobSelection = () => {
+      clearSelected.disabled = !selectedJobs.size;
+      clearFinished.disabled = ![...jobCards.values()].some(card => !ACTIVE_JOBS.includes(card.job.status));
+    };
+    const historyTools = node('div', {class:'row studio-pad'}, [clearSelected, clearFinished,
+      help('Clears job history only. Your saved Parquet results, models and logs are kept.')]);
+    const noJobs = node('p', {class:'muted studio-pad', text:'No jobs in this list.'});
+    jobsPane.append(savedBox.box, cacheBox.box, section('Background jobs', {tip:'Jobs keep running when you change step or close Studio (or restart it). Each records ' +
+      'time, CPU, memory and GPU in the run log. Stop one here if it would overwrite what you are editing.'}).box, historyTools, jobsError, jobRows, serversBox.box);
     let jobStamp = '', jobsBusy = false, running = 0;
-    let trainedJobs=null;
+    let trainedJobs=null, taggedJobs=null, cellResultJobs=null;
     const refreshJobs = async () => {
       if (jobsBusy || !context?.has_project) return; jobsBusy = true;
       try {
@@ -6838,21 +8277,35 @@
         jobsError.hidden = true;
         // Open logs refresh even during a long stage with no new status message.
         jobCards.forEach(card => { if (ACTIVE_JOBS.includes(card.job.status)) card.jobLog.refresh(); });
-        const stamp = JSON.stringify(result); if (stamp === jobStamp) return; jobStamp = stamp;
-        lastJobs = result.jobs; frame?.jobsChanged?.(result.jobs);  // the open step's list follows its running jobs
+        clusterJobsChanged?.(result.jobs);  // render saved profiles before starting heavier table/image refreshes
+        const stamp = JSON.stringify(result); if (stamp === jobStamp) return;
+        lastJobs = result.jobs;
+        const savedCells = result.jobs.filter(job => ((CELL_RESULT_JOBS.includes(job.kind) && !job.result?.diagnose) || (job.kind === 'cell_tagging' && job.result?.updated)) && job.status === 'done');
+        if (cellResultJobs && savedCells.some(job => !cellResultJobs.has(job.id))) {
+          hooks.refreshPhenotypingLinks?.().catch(error => { jobsError.textContent = error.message; jobsError.hidden = false; });
+        }
+        cellResultJobs = new Set(savedCells.map(job => job.id));
+        const tagged = result.jobs.filter(job => job.kind === 'cell_tagging' && job.status === 'done');
+        if (taggedJobs) {
+          const outputs = tagged.filter(job => !taggedJobs.has(job.id) && !job.result?.updated).flatMap(job => job.result?.outputs || []);
+          if (outputs.length) refreshTaggedCells?.(outputs).catch(error => { jobsError.textContent = error.message; jobsError.hidden = false; });
+        }
+        taggedJobs = new Set(tagged.map(job => job.id));
+        frame?.jobsChanged?.(result.jobs);  // the open step's list follows its running jobs
         if(result.auto_reference)document.dispatchEvent(new CustomEvent('spacemap-auto-reference',{detail:result.auto_reference}));
-        const finished=result.jobs.filter(job=>job.kind==='train_reference_model'&&job.status==='done'&&!job.result?.auto_train);
+        const finished=result.jobs.filter(job=>['train_reference_model','reference_collection','model_review'].includes(job.kind)&&job.status==='done'&&job.result?.models?.some(m=>m.model_id)&&!job.result?.auto_train);
         if(trainedJobs)finished.filter(job=>!trainedJobs.has(job.id)).forEach(job=>document.dispatchEvent(new CustomEvent('spacemap-reference-trained',{detail:job})));
         trainedJobs=new Set(finished.map(job=>job.id));
         const before = running;
         running = result.jobs.filter(job => ['starting', 'running', 'stopping'].includes(job.status)).length;
         [jobsBadge, tabBadge].forEach(badge => { badge.textContent = String(running); badge.classList.toggle('idle', !running); });
         jobsRunning = running; updateBusy();
-        if (before && !running) { loadOverview(); frame?.refreshItems?.(); if (!jobsPane.hidden) loadSaved(); }
-        const scroll = jobsPane.scrollTop, present = new Set(result.jobs.map(job => job.id));
-        jobCards.forEach((card, id) => { if (!present.has(id)) { card.remove(); jobCards.delete(id); } });
+        if (before && !running) { lists?.invalidate(); loadOverview(); frame?.refreshItems?.(); if (!jobsPane.hidden) loadSaved(); }
+        const visible = result.jobs.filter(job => !job.hidden || ACTIVE_JOBS.includes(job.status));
+        const scroll = jobsPane.scrollTop, present = new Set(visible.map(job => job.id));
+        jobCards.forEach((card, id) => { if (!present.has(id)) { card.remove(); jobCards.delete(id); selectedJobs.delete(id); } });
         noJobs.remove();
-        result.jobs.forEach((job, index) => {
+        visible.forEach((job, index) => {
           let card = jobCards.get(job.id);
           if (!card || card.jobStamp !== JSON.stringify(job)) {
             const previous = card, logScroll = previous?.jobLog.text.scrollTop || 0;
@@ -6864,8 +8317,12 @@
           }
           if (jobRows.children[index] !== card) jobRows.insertBefore(card, jobRows.children[index] || null);
         });
-        if (!result.jobs.length) jobRows.append(noJobs);
+        if (!visible.length) jobRows.append(noJobs);
+        updateJobSelection();
         jobsPane.scrollTop = scroll;
+        // Only cache a response after all its cards rendered. An interrupted
+        // render must be retried rather than freezing the last running stage.
+        jobStamp = stamp;
       } catch (error) { jobsError.textContent = error.message; jobsError.hidden = false; }
       finally { jobsBusy = false; }
     };
@@ -6911,10 +8368,20 @@
       const kind = active ? 'run' : job.status === 'done' ? 'ok' : job.status === 'failed' ? 'error' : 'warn';
       const timer = node('span', {class:'muted studio-job-timer', 'aria-label':'Job elapsed time'});
       updateJobTimer(timer, job);
+      const stamp = Date.parse(job.started);
+      const started = node('time', {class:'hint studio-job-started', datetime:job.started || '',
+        text:Number.isFinite(stamp) ? new Date(stamp).toLocaleString(undefined, {
+          year:'numeric', month:'short', day:'numeric', hour:'numeric', minute:'2-digit', second:'2-digit', timeZoneName:'short'
+        }) : 'Start time unavailable', title:'Started in your local time zone'});
+      const selected = node('input', {type:'checkbox', 'aria-label':'Select job ' + job.id, disabled:active,
+        title:active ? 'Running jobs stay in the list.' : 'Select to clear from history', checked:selectedJobs.has(job.id),
+        onchange:() => { if(selected.checked)selectedJobs.add(job.id);else selectedJobs.delete(job.id);updateJobSelection(); }});
       const card = node('div', {class:'studio-job', 'data-job-id':job.id}, [
-        node('div', {class:'row'}, [node('strong', {text:JOB_NAMES[job.kind] || job.kind}), node('span', {class:'grow'}),
+        node('div', {class:'row'}, [selected, node('strong', {text:JOB_NAMES[job.kind] || job.kind}), node('span', {class:'grow'}),
           timer,
           chip(active ? Math.round(100 * (job.progress || 0)) + '%' : job.status, kind)]),
+        started,
+        node('div', {class:'hint studio-job-summary', text:job.summary || '', hidden:!job.summary}),
         node('div', {class:'studio-bar'}, [node('div', {style:'width:' + Math.round(100 * (job.progress || (job.status === 'done' ? 1 : 0))) + '%'})]),
         node('p', {class:'muted', text:job.message})]);
       const actions = node('div', {class:'row'});
@@ -6944,6 +8411,9 @@
         job.result.training_tiles + ' training tiles' + (job.result.ap_after !== null ? ' · validation AP ' + Number(job.result.ap_before).toFixed(2) +
         ' \u2192 ' + Number(job.result.ap_after).toFixed(2) : '') + '.'}));
       else if (job.kind === 'tls_candidates' && job.result) card.append(node('p', {class:'muted', text:job.result.total + ' TLS candidates in ' + job.result.column + '. Review in Spatial analysis → TLS candidates.'}));
+      else if (job.kind === 'gland_types' && job.result) card.append(node('p', {class:'muted', text:
+        (job.result.diagnose ? 'K review · ' : '') + Number(job.result.glands || 0).toLocaleString() + ' glands · ' +
+        Number(job.result.beds || 0).toLocaleString() + ' beds. Review in Spatial analysis → Gland types.'}));
       else if (job.kind === 'neighbourhoods' && job.result) card.append(node('p', {class:'muted', text:(job.result.clusters || []).length +
         ' neighbourhoods in ' + job.result.column + '. Name them in Spatial analysis.'}));
       else if (job.kind === 'name_clusters' && job.result) card.append(node('p', {class:'muted', text:Object.keys(job.result.phenotypes || {}).length +
@@ -6996,6 +8466,7 @@
       if (job.status === 'done' && job.result?.column) actions.append(node('button', {class:'btn small', text:'Show result', onclick:async () => {
         try { showResult(await runCommand('show_job_result', {job_id:job.id})); } catch (error) { showResult({message:error.message}); }
       }}));
+      if(job.status==='done'&&job.kind==='marker_figures')actions.append(node('button',{class:'btn small',text:'Show figures',onclick:()=>markerFigureGallery(job)}));
       if (job.result?.agreement) Object.entries(job.result.agreement).forEach(([name, value]) => card.append(node('p', {class:'muted',
         text:name + ': ' + (100 * value.agreement).toFixed(1) + '% agreement across ' + value.cells.toLocaleString() + ' cells.'})));
       if (Object.keys(job.result?.agreement || {}).length) {
@@ -7008,8 +8479,9 @@
         });
         card.append(details);
       }
-      if (job.result?.models) job.result.models.forEach(model => card.append(node('p', {class:'muted', text:model.method + ': ' +
-        (100 * model.held_out_balanced_accuracy).toFixed(1) + '% agreement with held-out reference labels. Choose “Saved reference model” in Manual reference.'})));
+      // Training jobs return a list; Gland types returns interior/exterior models.
+      if (Array.isArray(job.result?.models)) job.result.models.forEach(model => card.append(node('p', {class:'muted', text:model.method + ' · ' +
+        (Number.isFinite(model.held_out_balanced_accuracy) ? (100 * model.held_out_balanced_accuracy).toFixed(1) + '% validation balanced accuracy' : 'Validation score unavailable')})));
       if (job.result?.reference_f1) {
         const details=node('details'), table=node('table',{class:'studio-counts'});
         details.append(node('summary',{text:'Training-reference F1 weights'}));
@@ -7031,19 +8503,24 @@
     }), 1000);
 
     // ------------------------------------------------------------ images, results, the finder
-    let openingImage = false;
+    let openingImage = false, pendingOpeningImage = null;
     const chooseImage = async image => {
-      if (openingImage) return;
+      if (openingImage) { pendingOpeningImage=image; return; }
       openingImage = true; projectMenu.open = false;
       menu.hidden = true; search.setAttribute('aria-expanded', 'false'); search.value = '';
       showResult({message:'Opening ' + image.name + '…'});
       try {
+        const tableChanged=await frame?.selectTableForImage?.(image);
         const result = await openImage(image);
         if (result.status !== 'done') throw new Error(result.message);
         showResult(result);
+        if(tableChanged)await chooseStep('tab7');
       }
       catch (error) { showResult({message:'Could not open this image: ' + error.message}); }
-      finally { openingImage = false; }
+      finally {
+        openingImage = false;
+        if(pendingOpeningImage){const next=pendingOpeningImage;pendingOpeningImage=null;await chooseImage(next);}
+      }
     };
     const heatmapRenderer = () => selectionTools || (heatmapTools ||= window.createStudioSelection({holder:node('div'), node, get,
       session, runCommand, showResult, setSelectionTool}));
@@ -7070,7 +8547,7 @@
         try { showResult(await runCommand('undo', {command_id:result.command_id}, {confirmed:true})); }
         catch (error) { showResult({message:error.message}); }
       }}));
-      if (outputsPane.hidden) tabButtons.outputs.classList.add('fresh');
+      if (jobsPane.hidden && result.status && result.status !== 'done') tabButtons.jobs.classList.add('fresh');
     };
     // Run a checked command; its follow-ups (save changes, choose a name) go to *place*: Results, or a chat card.
     const perform = async (command, options = {}, place = null) => {
@@ -7120,7 +8597,7 @@
       list.replaceChildren();
       const query = imageFilter.value.trim().toLowerCase();
       const shown = entries.filter(image => (image.name + ' ' + image.group).toLowerCase().includes(query));
-      shown.slice(0, 300).forEach(image => list.append(node('button', {type:'button', class:'studio-image', onclick:() => chooseImage(image)},
+      shown.slice(0, 300).forEach(image => list.append(node('button', {type:'button', class:'studio-image','data-view-path':image.path||'', onclick:() => chooseImage(image)},
         [node('span', {text:image.name}), node('small', {text:image.group})])));
       if (!entries.length) list.append(node('p', {class:'muted', text:context?.has_project ? 'No images found yet.' : 'Load a project in classic SPACEMAP first.'}));
       else if (!shown.length) list.append(node('p', {class:'muted', text:'No image matches.'}));
@@ -7189,7 +8666,7 @@
       try {
         const value = await get(route('/context'));
         const changed = !context || context.project !== value.project || context.project_id !== value.project_id;
-        if (changed) { images = null; imagesRequest = null; jobStamp = ''; }
+        if (changed) { images = null; imagesRequest = null; jobStamp = ''; taggedJobs = null; cellResultJobs = null; lists?.reset(); resetStorage(); if(!outputsPane.hidden)lists?.show(); }
         context = value; projectName.textContent = value.project;
         classic.href = value.steps[0].classic; assistant.href = value.assistant; assistant.textContent = value.assistant_label;
         if (changed) {
@@ -7219,7 +8696,7 @@
       if (body) body.scrollTop = scroll;
       syncColour(frame); frame?.sync?.();
     };
-    return {showResult, refreshLive, askCell:async evidence=>{
+    return {showResult, refreshLive, tablesChanged, flushImageSelection:()=>imageSelectionSave, askCell:async evidence=>{
       if(chatState.busy)throw Error('Wait for the Assistant’s current reply, then ask again.');
       return send(evidence.text,evidence);
     }, imageReady:spec=>{if(currentSpec===spec)frame?.imageReady?.();},
@@ -7229,7 +8706,7 @@
         await chooseTissue(found.layer);if(!valid())return false;
         remember('annotation-part','tissue');await chooseStep('tab4');if(!valid())return false;
         const shown=await showTissuePreview(found);refreshLive();return shown;
-      },renderArtifactControls:artifactReview.renderLayer, shapeStatusChanged:() => {frame?.updatePolygonSave?.(); frame?.updateAnnotationStatus?.();frame?.syncNecks?.();frame?.refreshDifference?.();frame?.tlsReview?.changed?.();},
+      }, shapeStatusChanged:() => {frame?.updatePolygonSave?.(); frame?.updateAnnotationStatus?.();frame?.syncNecks?.();frame?.refreshDifference?.();frame?.tlsReview?.changed?.();},
       phenotyping:() => selected === 'tab7', viewChanged:spec => {
       currentSpec = spec; selectionTools?.update(spec);
       empty.hidden = (spec.layers || []).some(layer => layer.type === 'image');

@@ -37,7 +37,7 @@ from typing import Any, Iterable, Sequence
 
 import numpy as np
 import pandas as pd
-from spacemap.sharing import open_lock
+from spacemap.sharing import open_lock, share
 
 logger = logging.getLogger(__name__)
 
@@ -181,6 +181,7 @@ def append(table_path: str | Path, updates: Iterable[dict[str, Any]]) -> int:
         table = table.replace_schema_metadata({_FINGERPRINT_KEY: _fingerprint(source).encode("utf-8")})
         temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
         pq.write_table(table, temporary, compression="snappy")
+        share(temporary)
         os.replace(temporary, target)
     except Exception as exc:
         raise LabelStoreError(f"Could not save labels: {exc}") from exc
@@ -209,6 +210,9 @@ def apply_to(
     returns. Only label columns present in *frame* -- or named in *columns* --
     are written, so a narrow column read stays narrow.
     """
+    import pyarrow as pa
+    from . import column_types
+
     labels = load(table_path)
     if labels.empty:
         return frame
@@ -227,6 +231,11 @@ def apply_to(
         inside = (positions >= 0) & (positions < len(frame))
         if not inside.any():
             continue
+        try:
+            dtype = pa.array(frame[name], from_pandas=True).type
+        except (pa.ArrowException, TypeError):
+            dtype = pa.string()  # mixed existing values must remain readable
+        dtype = column_types.with_values(dtype, group['value'].to_numpy()[inside])
         # Assigning text into a numeric column needs an object column first,
         # or pandas raises rather than widening.
         if frame[name].dtype != object:
@@ -239,6 +248,10 @@ def apply_to(
             np.asarray([str(item).strip() == "" for item in values]), np.nan, values
         )
         frame.iloc[positions[inside], frame.columns.get_loc(name)] = values
+        # Apply the same effective type as the paged readers, including when
+        # folding saved edits into native Parquet. Mixed numbers/text must not
+        # make Arrow try to convert a phenotype name to a float.
+        frame[name] = column_types.array(frame[name], dtype).to_pandas().to_numpy()
         touched = True
     if touched:
         logger.info("Applied %d pending label(s) from %s", len(labels), sidecar_path(table_path).name)
@@ -272,6 +285,7 @@ def clear_columns(table_path: str | Path, columns: Sequence[str]) -> None:
     temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
     try:
         pq.write_table(remaining, temporary, compression="snappy")
+        share(temporary)
         os.replace(temporary, target)
     finally:
         temporary.unlink(missing_ok=True)
@@ -316,6 +330,7 @@ def commit(
     temporary = source.with_name(f".{source.name}.{os.getpid()}.tmp")
     try:
         frame.to_csv(temporary, index=False)
+        share(temporary)
         os.replace(temporary, source)
     except Exception as exc:
         Path(temporary).unlink(missing_ok=True)

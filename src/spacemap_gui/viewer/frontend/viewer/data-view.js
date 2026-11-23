@@ -8,11 +8,64 @@
 const dataView = { source: null, name: "", sources: [], rows: { this_image: true }, filters: [], sort: null, offset: 0, columns: null,
   selected: new Set(), anchor: null, follow: true, onlySelected: false, onImage: true, result: null, holder: null, busy: false };
 const dataDirtySources = new Set();
+
+async function dataShowMarkerReview(fetchSelection, alive) {
+  if (dataDirtySources.size) throw Error('Save or discard your Data edits before showing reviewed cells.');
+  const generation=state.initGeneration, sequence=state.groupPickSequence=(state.groupPickSequence||0)+1;
+  const choice=dataView.choiceSequence;
+  const current=()=>alive()&&generation===state.initGeneration&&sequence===state.groupPickSequence;
+  const found=await fetchSelection();
+  if(!current()||choice!==dataView.choiceSequence)return null;
+  if(found.missing)return {missing:true,message:found.message};
+  await state.phenotypingLink;
+  if(!current()||choice!==dataView.choiceSequence)return null;
+  if(found.table!==dataView.combined?.path)throw Error('This review belongs to another cell table.');
+  const layer=state.layers.find(l=>l.type==='cells'&&l.combinedTable&&l.id===state.cellDataLayer)||state.layers.find(l=>l.type==='cells'&&l.combinedTable);
+  if(!layer)throw Error('Open an image with cells linked to Phenotyping results.');
+  const table=await cellTableWith(layer,found.colour_by?[found.colour_by]:[],layer.combinedTable,false);
+  if(!current()||choice!==dataView.choiceSequence||!state.layers.includes(layer))return null;
+  if(!table)throw Error('The reviewed cell table is unavailable for this image.');
+  showDataTab();
+  if(!dataView.source?.combined){
+    const expectedSequence=sequence+(layer.table!==table?1:0),expectedChoice=(dataView.choiceSequence||0)+1;
+    await dataChoose('combined');
+    if(!alive()||generation!==state.initGeneration||expectedSequence!==state.groupPickSequence||
+        expectedChoice!==dataView.choiceSequence||!dataView.source?.combined||!state.layers.includes(layer))return null;
+  } else if(!current())return null;
+  if(dataDirtySources.size)throw Error('Save or discard your Data edits before showing reviewed cells.');
+  claimCellView(layer,found.name||'Marker review');
+  layer.table=table;layer.filters=[];layer.hidden=new Set();layer.range=null;layer.live=null;
+  if(found.colour_by){layer.color_by=found.colour_by;if((layer.mode||'outline')==='outline')layer.mode='both';}
+  layer.flowSelection=found.selection.token;layer.flowPopulation=found.selection;layer.flowMode='filter';
+  layer.visible=true;state.cellDataLayer=layer.id;
+  dataView.flowSelection=found.selection.token;dataView.flowSelectionName=found.name||'Marker review';
+  dataView.filters=[];dataView.groupPick=null;dataView.onlySelected=false;dataView.selected.clear();
+  dataView.rows={this_image:true,column:dataView.info?.image_column,value:dataLayerRoi(layer)||''};
+  bump(layer);buildPanel();dataDrawHead();
+  const appliedSequence=state.groupPickSequence,appliedChoice=dataView.choiceSequence;
+  await dataLoad();
+  if(!alive()||generation!==state.initGeneration||appliedSequence!==state.groupPickSequence||appliedChoice!==dataView.choiceSequence)return null;
+  return {count:found.selection.count,current:found.selection.by_image[dataLayerRoi(layer)]||0};
+}
 window.addEventListener('beforeunload', event => {
   if (dataDirtySources.size) { event.preventDefault(); event.returnValue = ''; }
 });
 
+function dataDocument() { return dataView.holder?.ownerDocument || document; }
+
+function dataReadError(error) {
+  if (!dataView.status) return;
+  dataView.status.textContent = error.message;
+  if (error.code === 'data_external_change') {
+    dataView.queryReady = false;
+    dataView.status.append(' ', el('button', {class:'btn small',text:'Reload saved data',
+      title:'Discard the unsaved Data draft and open the latest saved table and result columns.',
+      onclick:()=>dataHistory('discard')}));
+  }
+}
+
 function dataRoute(action, query) {
+  if(state.reviewer)return "/data/"+action+(query||"");
   const session = new URLSearchParams(location.search).get("session");
   return "/studio/" + encodeURIComponent(session) + "/data/" + action + (query || "");
 }
@@ -27,28 +80,51 @@ function dataBody(extra) {
       if (dataView.pickedRoi && roiColumn) filters.push({col:roiColumn,values:[String(dataView.pickedRoi)]});
     }
   }
-  return { source: dataView.source, rows: dataView.rows, filters, sort: dataView.sort, selection_column:dataView.groupPick?.column, ...extra };
+  return { source: dataView.source, rows: dataView.rows, filters, sort: dataView.sort, selection_column:dataView.groupPick?.column,
+    ...(dataView.source?.combined && dataView.flowSelection ? {flow_selection:dataView.flowSelection} : {}), ...extra };
 }
 
 // The tables to look at: each cell layer's tables (linked to its cells), and tables opened here.
 function dataSources() {
   const found = [];
-  if (dataView.combined) found.push({key:'combined', text:dataView.combined.name + ' · Combined', source:{combined:true}});
+  if (dataView.combined) found.push({key:'combined', text:'Phenotyping results', source:{combined:true}});
   state.layers.filter((l) => l.type === "cells").forEach((layer) => (layer.tables || []).forEach((t) =>
-    found.push({ key: layer.id + "|" + t.id, text: (layer.name || "Cells") + " · " + t.name, source: { cells: layer.token, table: t.id }, layer: layer.id })));
-  (dataView.opened || []).forEach((item) => found.push({ key: "file|" + item.file, text: item.name + " (opened)", source: { file: item.file } }));
+    found.push({ key: layer.id + "|" + t.id, text: cellDataInfo(layer,t.id).name + " · " + (layer.name || "Cells"), source: { cells: layer.token, table: t.id }, layer: layer.id })));
+  (dataView.opened || []).forEach((item) => found.push({ key: "file|" + item.file, text: "Imported: " + item.name, source: { file: item.file }, path:item.path }));
   return found;
 }
 
 function dataLinkedLayer() {
   const key = dataView.sourceKey || "";
-  if (key === 'combined') return state.layers.find(l => l.type === 'cells' && l.combinedTable);
+  if (key === 'combined') return state.layers.find(l=>l.type==='cells'&&l.combinedTable&&l.id===state.cellDataLayer)||state.layers.find(l => l.type === 'cells' && l.combinedTable);
   return state.layers.find((l) => l.type === "cells" && key.startsWith(l.id + "|"));
 }
 
 function dataLayerRoi(layer) {
   const table = dataView.source?.combined ? layer?.combinedTable : dataView.source?.cells === layer?.token ? dataView.source.table : layer?.table;
   return layer?.table_roles?.[table]?.roi || layer?.roi;
+}
+
+// Follow replacement measurements for the same cells without clearing the
+// user's columns, filters, sorting, selected rows, or detached Data window.
+async function dataRefreshTaggedTable(layer, previous) {
+  const generation = state.initGeneration;
+  if (!state.layers.includes(layer)) return;
+  const own = dataView.source?.cells === layer.token && dataView.source.table === previous;
+  const combinedImage = dataView.source?.combined && dataView.rows.this_image &&
+    dataLinkedLayer() === layer && layer.combinedTable === previous;
+  if (!own && !combinedImage) return;
+  const key = layer.id + '|' + layer.table;
+  const choice = dataView.choiceSequence = (dataView.choiceSequence || 0) + 1;
+  dataView.loadSequence = (dataView.loadSequence || 0) + 1;
+  clearTimeout(dataView.retry);
+  dataView.source = {cells:layer.token, table:layer.table}; dataView.sourceKey = key;
+  dataView.queryReady = false;
+  const info = await postJSON(dataRoute('info'), dataBody({}));
+  if (generation !== state.initGeneration || !state.layers.includes(layer) || choice !== dataView.choiceSequence || dataView.sourceKey !== key) return;
+  if (dataPreparing(info, () => dataRefreshTaggedTable(layer, layer.table))) return;
+  dataView.info = info;
+  if (dataView.holder?.isConnected) { dataDrawHead(); await dataLoad(true); }
 }
 
 async function dataLoad(keepOffset) {
@@ -67,32 +143,53 @@ async function dataLoad(keepOffset) {
     dataView.result = found;
     if (found.edited) dataDirtySources.add(dataView.sourceKey); else dataDirtySources.delete(dataView.sourceKey);
     dataView.info={...dataView.info,renamed:found.renamed,removed:found.removed};
+    dataSyncRemovedColumns(found.removed||[]);
     dataView.resultBody = query;
     dataView.queryReady = true;
     dataDraw();dataDrawHead();
-  } catch (error) { if (sequence === dataView.loadSequence) dataView.status.textContent = error.message; }
+  } catch (error) { if (sequence === dataView.loadSequence) dataReadError(error); }
   finally { if(sequence===dataView.loadSequence){dataView.loading=false;document.querySelectorAll('.manual-reference-card').forEach(card=>card.refreshSelection?.());} }
+}
+
+// Draft deletions stay undoable, but must not remain selectable on the linked cells.
+function dataSyncRemovedColumns(removed) {
+  const linked=dataLinkedLayer();let changed=false;
+  for(const layer of state.layers.filter(l=>l.type==='cells'&&(l===linked||dataView.source?.combined&&l.combinedTable))){
+    if(JSON.stringify(layer.stagedRemovedColumns||[])===JSON.stringify(removed))continue;
+    layer.stagedRemovedColumns=removed;invalidateCellColumns(layer);changed=true;
+    if(removed.includes(layer.color_by)){layer.color_by='';layer.hidden=new Set();layer.range=null;}
+    layer.filters=(layer.filters||[]).filter(item=>!removed.includes(item.col));
+    bump(layer);
+  }
+  if(changed)buildPanel();
 }
 
 // Pick a source: its info (the image column and its values), then the first page.
 async function dataChoose(key) {
   const item = dataSources().find((s) => s.key === key);
   if (!item || dataView.busy) return;
+  if(key!==dataView.sourceKey && dataDirtySources.has(dataView.sourceKey)){
+    message('Save or discard your Data edits before switching tables.',true);return;
+  }
+  clearTimeout(dataView.retry);
   dataView.selectedColumns=new Set();dataView.undoViews=[];dataView.redoViews=[];
   const choiceSequence = dataView.choiceSequence = (dataView.choiceSequence || 0) + 1;
   dataView.loadSequence = (dataView.loadSequence || 0) + 1;
-  Object.assign(dataView, { source: item.source, sourceKey: key, columns: null, filters: [], sort: null, selected: new Set(), offset: 0, result:null, info:null, lastEditNotice:"" });
+  Object.assign(dataView, { source: item.source, sourceKey: key, name:item.text, columns: null, filters: [], sort: null, selected: new Set(), offset: 0, result:null, info:null, queryReady:false, lastEditNotice:"", groupPick:null, onlySelected:false, flowSelection:null });
+  dataDrawHead();dataView.status.textContent='Reading…';
   try {
     const info = await postJSON(dataRoute("info"), dataBody({}));
     if (choiceSequence !== dataView.choiceSequence) return;
-    if (dataPreparing(info, () => dataChoose(key))) return;
+    if (dataPreparing(info, () => {if(choiceSequence===dataView.choiceSequence)dataChoose(key);})) return;
     dataView.info = info;
     const linked = dataLinkedLayer();
+    if(linked){const table=item.source.combined?linked.combinedTable:item.source.table;if(table&&linked.table!==table){claimCellView(linked,"Cell data changed");linked.table=table;linked.filters=[];linked.hidden=new Set();linked.range=null;linked.color_by="";invalidateCellColumns(linked);bump(linked);}state.cellDataLayer=linked.id;}
+    dataView.awaitingImageScope = !!item.source.combined && !linked;
     dataView.rows = item.source.cells ? { this_image: true } : item.source.combined ?
       {this_image:!!linked, column:info.image_column, value:dataLayerRoi(linked) || info.values[0] || ''} :
       { this_image: !!info.image_column, column: info.image_column, value: info.values.includes(info.default) ? info.default :
         (info.values.find((v) => (state.spec?.title || "").includes(v)) || info.values[0] || "") };
-  } catch (error) { dataView.status.textContent = error.message; return; }
+  } catch (error) { if(choiceSequence===dataView.choiceSequence)dataReadError(error); return; }
   dataDrawHead(); dataLoad();
 }
 
@@ -107,8 +204,8 @@ function dataPreparing(found, again) {
 
 // A filter changed: the rows again, and the image's cells with them when "Image follows" is on.
 function dataFiltersChanged() {
-  dataLoad();
   if (dataView.onImage && dataLinkedLayer()) dataShowOnImage(true);
+  dataLoad();
 }
 
 function dataFilterLabel(item) {
@@ -123,22 +220,25 @@ function dataFilterLabel(item) {
 function dataDrawHead() {
   const head = dataView.head;
   const sources = dataSources();
-  const pick = el("select", { "aria-label": "Data source" }, [el("option", { value: "", text: sources.length ? "Choose a table…" : "No table yet" }),
-    ...sources.map((s) => el("option", { value: s.key, text: s.text }))]);
-  pick.value = dataView.sourceKey || "";
-  pick.addEventListener("change", () => dataChoose(pick.value));
+  const linkedSource=dataLinkedLayer(),activeName=linkedSource?cellDataInfo(linkedSource,dataView.source?.combined?linkedSource.combinedTable:dataView.source?.table).name:dataView.name||'No cell data available';
+  const pick=el('span',{'aria-label':'Data source',class:'cell-data-current',text:activeName,title:dataView.info?.path||sources.find(s=>s.key===dataView.sourceKey)?.path||activeName});
+  const chooseData=el('button',{class:'btn small',text:'Change cell data',onclick:()=>{document.querySelector('[role=tab][data-tab=layers]')?.click();const group=document.querySelector('[data-layer-group=cells]');if(group)group.open=true;const select=document.querySelector('[aria-label="Import cells"]');select?.scrollIntoView({block:'center'});select?.focus();}});
   const file = el("input", { type: "file", accept: ".csv,.tsv,.parquet", hidden: "" });
   file.addEventListener("change", async () => { if (file.files[0]) await dataOpenUpload(file.files[0]); file.value = ""; });
-  const open = el("button", { class: "btn small", text: "Open…", title: "Open a CSV, TSV or Parquet table (or drop one on the image, or type a path in Layers)", onclick: () => file.click() });
-  const parts = [pick, open, file];
+  const open = el("button", { class: "btn small", text: "Import…", title: "Add a CSV, TSV or Parquet to the source list. The current table stays open until you choose another.", onclick: () => file.click() });
+  const parts = state.reviewer ? [el("strong",{text:"Cell data"}),pick,el("span",{class:"chip",text:"Read-only"})] : [el("strong",{text:"Cell data"}), pick, chooseData, open, file];
+  if(dataView.source?.file)parts.push(el('button',{class:'btn small',text:'Link to Cells…',title:'Choose how this imported table matches the open image. Your current source stays selected.',onclick:()=>cellDataDialog({file_token:dataView.source.file,name:(dataView.opened||[]).find(o=>o.file===dataView.source.file)?.name||dataView.info?.name})}));
+  if(dataView.source?.combined && dataView.combined?.name)parts.push(el("span",{class:"hint cell-data-file",text:dataView.combined.name}));
+  if(dataView.flowSelection)parts.push(el("span",{class:"chip",text:dataView.flowSelectionName||"Flow gating selection"}),el("button",{class:"btn small",text:dataView.flowSelectionName?'Clear selection':'Clear Flow selection',onclick:()=>window.clearFlowGateView?.()}));
   const info = dataView.info;
-  if (dataView.source && info && info.columns.length) {
+  if (!state.reviewer && dataView.source && info && info.columns.length) {
     const only = el("input", { type: "checkbox", "aria-label": "This image only" }); only.checked = !!dataView.rows.this_image;
     const column = el("select", { "aria-label": "Image column" }, info.columns.map((c) => el("option", { value: c, text: c })));
     column.value = dataView.rows.column || info.image_column || "";
     const value = el("select", { "aria-label": "This image's value" }, info.values.map((v) => el("option", { value: v, text: v })));
     value.value = dataView.rows.value ?? info.default ?? info.values[0] ?? "";
     const update = async () => {
+      dataView.awaitingImageScope = false;
       dataView.rows = { this_image: only.checked, column: column.value, value: value.value };
       if (column.value !== info.image_column) {
         try { dataView.info = await postJSON(dataRoute("info"), dataBody({})); } catch (_) { /* kept */ }
@@ -147,7 +247,7 @@ function dataDrawHead() {
       dataLoad();
     };
     [only, column, value].forEach((c) => c.addEventListener("change", update));
-    parts.push(el("label", { class: "inline-check", title: "Only the rows of one image (a merged table's image column, such as batch_id)" }, [only, el("span", { text: "Rows of" })]), column, value);
+    parts.push(el("label", { class: "inline-check", title: "Only the rows of one image (a merged table's image column, such as batch_id)" }, [only, el("span", { text: "Image" })]), column, value);
   }
   const columns = el("button", { class: "btn small", text: "Columns", title: "Choose the columns shown", onclick: () => dataColumnPicker(columns) });
   const linked = dataLinkedLayer();
@@ -156,10 +256,10 @@ function dataDrawHead() {
   onImage.addEventListener("change", () => {
     dataView.onImage = onImage.checked;
     if (onImage.checked) dataShowOnImage();
-    else if (linked) { linked.filters = []; bump(linked); message("The image shows every cell."); }
+    else if (linked) { linked.filters = []; bump(linked); message("Data filters cleared. Other active cell selections are shown in Cells."); }
   });
-  const show = el("label", { class: "inline-check", title: linked ? "On: the image draws only the cells of the rows the filters keep (the cell layer's Filter)" :
-    "Open a cell layer's table to link it to the image" }, [onImage, el("span", { text: "Image follows filters" })]);
+  const show = el("label", { class: "inline-check", title: linked ? "Checked: hide image cells excluded by Data filters. Unchecked: show every cell." :
+    "Open a cell layer's table to link it to the image" }, [onImage, el("span", { text: "Apply filters to viewer" })]);
   const follow = el("input", { type: "checkbox", "aria-label": "Follow the image" }); follow.checked = dataView.follow;
   follow.addEventListener("change", () => { dataView.follow = follow.checked; });
   const onlySel = el("input", { type: "checkbox", "aria-label": "Only selected cells" }); onlySel.checked = dataView.onlySelected;
@@ -167,19 +267,26 @@ function dataDrawHead() {
   const exporting = el("select", { "aria-label": "Export" }, [el("option", { value: "", text: "Export…" }),
     el("option", { value: "shown", text: "These rows, shown columns (CSV)" }), el("option", { value: "all", text: "These rows, all columns (CSV)" })]);
   exporting.addEventListener("change", () => { const which = exporting.value; exporting.value = ""; if (which) dataExport(which === "shown"); });
-  const allData=el('button',{class:'btn small',text:'All data','aria-label':'Show entire dataset',title:'Browse the whole dataset in pages; clear row and column filters',onclick:()=>{
+  const allData=el('button',{class:'btn small',text:'Whole dataset','aria-label':'Show entire dataset',title:'Show all rows in the selected table, across images and batches. Clears filters; separate files are not combined.',onclick:()=>{
+    dataView.awaitingImageScope=false;
     dataView.rows={...dataView.rows,this_image:false};dataView.filters=[];dataView.onlySelected=false;dataView.groupPick=null;dataView.follow=false;dataView.selected.clear();dataDrawHead();dataFiltersChanged();
   }});
+  const currentImage=el('button',{class:'btn small',text:'Current image',disabled:linked?null:true,'aria-label':'Show current image data',
+    title:'Show rows for the open image. Clear other filters.',onclick:()=>{
+      dataView.awaitingImageScope=false;
+      dataView.rows={this_image:true,column:info?.roi_column||info?.image_column||dataView.rows.column,value:dataLayerRoi(linked)};
+      dataView.filters=[];dataView.onlySelected=false;dataView.groupPick=null;dataView.follow=true;dataView.selected.clear();dataDrawHead();dataFiltersChanged();
+    }});
   const save=el('button',{class:'btn small',text:'Save',title:'Write all staged edits to this table; keep the original in previous/',onclick:()=>dataSave('overwrite')});
   save.disabled=dataView.busy||!dataView.result?.edited;
   const saveAs=el('button',{class:'btn small',text:'Save as…',onclick:()=>dataEditDialog({kind:'save_as'})});saveAs.disabled=dataView.busy||!dataView.source;
   const undo=el('button',{class:'btn small',text:'Undo',title:'Undo the last Data edit (Ctrl+Z)',onclick:()=>dataHistory('undo')});undo.disabled=dataView.busy||!dataView.result?.can_undo;
   const more=el('select',{'aria-label':'More data tools'},[el('option',{value:'',text:'Tools…'}),el('option',{value:'redo',text:'Redo'}),el('option',{value:'delete',text:'Delete rows…'}),el('option',{value:'discard',text:'Discard unsaved edits'})]);
   more.onchange=()=>{const action=more.value;more.value='';if(action==='delete')dataEditDialog({kind:'delete_rows',scope:dataView.selected.size?'selected':'filtered'});else if(action)dataHistory(action);};
-  parts.push(allData);
-  parts.push(columns, show, el("label", { class: "inline-check", title: "Clicking a cell on the image selects its row" }, [follow, el("span", { text: "Follow the image" })]),
-    el("label", { class: "inline-check", title: "Only cells picked on the image or Data rows, or belonging to the clusters selected in the heatmap or cluster list. Rows of limits this to one ROI when checked." }, [onlySel, el("span", { text: "Selected cells" })]),
-    exporting, undo, save, saveAs, more);
+  if(!state.reviewer)parts.push(currentImage,allData);
+  parts.push(columns, show, el("label", { class: "inline-check", title: "Checked: clicking an image cell jumps to its Data row. Unchecked: keep your place in Data." }, [follow, el("span", { text: "Jump to clicked cell" })]),
+    el("label", { class: "inline-check", title: "Only cells picked on the image or Data rows, or belonging to the clusters selected in the heatmap or cluster list. Rows of limits this to one ROI when checked." }, [onlySel, el("span", { text: "Picked cells only" })]),
+    ...(state.reviewer?[]:[exporting, undo, save, saveAs, more]));
   if (dataView.source?.combined) parts.push(el('button',{class:'btn small',text:'Label cells…','aria-label':'Label Data cells',onclick:()=>{
     state.manualReferenceSource=dataView.selected.size?'data':'filtered';
     window.dispatchEvent(new CustomEvent('studio-reference-method',{detail:{method:'reference'}}));
@@ -210,8 +317,8 @@ function dataColumnPicker(anchor) {
   const none = el("button", { class: "btn small", text: "None", onclick: () => { shown.clear(); draw(); } });
   const menu = el("div", { id: "ctxmenu", class: "data-column-menu", role: "dialog" }, [filter, list, el("div", { class: "row" }, [all, none, apply])]);
   const box = anchor.getBoundingClientRect();
-  menu.style.left = Math.max(8, Math.min(box.left, innerWidth - 320)) + "px";
-  document.body.append(menu);
+  menu.style.left = Math.max(8, Math.min(box.left, dataDocument().defaultView.innerWidth - 320)) + "px";
+  dataDocument().body.append(menu);
   menu.style.top = Math.max(8, box.top - menu.offsetHeight - 4) + "px";
   filter.focus();
 }
@@ -310,6 +417,7 @@ function dataSelectRow(event, id, row) {
 }
 
 function dataEditCell(td, id, column, value) {
+  if(state.reviewer)return;
   const input = el("input", { type: "text", value: value === null ? "" : String(value), class: "data-edit", "aria-label": "Edit " + column });
   td.replaceChildren(input); input.focus(); input.select();
   let settled=false;
@@ -326,6 +434,7 @@ function dataEditCell(td, id, column, value) {
 // Ctrl+C: the selected rows (shown columns) as tab-separated text. Ctrl+V: pasted values down one column from the
 // selected row (one value per line).
 function dataKeys(event) {
+  if(state.reviewer && event.key.toLowerCase()!=="c")return;
   if (!dataView.result || !(event.ctrlKey || event.metaKey) || event.target.matches("input, select, textarea")) return;
   if(event.key.toLowerCase()==='z'){event.preventDefault();dataHistory(event.shiftKey?'redo':'undo');return;}
   if(event.key.toLowerCase()==='y'){event.preventDefault();dataHistory('redo');return;}
@@ -334,12 +443,12 @@ function dataKeys(event) {
   if (event.key === "c" && dataView.selected.size) {
     const rows = dataView.result.rows.filter((r) => dataView.selected.has(r[0]));
     const text = [shown.join("\t"), ...rows.map((r) => r.slice(1).map((v) => v === null ? "" : String(v)).join("\t"))].join("\n");
-    navigator.clipboard?.writeText(text).then(() => message(rows.length + " rows copied.")).catch(() => message("The browser did not allow copying.", true));
+    dataDocument().defaultView.navigator.clipboard?.writeText(text).then(() => message(rows.length + " rows copied.")).catch(() => message("The browser did not allow copying.", true));
     event.preventDefault();
   }
   if (event.key === "v" && dataView.selected.size) {
     event.preventDefault();
-    navigator.clipboard?.readText().then(async (text) => {
+    dataDocument().defaultView.navigator.clipboard?.readText().then(async (text) => {
       const column = window.prompt("Paste into which column?", dataView.pasteColumn || shown[shown.length - 1]);
       if (!column || !shown.includes(column)) return;
       dataView.pasteColumn = column;
@@ -361,12 +470,14 @@ async function dataShowOnImage(quiet) {
   const hasSelection = dataView.groupPick?.values.length || dataView.pickedLabels?.length;
   const filters = dataView.onlySelected && !hasSelection ? dataView.filters.slice() : dataBody().filters;
   if (dataView.source?.combined && dataView.rows.this_image && dataView.rows.column) filters.push({col:dataView.rows.column,values:[String(dataView.rows.value)]});
+  claimCellView(layer,dataView.groupPick ? "Phenotyping clusters" : "Data filters");
+  if(!dataView.groupPick){layer.hidden=new Set();layer.range=null;}
   layer.filters = filters;
   const table = dataView.sourceKey === 'combined' ? layer.combinedTable : (dataView.sourceKey || "").split("|")[1];
   if (table && layer.table !== table) { layer.table = table; layer.columns = null; layer.color_by = ""; }
   if (!layer.visible) setVisible(layer, true);
   bump(layer);
-  if (!quiet) message(filters.length ? "The image shows only the cells of these rows (Cells and maps > Filter; × there shows all again)." : "The image shows every cell.");
+  if (!quiet) message(filters.length ? "The image shows only the cells of these rows (Cells > Filters; × there shows all again)." : "Data filters cleared. Other active cell selections are shown in Cells.");
 }
 
 function dataRenameSelection() {
@@ -391,8 +502,8 @@ async function dataFilterMenu(anchor, column, kind) {
   const menu = el("div", { id: "ctxmenu", class: "data-column-menu data-filter-menu", role: "dialog", "aria-label": "Filter " + column },
     [el("strong", { text: column }), el("div", { class: "muted", text: "Counting…" })]);
   const box = anchor.getBoundingClientRect();
-  menu.style.left = Math.max(8, Math.min(box.left, innerWidth - 330)) + "px";
-  document.body.append(menu);
+  menu.style.left = Math.max(8, Math.min(box.left, dataDocument().defaultView.innerWidth - 330)) + "px";
+  dataDocument().body.append(menu);
   const place = () => { menu.style.top = Math.max(8, box.top - menu.offsetHeight - 4) + "px"; };
   place();
   const body = dataBody({ column, limit: 2000, bins: 40 });
@@ -534,10 +645,11 @@ async function dataFilterMenu(anchor, column, kind) {
 function dataExport(shownOnly) {
   const query = encodeURIComponent(JSON.stringify(dataBody({ columns: shownOnly ? dataView.result?.shown : null })));
   const link = el("a", { href: api(dataRoute("export", "?q=" + query)) });
-  document.body.appendChild(link); link.click(); link.remove();
+  dataDocument().body.appendChild(link); link.click(); link.remove();
 }
 
 async function dataSave(mode,name) {
+  if(state.reviewer)return;
   if(dataView.busy||!dataView.source)return false;
   dataView.busy=true;dataView.lastError='';dataView.holder.classList.add('data-busy');dataDrawHead();
   const request=dataBody({mode,name,revision:dataView.result?.revision});
@@ -553,6 +665,7 @@ async function dataSave(mode,name) {
         layer.columns=null;layer.live=null;layer.filters=[];layer.color_by=removed.has(layer.color_by)?'':renamed[layer.color_by]||layer.color_by;bump(layer);
       }
       dataView.info=await postJSON(dataRoute('info'),dataBody());dataView.selectedColumns=new Set();await dataLoad();
+      await state.studio?.tablesChanged?.();
       buildPanel();message('Saved. The original is kept in previous/.');
     }else{
       dataView.busy=false;dataOpenFile({file_token:saved.file_token,name:saved.name});message('Saved '+saved.name+'.');
@@ -566,13 +679,21 @@ async function dataOpenUpload(file) {
   try {
     const found = await bringUpload(file);
     if (found.kind !== "table") throw Error(file.name + " is not a table.");
-    dataOpenFile(found);
+    dataRegisterFile(found);
+    message(found.name + ' added. Use Change cell data to choose it; the current table is unchanged.');
   } catch (error) { message(error.message, true); }
 }
 
-// A table brought in (dropped, typed, opened) shown in the Data tab.
+// Registering never chooses a source, clears edits, or changes the image.
+function dataRegisterFile(found) {
+  dataView.opened = [...(dataView.opened || []).filter((o) => o.file !== found.file_token), { file: found.file_token, name: found.name, path:found.path }];
+  if(dataView.head)dataDrawHead();
+  buildPanel();
+}
+
+// Opening is a separate explicit user action (also used after Save as).
 function dataOpenFile(found) {
-  dataView.opened = [...(dataView.opened || []).filter((o) => o.file !== found.file_token), { file: found.file_token, name: found.name }];
+  dataRegisterFile(found);
   showDataTab();
   dataDrawHead();
   dataChoose("file|" + found.file_token);
@@ -613,70 +734,151 @@ function dataViewInto(container) {
   container.append(dataView.holder);
   dataDrawHead();
   if (!dataView.source) {
-    const first = dataSources()[0];
+    const cells=state.layers.find(l=>l.type==='cells'&&l.id===state.cellDataLayer)||state.layers.find(l=>l.type==='cells');
+    const key=cells?.table===cells?.combinedTable?'combined':cells?.id+'|'+cells?.table;
+    const first = dataSources().find(item=>item.key===key)||dataSources()[0];
     if (first) dataChoose(first.key);
-    else dataView.status.textContent = "Open a table, or an image with cells.";
-  }
+    else dataView.status.textContent = "No cell data available. Open cell data, or load an image with cells.";
+  } else dataLoad(true);
+  if(!dataView.combined)state.phenotypingLink=dataRefreshCombined().catch(error=>{dataView.status.textContent=error.message;});
 }
 
 // One checked combined input, available even when no segmentation/image is open.
 async function dataRefreshCombined() {
+  if(state.reviewer)return;
   if (!new URLSearchParams(location.search).get('studio')) return;
+  clearTimeout(dataView.linkRetryTimer);
+  consolidateCellResults();
   const generation = state.initGeneration;
+  const choice = dataView.choiceSequence;
   const sequence = dataView.linkSequence = (dataView.linkSequence || 0) + 1;
   const layers = state.layers.filter(l => l.type === 'cells');
+  const chosen = new Map(layers.map(layer => [layer, {table:layer.table, colour:layer.color_by}]));
   const found = await postJSON(dataRoute('query').replace('/data/query','/phenotyping_link'), {layers:layers.map(l => l.token)});
   if (generation !== state.initGeneration || sequence !== dataView.linkSequence) return;
   const previous = dataView.combined?.path;
   dataView.combined = found.table;
   if (previous !== found.table?.path) { dataView.groupPick = null; dataView.pickedLabels = []; dataView.selected.clear(); }
+  const available=new Set(found.table?.columns||[]);
+  if(choice===dataView.choiceSequence&&dataView.source?.combined&&found.table&&!dataDirtySources.has(dataView.sourceKey)){
+    dataView.filters=dataView.filters.filter(item=>available.has(item.col));
+    if(dataView.sort&&!available.has(dataView.sort.col))dataView.sort=null;
+    if(dataView.columns)dataView.columns=dataView.columns.filter(name=>available.has(name));
+    if(dataView.groupPick&&!available.has(dataView.groupPick.column)){dataView.groupPick=null;dataView.onlySelected=false;}
+  }
   for (const layer of layers) {
+    if (!state.layers.includes(layer)) continue;
     const previousSuggestions=JSON.stringify(suggestionSettings(layer));
     const link = found.layers[layer.token];
+    // Identical saved data must not invalidate tiles, columns or density maps.
+    // Aliases are deliberately excluded: binding adds the canonical alias on
+    // the server, but that does not change any cell values on the next call.
+    const linkStamp = JSON.stringify([found.table, link?.linked, link?.table, link?.keys, link?.reason, link?.retryable]);
+    const unchanged = !!found.table?.revision && layer.combinedLinkStamp === linkStamp;
     layer.combinedTable = link?.linked ? link.table : null;
     layer.combinedLinkNote = link?.reason || '';
+    layer.combinedLinkPending = !!link?.retryable;
+    // The file watcher and job completion share the same revision. Whichever
+    // sees it first refreshes the data; the other must not repaint it again.
+    if (link?.linked && found.table?.revision)
+      state.stamps[layer.token + '|' + link.table] = found.table.revision;
+    if (unchanged) continue;
+    layer.combinedLinkStamp = linkStamp;
+    const sameChoice = layer.table === chosen.get(layer).table && layer.color_by === chosen.get(layer).colour;
     if (!link?.linked) {
       layer.tables = layer.tables.filter(t => !t.id.startsWith('merged_'));
       if (layer.table?.startsWith('merged_')) { layer.table = layer.tables[0]?.id || ''; layer.color_by = ''; layer.columns = null; layer.filters = []; bump(layer); }
       continue;
     }
     const fresh = !layer.tables.some(t => t.id === link.table);
+    // The saved table can initially be listed under a local layer alias while
+    // its phenotyping link prepares. Follow that same file's canonical link
+    // without resetting the user's draft, filters, columns or image scope.
+    if (choice===dataView.choiceSequence && !dataView.busy && dataView.source?.cells===layer.token &&
+        (link.aliases||[]).includes(dataView.source.table)) {
+      const dirty=dataDirtySources.delete(dataView.sourceKey);
+      dataView.source={combined:true};dataView.sourceKey='combined';
+      if(dirty)dataDirtySources.add('combined');
+      if(dataView.rows.this_image)dataView.rows={...dataView.rows,column:found.table.roles.roi,value:link.roi};
+      dataView.loadSequence=(dataView.loadSequence||0)+1;
+    }
     layer.tables = layer.tables.filter(t => t.id === link.table || (!(link.aliases || []).includes(t.id) && !t.id.startsWith('merged_')));
-    if (fresh) layer.tables.push({id:link.table,name:'Combined phenotyping table'});
+    if (fresh) layer.tables.push({id:link.table,name:'Phenotyping results',file:found.table?.name});
     layer.table_roles = link.table_roles;
-    if (fresh || previous !== found.table?.path) { layer.table = link.table; layer.columns = null; layer.live = null; }
+    layer.density_tables=[...layer.tables,...(layer.density_tables||[]).filter(t=>t.id.startsWith("p"))];
+    if (sameChoice && (fresh || previous !== found.table?.path || !layer.tables.some(t => t.id === layer.table))) {
+      layer.table = link.table; layer.live = null;
+    }
+    invalidateCellColumns(layer);
+    if(layer.table===link.table){
+      if(layer.color_by&&!layer.color_by.startsWith('preview:')&&!available.has(layer.color_by)){
+        layer.color_by='';layer.hidden=new Set();layer.range=null;
+      }
+      layer.filters=(layer.filters||[]).filter(item=>available.has(item.col));
+      layer.label_columns=(layer.label_columns||[]).filter(name=>available.has(name));
+    }
     if(layer.table===link.table)restoreReferenceChoice(layer,found.table.path);
     if(state.inspectedCell?.layer===layer&&layer.suggestionsOn&&
         previousSuggestions!==JSON.stringify(suggestionSettings(layer)))
       requestCellProfile(layer,state.inspectedCell.result,++state.cardSeq);
-    bump(layer);
+    if (layer.table === link.table) bump(layer, {keepVisible:true});
+  }
+  if (Object.values(found.layers).some(link => link.retryable)) {
+    dataView.linkRetryTimer = setTimeout(() => {
+      if (generation !== state.initGeneration || sequence !== dataView.linkSequence) return;
+      state.phenotypingLink = dataRefreshCombined().catch(error => message(error.message, true));
+    }, 2500);
   }
   buildPanel();
-  if (dataView.holder?.isConnected) {
+  document.querySelectorAll('.manual-reference-card').forEach(card=>card.refreshSelection?.());
+  if (dataView.holder?.isConnected && choice===dataView.choiceSequence) {
+    try {
     if (!dataView.source || (dataView.source.combined && previous !== found.table?.path)) await dataChoose('combined');
     else if (dataView.source.combined) {
       const linked = dataLinkedLayer();
+      if(linked&&dataView.awaitingImageScope){
+        dataView.rows={this_image:true,column:found.table.roles.roi,value:dataLayerRoi(linked)};
+        dataView.awaitingImageScope=false;
+      }
       if (linked && dataView.rows.this_image) dataView.rows.value = dataLayerRoi(linked);
-      dataView.info = await postJSON(dataRoute('info'), dataBody());
+      const info = await postJSON(dataRoute('info'), dataBody());
+      if (generation!==state.initGeneration || sequence!==dataView.linkSequence || choice!==dataView.choiceSequence) return;
+      if (dataPreparing(info,()=>dataRefreshCombined())) return;
+      dataView.info = info;
       dataDrawHead(); await dataLoad(true);
     }
     else { dataDrawHead(); await dataLoad(true); }
+    } catch(error) { if(choice===dataView.choiceSequence)dataReadError(error); }
   }
 }
 
 document.addEventListener('spacemap-groups-picked', async event => {
   const {layer,column,values} = event.detail;
-  dataView.groupPick = values.length ? {column,values} : null;
+  const generation=state.initGeneration, selectionSequence=state.groupPickSequence;
+  const pickVersion=dataView.groupPickVersion=(dataView.groupPickVersion||0)+1;
+  const filtered = event.detail.filtered ?? values.length > 0;
+  dataView.groupPick = filtered ? {column,values} : null;
+  dataView.onlySelected = filtered;
   dataView.pickedLabels = []; dataView.selected.clear();
   if (!dataView.holder?.isConnected) return;
-  if (dataView.combined && !dataView.source?.combined) await dataChoose('combined');
+  if (layer && layer.table!==layer.combinedTable) {
+    const key=layer.id+'|'+layer.table;
+    if(dataView.sourceKey!==key)await dataChoose(key);
+  } else if (dataView.combined && !dataView.source?.combined) await dataChoose('combined');
+  if(pickVersion!==dataView.groupPickVersion||generation!==state.initGeneration||selectionSequence!==state.groupPickSequence)return;
+  // An explicit source choice clears old selections. Restore this new group's
+  // selection only after its required source is ready, and only if still current.
+  const expected=layer?(layer.table===layer.combinedTable?'combined':layer.id+'|'+layer.table):null;
+  if(expected&&dataView.sourceKey!==expected)return;
+  dataView.groupPick=filtered?{column,values}:null;dataView.onlySelected=filtered;
   if (dataView.source?.combined && layer) dataView.rows = {...dataView.rows, value:dataLayerRoi(layer)};
   await dataLoad();
-  if (dataView.onImage) dataShowOnImage(true);
+  if (pickVersion===dataView.groupPickVersion && dataView.onImage) dataShowOnImage(true);
 });
 
 // Compact editing tools; every change is staged until Save or Save as.
 function dataEditorMenu(event, column, row) {
+  if(state.reviewer){event.preventDefault();return;}
   event.preventDefault();event.stopPropagation();if(dataView.busy)return;
   closeContextMenu();
   if(row!==undefined){dataView.pickedFromViewer=false;if(!dataView.selected.has(row))dataView.selected=new Set([row]);}
@@ -694,15 +896,15 @@ function dataEditorMenu(event, column, row) {
       add('Sort descending',()=>{dataView.sort={col:column,desc:true};dataLoad();});
     }
     add('Hide columns',()=>{dataView.columns=dataView.result.shown.filter(c=>!dataView.selectedColumns.has(c));dataLoad(true);});
-    add('Delete columns',()=>dataMutate({kind:'delete_columns',columns:[...dataView.selectedColumns]}));
+    add('Delete columns (whole dataset)',()=>dataMutate({kind:'delete_columns',columns:[...dataView.selectedColumns]}));
   }else{
     menu.append(el('strong',{text:dataView.selected.size+' selected rows'}));
     if(column){add('Fill selected values…',()=>dataEditDialog({kind:'fill',column,scope:'selected'}));add('Clear selected values',()=>dataMutate({kind:'fill',column,scope:'selected',value:null}));}
     add('Delete selected rows',()=>dataMutate({kind:'delete_rows',scope:'selected'}));
     add('Delete filtered rows…',()=>dataEditDialog({kind:'delete_rows',scope:'filtered'}));
   }
-  document.body.append(menu);const rect=menu.getBoundingClientRect();
-  menu.style.left=Math.max(8,Math.min(event.clientX,innerWidth-rect.width-8))+'px';menu.style.top=Math.max(8,Math.min(event.clientY,innerHeight-rect.height-8))+'px';
+  dataDocument().body.append(menu);const rect=menu.getBoundingClientRect();
+  menu.style.left=Math.max(8,Math.min(event.clientX,dataDocument().defaultView.innerWidth-rect.width-8))+'px';menu.style.top=Math.max(8,Math.min(event.clientY,dataDocument().defaultView.innerHeight-rect.height-8))+'px';
   menu.querySelector('button')?.focus();
 }
 
@@ -730,7 +932,7 @@ function dataEditDialog(operation) {
   }
   const cancel=el('button',{class:'btn small',type:'button',text:'Cancel',onclick:()=>dialog.close()});
   const apply=el('button',{class:'btn small primary',type:'submit',text:operation.kind==='save_as'?'Save':operation.kind==='delete_rows'?'Delete rows':'Apply'});
-  form.append(status,el('div',{class:'row data-dialog-buttons'},[cancel,apply]));dialog.append(form);document.body.append(dialog);
+  form.append(status,el('div',{class:'row data-dialog-buttons'},[cancel,apply]));dialog.append(form);dataDocument().body.append(dialog);
   dialog.addEventListener('close',()=>dialog.remove());
   form.onsubmit=async event=>{
     event.preventDefault();apply.disabled=true;
@@ -756,6 +958,7 @@ function dataEditorSchema(found){
   dataView.selectedColumns=new Set([...(dataView.selectedColumns||[])].map(remap).filter(c=>found.columns.includes(c)));
 }
 async function dataMutate(operation, selectionFilter = null) {
+  if(state.reviewer)return;
   if(dataView.busy||!dataView.result)return false;
   const before=dataEditorSnapshot(),sourceKey=dataView.sourceKey;
   dataView.busy=true;dataView.lastError='';dataView.holder.classList.add('data-busy');dataDrawHead();dataView.status.textContent='Applying change…';
@@ -772,14 +975,16 @@ async function dataMutate(operation, selectionFilter = null) {
     if(found.affected){(dataView.undoViews||=[]).push(before);dataView.redoViews=[];}
     if(operation.kind==='delete_rows')dataView.selected.clear();
     dataView.info={...dataView.info,...found};dataView.result={...dataView.result,...found};
-    dataView.lastEditNotice=found.affected.toLocaleString()+(operation.kind.includes('column')?' columns changed':' values / rows changed');
+    dataView.lastEditNotice=operation.kind==='delete_columns'?found.affected.toLocaleString()+' columns deleted across the dataset. Save to keep.':
+      found.affected.toLocaleString()+(operation.kind.includes('column')?' columns changed':' values / rows changed');
     await dataLoad(true);return true;
-  }catch(error){dataView.lastError=error.message;dataView.status.textContent=error.message;message(error.message,true);return false;}
+  }catch(error){dataView.lastError=error.message;dataReadError(error);return false;}
   finally{dataView.busy=false;dataView.holder.classList.remove('data-busy');dataDrawHead();}
 }
 async function dataHistory(action) {
+  if(state.reviewer)return;
   if(dataView.busy)return;
-  if(action==='discard'&&!window.confirm('Discard all unsaved Data edits for this table?'))return;
+  if(action==='discard'&&!dataDocument().defaultView.confirm('Discard all unsaved Data edits for this table?'))return;
   dataView.busy=true;dataView.holder.classList.add('data-busy');dataDrawHead();
   try{
     const found=await postJSON(dataRoute(action),dataBody());

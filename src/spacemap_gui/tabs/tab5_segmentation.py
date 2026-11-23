@@ -1733,8 +1733,8 @@ def _run_batch_segmentation_v2(to_proc, input_dir, mask_save_dir, output_dir, us
             if membrane_key in st.session_state:
                 mem_ch_names = [ch_names[int(i)] for i, sel in st.session_state[membrane_key].items() if sel and int(i) < len(ch_names)]
                 
-            dapi_ch = nuc_ch_names[0] if nuc_ch_names else 'DAPI'
-            markers = mem_ch_names if mem_ch_names else None
+            dapi_ch = nuc_ch_names if nuc_ch_names else 'DAPI'
+            markers = mem_ch_names
             
             # Configuration
             seg_config = SegmentationConfig()
@@ -2243,7 +2243,7 @@ def _render_segmentation_pipeline():
                     if st.session_state[membrane_state_key].get(index, False)
                 ]
                 st.caption(
-                    f"Cellpose uses one maximum-intensity membrane projection from {len(selected_membrane_channels)} selected Mem channel(s), plus the selected nuclear channel."
+                    'Selected nuclear and border markers are combined separately using the brightest signal per pixel.'
                 )
 
                 # Remember the selection by NAME so the next image inherits it even

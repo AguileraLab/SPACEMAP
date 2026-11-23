@@ -3,9 +3,10 @@
 "use strict";
 
 // ---------------------------------------------------------------- clicks and labelling
-function cellLayer() { return state.layers.find((l) => l.type === "cells" && l.visible) || null; }
+function cellLayer() { return state.layers.find(l=>l.type==='cells'&&l.visible&&l.id===state.cellDataLayer) || state.layers.find((l) => l.type === "cells" && l.visible) || null; }
 
 function clearCellInspection({cancelQueued=true,notify=true}={}) {
+  clearCellAreaOutline();state.areaSelectionEpoch=(state.areaSelectionEpoch||0)+1;
   const layer=state.inspectedCell?.layer || state.cellInspectionSelection?.layer;
   state.cardSeq+=1;state.inspectedCell=null;state.cellInspectionSelection=null;
   if(cancelQueued)state.cellInspectEpoch=(state.cellInspectEpoch||0)+1;
@@ -34,13 +35,14 @@ async function onClick(event) {
     // A plain click replaces the open cell at once, before anything is awaited below, so Enter or a shortcut never
     // acts on the cell shown before.
     if (!(original.ctrlKey || original.metaKey)) clearCellInspection();
-    if (regionClick(point, !!(original.ctrlKey || original.metaKey || original.shiftKey))) { event.preventDefaultAction = true; return; }
+    if((state.studio||state.reviewer)&&await pickAnnotation(point,!!(original.ctrlKey||original.metaKey||original.shiftKey))){event.preventDefaultAction=true;return;}
+    if (!(state.studio||state.reviewer) && regionClick(point, !!(original.ctrlKey || original.metaKey || original.shiftKey))) { event.preventDefaultAction = true; return; }
     const hit = selectShapeAt(point);
     if (hit && !hit.layer.local) {
       const feature = hit.layer.features.find(f => f.properties.id === hit.id);
       showRegionCard(hit.layer, feature); event.preventDefaultAction = true; return;
     }
-    if (await importedAnnotationClick(point)) {event.preventDefaultAction = true; return;}
+    if (!(state.studio||state.reviewer) && await importedAnnotationClick(point)) {event.preventDefaultAction = true; return;}
   }
   const layer = cellLayer();
   if (!layer || !point) return;
@@ -102,6 +104,14 @@ function selectedCellResult(members) {
 }
 
 async function outlineSelectedCells(layer, members, sequence) {
+  if(members.length>100&&(state.studio||state.reviewer)){
+    try{
+      const view=cellAreaView(layer),result=await postJSON(state.reviewer?'/select_cells':reviewRoute(),{action:'select_cells',token:layer.token,view,only_ids:members.map(m=>m.label)});
+      if(sequence!==state.cardSeq||!state.layers.includes(layer)||!layer.visible||JSON.stringify(view)!==JSON.stringify(cellAreaView(layer)))return;
+      state.cellOutline=null;drawCellOutline();cellAreaOutline(layer,result.selection);return;
+    }catch(error){message(error.message,true);return;}
+  }
+  clearCellAreaOutline();
   state.cellOutline = null; drawCellOutline();
   let next = 0;
   await Promise.all(Array.from({length:Math.min(4,members.length)}, async () => {
@@ -128,7 +138,7 @@ function onPress(event) {
     if (point) { drawing.start = point; drawing.points = [point, point]; }
     return;
   }
-  if ((state.tool === "rect" || state.tool === "freehand") && (drawTarget() || state.selectMode && regionLayers().length)) {
+  if ((state.tool === "rect" || state.tool === "freehand") && (drawTarget() || state.selectMode && areaSelectionAvailable())) {
     event.preventDefaultAction = true;
     const point = toImage(event.position);
     if (!point) return;
@@ -217,7 +227,7 @@ function keepLabelDraft(item) {
     localStorage.setItem(draftPrefix + item.id, JSON.stringify({id: item.id, token: item.layer.token,
       image_token: item.layer.image_token, image_stamp: item.layer.info.fingerprint,
       table: item.table, column: item.column, value: item.value, where: item.where, frozen: item.frozen, order: item.order,
-      source: item.source, provenance: item.provenance}));
+      source: item.source, provenance: item.provenance, tablePath:item.tablePath, roi:item.roi}));
   } catch (_) { message("Keep this viewer open until the labels say Saved.", true); }
 }
 
@@ -265,7 +275,9 @@ function assign(layer, where, value, source = 'typed', provenance = null) {
       item.value === value && (item.source || 'typed') === source && !provenance && item.where.points && where.points && item.where.points.length < 100) {
     item.where.points.push(...where.points);
   } else {
-    item = {id: newSaveId(), order: ++labelSaves.sequence, layer, table: layer.table, column, value, where, frozen: false, source, provenance};
+    item = {id: newSaveId(), order: ++labelSaves.sequence, layer, table: layer.table, column, value, where, frozen: false, source, provenance,
+      tablePath:layer.table===layer.combinedTable?dataView.combined?.path:null,
+      roi:layer.table_roles?.[layer.table]?.roi || layer.roi};
     labelSaves.queue.push(item);
   }
   keepLabelDraft(item);
@@ -299,21 +311,20 @@ async function flushLabels() {
         labelSaves.queue.shift();
         try { localStorage.removeItem(draftPrefix + item.id); } catch (_) { /* keep the receipt safe to retry */ }
         if (result.assigned) {
-          if (!item.where.values) state.undo.push({layer: item.layer, table: item.table, column: item.column, previous: result.previous,
+          if (!item.where.values) state.undo.push({layer: item.layer, table: item.table, tablePath:item.tablePath, roi:item.roi, column: item.column, previous: result.previous,
             expected: Object.fromEntries(result.labels.map(label => [String(label), item.value]))});
           const layer = item.layer;
           if (layer.table === item.table) {
             if (layer.columns && !layer.columns.includes(item.column)) layer.columns.push(item.column);
             layer.label_columns = Array.from(new Set((layer.label_columns || []).concat([item.column])));
           }
-          if (state.layers.includes(layer) && layer.table === item.table && state.labelColumn === item.column) {
-            if (layer.live) layer.referencePhenotypes = layer.live.phenotypes.slice();
-            layer.live = null;
-            layer.color_by = item.column;
-            if (layer.mode === 'outline') layer.mode = 'both';
-          }
+          if (state.layers.includes(layer) && layer.table === item.table && state.labelColumn === item.column)
+            rememberReferenceOverlay(layer,item.column);
           labelSaves.changed.add(layer);
-          document.dispatchEvent(new CustomEvent('spacemap-reference-updated',{detail:{column:item.column}}));
+          document.dispatchEvent(new CustomEvent('spacemap-reference-updated',{detail:{column:item.column,
+            table:item.tablePath,roi:item.roi,
+            labels:result.labels,previous:result.previous,
+            values:item.where.values || Object.fromEntries(result.labels.map(label=>[String(label),item.value]))}}));
         } else message('No numbered cell was found at that spot.');
       } catch (error) {
         labelSaves.error = error.message;
@@ -330,13 +341,14 @@ async function flushLabels() {
   if (!labelSaves.error) debounce('label-colours', refreshLabelColours, 700);
 }
 
-function refreshLabelColours() {
+function refreshLabelColours(options) {
   // Repaint after a pause, without rebuilding inputs under the user's cursor.
   if (labelSaves.queue.length || labelSaves.busy) return;
   labelSaves.changed.forEach(layer => {
     if (!state.layers.includes(layer)) return;
     state.versions[layer.id] = (state.versions[layer.id] || 0) + 1;
-    refreshLayer(layer);
+    refreshLayer(layer, options);
+    if(layer.type==='cells'){syncDensityMaps(layer);refreshReferenceOverlayControls(layer);}
     if (layer.refreshCellControls) layer.refreshCellControls();
     if (layer.refreshReferenceCounts) layer.refreshReferenceCounts();
     if (layer.refreshReview) layer.refreshReview();
@@ -379,7 +391,7 @@ async function undo() {
   if (labelSaves.queue.length) return;
   const last = state.undo.pop();
   if (!last) { message("Nothing to undo."); return; }
-  const item = {id: newSaveId(), order: ++labelSaves.sequence, layer: last.layer, table: last.table, column: last.column,
+  const item = {id: newSaveId(), order: ++labelSaves.sequence, layer: last.layer, table: last.table, tablePath:last.tablePath, roi:last.roi, column: last.column,
     value: '', where: {values: last.previous, expected: last.expected}, frozen: false};
   labelSaves.queue.push(item); keepLabelDraft(item); await flushLabels();
 }
@@ -450,9 +462,12 @@ function cellReviewControl(layer, result, card) {
   card.appendChild(row);
 }
 
-function bump(layer) {
+function bump(layer, options) {
+  if(layer.type==='cells'&&state.cellAreaOverlay?.layer===layer)clearCellInspection();
+  if(layer.type==='annotations')annotationOutline(layer);
+  if(layer.type==="cells")syncDensityMaps(layer);
   state.versions[layer.id] = (state.versions[layer.id] || 0) + 1;
-  refreshLayer(layer);
+  refreshLayer(layer, options);
   buildPanel();
   saveView();
 }
@@ -515,14 +530,57 @@ function fillCellCard(layer, result) {
   if (others.length) {
     const folded = el("details", { class: "cell-other-labels" });
     folded.appendChild(el("summary", { text: "Other labels (" + others.length + ")" }));
-    folded.appendChild(el("table", { class: "calls" }, others.map(([k, v]) => el("tr", {}, [el("td", { class: "k", text: k }), el("td", { text: v })]))));
+    folded.appendChild(el("table", { class: "calls" }, others.map(([k, v]) => el("tr", {'data-cell-field':k}, [el("td", { class: "k", text: k, title:k }), el("td", { text: v })]))));
     card.appendChild(folded);
   }
+  cellCardFieldsControl(card);
   card.hidden = false;
   document.querySelector('#ctxmenu .cell-phenotype-menu')?.refresh?.();
 }
 
 const MAIN_PHENOTYPE_KEY = "spacemap-viewer-main-phenotype";
+const CELL_CARD_FIELDS_KEY = 'spacemap-viewer-cell-card-fields';
+
+// Keep the main call visible; the remaining phenotype/metadata rows are optional.
+// Store names, not row positions, so the choice carries across cells and images.
+function cellCardFieldsControl(card) {
+  const rows=Array.from(card.querySelectorAll('[data-cell-field]'));
+  if(!rows.length)return;
+  if(state.cellCardFields===undefined){
+    try{const saved=JSON.parse(localStorage.getItem(CELL_CARD_FIELDS_KEY));state.cellCardFields=Array.isArray(saved)?saved:null;}
+    catch(_){state.cellCardFields=null;}
+  }
+  const fields=rows.map(row=>row.dataset.cellField),short=key=>key.replace(/^phenotype_/i,'');
+  const picker=el('details',{class:'cell-fields-picker'}),summary=el('summary',{'aria-label':'Choose cell fields'});
+  const search=el('input',{type:'search',placeholder:'Find fields…','aria-label':'Find cell fields'});
+  const all=el('input',{type:'checkbox','aria-label':'Select all matching cell fields'});
+  const list=el('div',{class:'cell-fields-list'}),menu=el('div',{class:'cell-fields-menu'},[search,el('label',{class:'check'},[all,document.createTextNode('All matching fields')]),list]);
+  const selected=key=>state.cellCardFields===null||state.cellCardFields.includes(key);
+  const matches=()=>fields.filter(key=>key.toLowerCase().includes(search.value.trim().toLowerCase()));
+  const apply=()=>{
+    rows.forEach(row=>{row.hidden=!selected(row.dataset.cellField);});
+    card.querySelectorAll('table.calls').forEach(table=>{table.hidden=!Array.from(table.rows).some(row=>!row.hidden);});
+    const other=card.querySelector('.cell-other-labels');if(other){const count=Array.from(other.querySelectorAll('tr')).filter(row=>!row.hidden).length;other.hidden=!count;other.querySelector('summary').textContent='Other labels ('+count+')';}
+    const count=fields.filter(selected).length;summary.textContent='Fields · '+count+'/'+fields.length;
+    const shown=matches(),checked=shown.filter(selected).length;all.checked=!!shown.length&&checked===shown.length;all.indeterminate=checked>0&&checked<shown.length;all.disabled=!shown.length;
+    list.querySelectorAll('input').forEach(input=>{input.checked=selected(input.value);});
+  };
+  const choose=(keys,checked)=>{
+    const keep=new Set(state.cellCardFields===null?fields:state.cellCardFields);
+    keys.forEach(key=>checked?keep.add(key):keep.delete(key));state.cellCardFields=[...keep];
+    try{localStorage.setItem(CELL_CARD_FIELDS_KEY,JSON.stringify(state.cellCardFields));}catch(_){}
+    apply();
+  };
+  const draw=()=>{
+    list.replaceChildren(...matches().map(key=>{const input=el('input',{type:'checkbox',value:key,'aria-label':'Show '+key});input.addEventListener('change',()=>choose([key],input.checked));return el('label',{class:'check',title:key},[input,el('span',{text:short(key)})]);}));
+    if(!list.childElementCount)list.append(el('span',{class:'hint',text:'No matching fields'}));apply();
+  };
+  search.addEventListener('input',draw);all.addEventListener('change',()=>choose(matches(),all.checked));
+  picker.append(summary,menu);picker.addEventListener('toggle',()=>{if(picker.open)search.focus();});
+  picker.addEventListener('keydown',event=>{if(event.key==='Escape'){event.stopPropagation();picker.open=false;summary.focus();}});
+  const calls=card.querySelector('.cell-calls');if(calls)calls.insertBefore(picker,calls.querySelector('table'));else card.querySelector('h4').after(picker);
+  draw();
+}
 
 // The cell's call in every phenotype column; the main column (chosen, remembered) first.
 function phenotypeCalls(layer, result, details, card) {
@@ -547,14 +605,14 @@ function phenotypeCalls(layer, result, details, card) {
   const box = el("div", { class: "cell-calls" });
   card.appendChild(box);
   box.appendChild(el("div", { class: "row call-main" }, [chip(mainCall || "No call", mainCall ? "main" : "", main), picker,
-    help("The cell's phenotype in the main column, chosen here and remembered, then its call in every other " +
-      "phenotype column. Calls that differ from the main one are highlighted. ref columns hold manual labels, " +
+    help("Choose the main phenotype here. Use Fields to show or hide the other rows. " +
+      "Calls that differ from the main one are highlighted. ref columns hold manual labels, " +
       "including labels saved but not yet written into the CSV.")]));
   const rows = columns.filter((column) => column !== main).map((column) => {
     const value = call(column);
     const differs = value !== null && mainCall !== null && value !== mainCall;
-    return el("tr", { class: differs ? "differs" : value === null ? "none" : "" },
-      [el("td", { class: "k", text: short(column) }), el("td", { text: value === null ? "none" : value })]);
+    return el("tr", { class: differs ? "differs" : value === null ? "none" : "", 'data-cell-field':column },
+      [el("td", { class: "k", text: short(column), title:column }), el("td", { text: value === null ? "none" : value })]);
   });
   if (rows.length) box.appendChild(el("table", { class: "calls" }, rows));
 }
@@ -572,24 +630,28 @@ function rankedMarkers(layer, result, details, box) {
     choices.forEach(([key, text, tip]) => seg.appendChild(el("button", { type: "button", text: text, title: tip, class: key === by ? "on" : "",
       onclick: () => { state.rankBy = key; showCellCard(layer, result); } })));
     box.appendChild(seg);
-    const sorted = ranking.slice().sort((a, b) => b[by] - a[by]).slice(0, 15);
+    const ranked = ranking.slice().sort((a, b) => b[by] - a[by]);
+    cellCardMarkerList(layer,box,ranked,(sorted,body)=>{
     const top = Math.max(...sorted.map((m) => Math.abs(m[by])), 1e-9);
-    box.appendChild(el("table", {}, sorted.map((m) => el("tr", { title: "Raw " + number(m.raw) + ", Arcsinh " + m.asinh.toFixed(2) +
+    body.appendChild(el("table", {class:'cell-profile'}, sorted.map((m) => el("tr", { title: "Raw " + number(m.raw) + ", Arcsinh " + m.asinh.toFixed(2) +
         ", Z1 " + m.z1.toFixed(2) + ", Z2 " + m.z2.toFixed(2) }, [
       el("td", { class: "k", text: m.marker }),
       el("td", {}, [el("div", { text: (by === "raw" ? number(m[by]) : m[by].toFixed(2)) }),
         el("div", { class: "bar" + (m[by] < 0 ? " neg" : ""), style: "width:" + Math.max(2, 100 * Math.abs(m[by]) / top) + "%" })]),
     ]))));
+    });
     return;
   }
   const markers = Object.entries(details).filter(([key, value]) => channels.has(key) && typeof value === "number")
-    .sort((a, b) => b[1] - a[1]).slice(0, 15);
+    .sort((a, b) => b[1] - a[1]).map(([marker,value])=>({marker,value}));
   if (!markers.length) { box.appendChild(el("div", { class: "hint", text: "No marker values for this cell." })); return; }
-  const max = Math.max(...markers.map((m) => m[1]), 1e-9);
-  box.appendChild(el("table", {}, markers.map(([k, v]) => el("tr", {}, [
+  cellCardMarkerList(layer,box,markers,(rows,body)=>{
+  const max = Math.max(...rows.map(m => m.value), 1e-9);
+  body.appendChild(el("table", {class:'cell-profile'}, rows.map(({marker:k,value:v}) => el("tr", {}, [
     el("td", { class: "k", text: k }),
     el("td", {}, [el("div", { text: v.toFixed(1) }), el("div", { class: "bar", style: "width:" + Math.max(2, 100 * v / max) + "%" })]),
   ]))));
+  });
 }
 
 function setProfileSource(layer, value) {
@@ -696,7 +758,8 @@ async function requestSelectedCellProfiles(layer, result, sequence) {
 
 function suggestionSettings(layer) {
   const destination=state.labelColumn || 'phenotype_ref1';
-  if (layer.suggestionMode === 'saved_reference') return {mode:'saved_reference',model_id:layer.suggestionModelId,t:layer.table,destination};
+  if (layer.suggestionMode === 'saved_reference') return {mode:'saved_reference',model_id:layer.suggestionModelId,t:layer.table,destination,
+    session:state.spec?.session || new URLSearchParams(location.search).get('session')};
   if ((layer.suggestionMode || 'consensus_rf') === 'consensus_rf') {
     return {mode: 'consensus_rf', t: layer.table, destination};
   }
@@ -743,6 +806,11 @@ async function requestSuggestions(layer, result, sequence) {
       const found=await getJSON('/cells/'+layer.token+'/reference_models?t='+encodeURIComponent(layer.table || ''));
       if(sequence!==state.cardSeq||!state.layers.includes(layer)||!layer.suggestionsOn)return;
       layer.referenceModelTable=found.table;
+      if(state.studio){
+        const session=new URLSearchParams(location.search).get('session');
+        const setup=await getJSON('/studio/'+encodeURIComponent(session)+'/reference_setup');
+        layer.suggestionModelId=setup.base_model_id||null;
+      }
       if(!useReferenceModel(layer,found.models))throw Error('No compatible reference model yet. Train from this reference, or choose a model from the library.');
       rememberReferenceChoice(layer);
     }catch(error){if(sequence===state.cardSeq){result.suggestions={status:'error',message:error.message};showCellCard(layer,result);}return;}
@@ -785,12 +853,29 @@ function useReferenceModel(layer, models, preferred) {
   const find=id=>available.find(model=>model.model_id===id) || available.find(model=>model.replaces?.includes(id));
   const selected=find(preferred) || find(layer.suggestionModelId);
   if(selected)layer.suggestionModelId=selected.model_id;
+  else if(state.studio){layer.suggestionModelId=null;return false;}
   else if(!available.some(model=>model.model_id===layer.suggestionModelId)){
     const related=available.filter(model=>model.column===(layer.learnColumn || state.labelColumn));
     layer.suggestionModelId=(related[0] || available[0]).model_id;
   }
   saveView();return true;
 }
+
+document.addEventListener('spacemap-reference-setup',event=>{
+  if(!state.studio)return;
+  const setup=event.detail, model=setup.models.find(item=>item.id===setup.base_model_id);
+  for(const layer of state.layers.filter(item=>item.type==='cells')){
+    layer.suggestionMode='saved_reference';
+    layer.suggestionModelId=model?.id||null;layer.loadedSetupModelId=model?.id||null;
+    layer.suggestionsOn=!!model?.compatible;
+    rememberReferenceChoice(layer);
+    if(state.inspectedCell?.layer===layer){
+      delete state.inspectedCell.result.suggestions;
+      requestCellProfile(layer,state.inspectedCell.result,++state.cardSeq);
+    }
+  }
+  saveView();
+});
 
 const appliedAutoModels=new WeakMap();
 document.addEventListener('spacemap-auto-reference',event=>{
@@ -806,7 +891,11 @@ document.addEventListener('spacemap-auto-reference',event=>{
 document.addEventListener('spacemap-reference-trained',async event=>{
   const job=event.detail, result=job?.result;
   if(!result?.models?.length)return;
-  const best=result.models.slice().sort((a,b)=>(b.held_out_balanced_accuracy ?? -1)-(a.held_out_balanced_accuracy ?? -1))[0];
+  if(state.studio){
+    document.querySelectorAll('.manual-reference-card').forEach(card=>card.refreshModels?.(result));
+    return; // Project setup owns the model choice, including pooled training.
+  }
+  const best=result.models[0];
   const version=job.id || best.model_id;
   for(const layer of state.layers.filter(item=>item.type==='cells'&&item.table)){
     if(appliedAutoModels.get(layer)===version)continue;
@@ -850,6 +939,7 @@ async function requestSelectedSuggestions(layer, result, sequence) {
   if(!ready.length){result.suggestions={status:'error',message:values.find(v=>v?.message)?.message || 'No predictions available.'};showCellCard(layer,result);return;}
   ready.forEach(value=>(value.probabilities || value.choices).forEach(choice=>sums.set(choice.phenotype,(sums.get(choice.phenotype)||0)+choice.probability)));
   result.suggestions={status:'ready',provenance:{...ready[0].provenance,
+    panel_check:{needs_checking:[...new Set(ready.flatMap(v=>v.provenance?.panel_check?.needs_checking||[]))]},
     missing_markers:[...new Set(ready.flatMap(v=>v.provenance?.missing_markers || []))]},scored:ready.length,total:result.members.length,
     choices:[...sums].map(([phenotype,sum])=>({phenotype,probability:sum/ready.length})).sort((a,b)=>b.probability-a.probability).slice(0,3)};
   showCellCard(layer,result);
@@ -873,7 +963,7 @@ function renderSuggestions(layer, result, card) {
     title:'Ask the Assistant using this cell’s measurements, morphology, marker tiles and existing phenotype names. Labels stay unchanged.',
     onclick:()=>askCellAI(layer,result,ai)}) : null;
   if(ai)box.appendChild(ai);
-  box.appendChild(el('div', {class: 'section', text: 'Suggested phenotypes'}));
+  box.appendChild(el('div', {class: 'section', text: 'Suggestions'}));
   if (!layer.suggestionsOn) {
     box.appendChild(el('button', {class: 'btn small', text: 'Show suggestions', onclick: () => {
       layer.suggestionsOn = true;
@@ -903,17 +993,20 @@ function renderSuggestions(layer, result, card) {
     if (!/(^|_)(ref\d*|reference|manual)(_|\d|$)/i.test(p.column)) notes.push('It learns another method\'s results, so a reference built from these suggestions cannot then be used to check that method.');
     if (p.available_examples > p.examples + p.missing_excluded) notes.push('Examples are sampled from ' + Number(p.available_examples).toLocaleString() + ' labelled cells, keeping each phenotype represented.');
     if (p.missing_excluded) notes.push(p.missing_excluded + ' examples were left out because marker measurements are missing.');
-    box.querySelector('.section').replaceWith(el('div', {class: 'row section-row'}, [el('span', {class: 'section', text: 'Suggested'}),
-      chip('from ' + p.column, '', 'Learned from the labels in ' + p.column), help(notes.join(' '))]));
+    const detail=el('details',{class:'suggestion-details'},[el('summary',{text:p.needs_examples?.length?'Details · more examples needed':'Details'}),
+      el('p',{class:'hint',text:'Reference: '+p.column}),el('p',{class:'hint',text:notes.join(' ')})]);
     if (result.members) box.appendChild(el('div', {class:'hint',text:'Average model scores · '+value.scored+'/'+value.total+' cells scored'}));
-    if(p.missing_markers?.length)box.appendChild(el('div',{class:'hint',text:'Using available features · missing: '+p.missing_markers.join(', '),
-      title:p.note || 'Refitted using stored examples and the features measured here. Check predictions on reference cells in this tissue.'}));
-    if (result.acceptedSuggestion) box.appendChild(el('div', {class: 'hint', text: result.acceptedSuggestion + ' added to the save queue.'}));
+    if(p.missing_markers?.length){box.appendChild(el('div',{class:'hint',text:p.missing_markers.length+' markers unavailable',title:p.missing_markers.join(', ')}));
+      detail.append(el('p',{class:'hint',text:'Missing markers: '+p.missing_markers.join(', ')+'. '+(p.note || 'Check predictions on reference cells in this tissue.')}));}
+    const needsChecking=p.panel_check?.needs_checking||[];
+    if(needsChecking.length)box.appendChild(el('div',{class:'hint',text:'“Check” = limited validation or low agreement with these markers.'}));
+    if (result.acceptedSuggestion) box.appendChild(el('div', {class: 'hint', role:'status', text: 'Queued: '+result.acceptedSuggestion}));
     else box.appendChild(el('div', {class: 'row wrap'}, value.choices.map(choice => el('button', {class: 'btn suggestion-choice',
-      text: choice.phenotype + ' · ' + (100 * choice.probability).toFixed(1) + '%' + (result.members ? ' · Assign all' : ''),
+      text: choice.phenotype + ' · ' + (100 * choice.probability).toFixed(1) + '%' + (needsChecking.includes(choice.phenotype)?' · check':'') + (result.members ? ' · Assign all' : ''),
       onclick: () => acceptSuggestion(layer, result, choice)}))));
-    if (p.needs_examples?.length) box.appendChild(el('div', {class: 'hint', text:
-      (p.model_id ? 'Add at least five '+(p.checked_only?'checked':'usable labelled')+' examples before retraining for: ' : 'Add a second checked example before suggestions can include: ') + p.needs_examples.join(', ') + '.'}));
+    if (p.needs_examples?.length) detail.appendChild(el('p', {class: 'hint', text:
+      p.needs_examples.join(', ')+(p.model_id ? ': at least 5 labelled cells needed for each new label.' : ': add a second checked example for each label.')}));
+    box.append(detail);
   }
   card.appendChild(box);
 }
@@ -972,7 +1065,41 @@ async function prepareConsensusModel(layer, chip) {
   }
 }
 
+function studioSuggestionControls(layer, body) {
+  const enabled=el('input',{type:'checkbox','aria-label':'Suggest phenotypes'});enabled.checked=!!layer.suggestionsOn;
+  const status=el('div',{class:'hint',role:'status'});
+  const changed=()=>{layer.suggestionsOn=enabled.checked;rememberReferenceChoice(layer);saveView();
+    if(state.inspectedCell?.layer===layer)requestCellProfile(layer,state.inspectedCell.result,++state.cardSeq);};
+  enabled.onchange=changed;
+  body.append(el('div',{class:'row'},[el('label',{class:'inline-check'},[enabled,el('span',{text:'Suggestions from loaded model'})]),
+    help('Select a model above and click Use. Shows suggestions for clicked cells; you choose which labels to keep.')]),status);
+  const session=new URLSearchParams(location.search).get('session');
+  getJSON('/studio/'+encodeURIComponent(session)+'/reference_setup').then(found=>{
+    if(!status.isConnected)return;
+    const item=found.models.find(m=>m.id===found.base_model_id);
+    const previous=layer.suggestionModelId;
+    layer.suggestionMode='saved_reference';layer.suggestionModelId=item?.id||null;layer.loadedSetupModelId=item?.id||null;
+    status.textContent=item&&!item.compatible?'No compatible features.':'';
+    enabled.title=item?'Use the loaded model for suggestions.':'Load a model above to enable suggestions.';
+    enabled.disabled=!item?.compatible;
+    if(enabled.disabled){enabled.checked=false;layer.suggestionsOn=false;}
+    if(previous!==layer.suggestionModelId)changed();
+    layer.refreshSuggestionStatus?.();
+  }).catch(error=>{status.textContent=error.message;});
+  const next=el('button',{class:'btn small',text:'Next least-sure cell',onclick:()=>{
+    layer.suggestionsOn=true;enabled.checked=true;saveView();nextUnsureCell(layer);
+  }});
+  const stop=el('button',{class:'btn small',text:'Stop search',hidden:true,onclick:async()=>{
+    const search=layer.suggestionSearch;if(!search)return;search.stopped=true;layer.unsureMessage='Stopping…';layer.refreshSuggestionStatus?.();
+    try{await postJSON('/cells/'+layer.token+'/suggestions',{...search.settings,scan:true,cancel:true});}catch(error){status.textContent=error.message;}
+  }});
+  const searchStatus=el('div',{class:'hint',role:'status'});
+  layer.refreshSuggestionStatus=()=>{next.disabled=!!layer.suggestionSearch||!layer.suggestionModelId;stop.hidden=!layer.suggestionSearch;searchStatus.textContent=layer.unsureMessage||'';};
+  layer.refreshSuggestionStatus();body.append(el('div',{class:'row'},[next,stop]),searchStatus);
+}
+
 function suggestionControls(layer, body) {
+  if(state.studio){studioSuggestionControls(layer,body);return;}
   if(layer.table===layer.combinedTable&&dataView.combined?.path)restoreReferenceChoice(layer,dataView.combined.path);
   if(state.studio&&!layer.suggestionMode)layer.suggestionMode='saved_reference';
   const enabled = el('input', {type: 'checkbox', 'aria-label': 'Suggest phenotypes'}); enabled.checked = !!layer.suggestionsOn;
@@ -1001,7 +1128,7 @@ function suggestionControls(layer, body) {
     const choice = el('select', {'aria-label': 'Saved reference model'});
     body.appendChild(field('Saved', choice, 'The percentage is agreement with held-out reference labels.'));
     showReady('Reading...');
-    getJSON('/cells/' + layer.token + '/reference_models?t=' + encodeURIComponent(layer.table || '')).then(result => {
+    getJSON('/cells/' + layer.token + '/reference_models?t=' + encodeURIComponent(layer.table || '')).then(async result => {
       if (!choice.isConnected) return;
       const models = result.models, library = result.library || [];
       layer.referenceModelTable=result.table;
@@ -1013,6 +1140,20 @@ function suggestionControls(layer, body) {
           text: item.name + (item.project ? ' · from ' + item.project : '') + pct(item.accuracy) + (item.present < item.markers ? ' · ' + item.present + ' of ' + item.markers + ' markers' : '')})))] : []));
       if (!models.length && !library.length) { showReady('None trained', 'warn'); ready.title = 'Train reference models in Studio’s Phenotyping step, or share some into the model library.'; return; }
       if (!models.length) { choice.value = ''; showReady('Pick a library model', 'warn'); return; }
+      const session=new URLSearchParams(location.search).get('session');
+      if(state.studio&&session){
+        const setup=await getJSON('/studio/'+encodeURIComponent(session)+'/reference_setup');
+        if(!choice.isConnected)return;
+        if(setup.base_model_id){
+          if(!models.some(model=>model.model_id===setup.base_model_id)){
+            showReady('Retrain for this table','warn');layer.suggestionsOn=false;enabled.checked=false;return;
+          }
+          const chosen=models.find(model=>model.model_id===layer.suggestionModelId);
+          if(layer.loadedSetupModelId!==setup.base_model_id && chosen?.base_model_id!==setup.base_model_id)
+            layer.suggestionModelId=setup.base_model_id;
+          layer.loadedSetupModelId=setup.base_model_id;
+        }
+      }
       const previous=layer.suggestionModelId;
       useReferenceModel(layer,models);
       if(previous!==layer.suggestionModelId)changed();
@@ -1080,7 +1221,7 @@ function cellMarkerOptions() {
   return state.cellMarkers;
 }
 
-function cellMarkerControls() {
+function cellMarkerControls(compact = false) {
   const options = cellMarkerOptions();
   const box=el('div',{class:'cell-marker-controls'});
   const on = el('input', {type:'checkbox', 'aria-label':'Cell top markers'});
@@ -1098,29 +1239,36 @@ function cellMarkerControls() {
     box.refresh();
   };
   on.addEventListener('change', change); count.addEventListener('input', change);
-  box.append(el('div', {class:'row annotation-marker-controls'}, [
+  const header=el('div', {class:'row annotation-marker-controls'}, [
     el('label', {class:'inline'}, [on, el('span', {text:'Top markers'})]),
-    el('label', {class:'inline'}, [el('span', {text:'Number'}), count]),
-    help('Click a cell to show its highest markers. Ctrl-click several cells to rank their average transformed values. From restricts the choices to a saved image marker set. Scale is shared with the cell’s Markers panel; it changes display values, not the saved data. Colours and contrast stay as set.') ]));
+    el('label', {class:'inline'}, [...(compact?[]:[el('span', {text:'Number'})]), count]),
+    help('Click a cell to show its highest markers. Ctrl-click several cells to rank their average transformed values. Marker sets restricts the choices to a saved image marker set. Scale is shared with the cell’s Markers panel; it changes display values, not the saved data. Colours and contrast stay as set.') ]);
+  box.header=header;if(!compact)box.append(header);
   const sets=el('select',{'aria-label':'Cell top marker set'}), scales=el('div'), note=el('div',{class:'hint',role:'status'});
   sets.onchange=()=>{options.markerSet=sets.value;change();};
-  box.append(field('From',sets,'All markers, or one of the named lists saved under the image’s Marker sets. The list remains fixed when the top visible markers change.'),
-    field('Scale',scales,'The same transformations as the clicked cell’s Markers panel, applied in the shown order. The list filters the ranking after transformation.'),note);
+  const settings=el('div',{class:compact?'cell-marker-settings':'cell-marker-options'});
+  if(compact){settings.append(el('span',{class:'muted',text:'Marker set'}),sets,
+    el('div',{class:'cell-marker-scale'},[el('span',{class:'muted',text:'Scale'}),scales]),
+    help('Marker set and scale apply to top-marker inspection and the clicked cell card. They do not change saved measurements.'));}
+  else settings.append(field('Marker sets',sets),field('Scale',scales));
+  box.append(settings,note);
   box.refresh=()=>{
-    const layer=state.inspectedCell?.layer || state.layers.find(l=>l.type==='cells'&&l.visible);
+    const layer=state.inspectedCell?.layer || activeCellLayer();
     const image=state.layers.find(l=>l.type==='image'&&l.token===layer?.image_token);
     const available=image?.markerSets || {};
     sets.replaceChildren(el('option',{value:'',text:'All markers'}),...Object.keys(available).sort().map(value=>el('option',{value,text:value})),
       ...(options.markerSet&&!available[options.markerSet]?[el('option',{value:options.markerSet,text:options.markerSet+' (unavailable)'})]:[]));
+    settings.hidden=compact&&!options.enabled;
     sets.value=options.markerSet;sets.disabled=!options.enabled;
     if(scales.layer!==layer){scales.replaceChildren();scales.layer=layer;if(layer)markerTransformControls(layer,scales);}
-    note.textContent=options.enabled?(state.cellMarkerNote || ''):'';
+    note.textContent=options.enabled?(state.cellMarkerNote || ''):'';note.hidden=!note.textContent;
   };
   box.refresh();return box;
 }
 
 document.addEventListener('spacemap-marker-sets',()=>{
   document.querySelectorAll('.cell-marker-controls').forEach(box=>box.refresh?.());
+  document.querySelectorAll('.cell-card-marker-controls').forEach(box=>box.refresh?.());
   if(cellMarkerOptions().enabled&&cellMarkerOptions().markerSet)applyCellMarkers(state.inspectedCell);
 });
 
@@ -1211,6 +1359,49 @@ function syncMarkerTransformControls(layer) {
   });
 }
 
+function cellCardMarkerOptions() {
+  if(!state.cellCardMarkers){
+    let saved;try{saved=JSON.parse(localStorage.getItem('spacemap-viewer-cell-card-markers'));}catch(_){}
+    state.cellCardMarkers={markerSet:typeof saved?.markerSet==='string'?saved.markerSet:'',
+      count:Number.isInteger(saved?.count)&&saved.count>0?saved.count:5,showAll:saved?.showAll===true};
+  }
+  return state.cellCardMarkers;
+}
+
+// This only limits rows in the card. Transformations keep their original marker
+// universe (particularly Z2); the image's visible channels are also unchanged.
+function cellCardMarkerList(layer, card, rankedRows, paint) {
+  const options=cellCardMarkerOptions(),image=state.layers.find(l=>l.type==='image'&&l.token===layer.image_token);
+  const box=el('div',{class:'cell-card-marker-controls'}),body=el('div',{class:'cell-card-marker-values'});
+  const sets=el('select',{'aria-label':'Cell card marker set'}),count=el('input',{type:'number',min:'1',step:'1',value:options.count,'aria-label':'Cell card top marker count'});
+  const all=el('input',{type:'checkbox','aria-label':'Show all cell card markers'});all.checked=options.showAll;
+  box.append(el('label',{class:'cell-card-marker-set'},[el('span',{text:'Marker sets'}),sets]),
+    el('div',{class:'row'},[el('label',{class:'inline'},[el('span',{text:'Show top'}),count]),el('label',{class:'inline'},[all,el('span',{text:'All'})])]));
+  const save=()=>{try{localStorage.setItem('spacemap-viewer-cell-card-markers',JSON.stringify(options));}catch(_){};};
+  const draw=()=>{
+    count.disabled=options.showAll;
+    const allowed=options.markerSet?new Set((image?.markerSets?.[options.markerSet]||[]).map(item=>item.name)):null;
+    const matches=rankedRows.filter(row=>!allowed||allowed.has(row.marker));
+    const rows=options.showAll?matches:matches.slice(0,options.count);
+    body.replaceChildren();
+    if(!rows.length)body.append(el('div',{class:'hint',text:options.markerSet?'No measured markers from this set.':'No marker measurements available.'}));
+    else paint(rows,body);
+  };
+  sets.addEventListener('change',()=>{options.markerSet=sets.value;save();draw();});
+  count.addEventListener('input',()=>{const valid=Number.isInteger(count.valueAsNumber)&&count.valueAsNumber>0;count.setCustomValidity(valid?'':'Enter a whole number of 1 or more.');if(valid){options.count=count.valueAsNumber;save();draw();}});
+  all.addEventListener('change',()=>{options.showAll=all.checked;save();draw();});
+  box.refresh=()=>{
+    const available=image?.markerSets||{};
+    sets.replaceChildren(el('option',{value:'',text:'All markers'}),...Object.keys(available).sort((a,b)=>a.localeCompare(b)).map(name=>el('option',{value:name,text:name})),
+      ...(options.markerSet&&!available[options.markerSet]?[el('option',{value:options.markerSet,text:options.markerSet+' (unavailable)'})]:[]));
+    sets.value=options.markerSet;draw();
+  };
+  card.append(box,body);box.refresh();
+  if(image?.display_token&&!image.markerSets)getJSON('/display/'+image.display_token+'/sets').then(result=>{
+    image.markerSets=result.sets||{};document.dispatchEvent(new CustomEvent('spacemap-marker-sets',{detail:{layer:image}}));
+  }).catch(()=>{if(box.isConnected)sets.title='Marker sets could not load. Reopen the cell to retry.';});
+}
+
 function renderCellProfile(layer, profile, card) {
   const fromTable = (profile.source || layer.profileSource || "table") === "table";
   const notes = [fromTable ? "Values saved for this cell" + (profile.table ? " in " + profile.table : "") + "." :
@@ -1233,9 +1424,8 @@ function renderCellProfile(layer, profile, card) {
   const transformed = !!profile.steps?.length;
   const amount = row => cellMarkerAmount(profile, row);
   const allRows = rankedCellMarkers(profile);
-  const rows = profile.showAll ? allRows : allRows.slice(0, 15);
-  const largest = Math.max(...allRows.map(row => Math.abs(amount(row))), 1e-9);
-  if (!rows.length) card.appendChild(el("div", { class: "hint", text: "No marker measurements are available for this cell yet." }));
+  cellCardMarkerList(layer,card,allRows,(rows,body)=>{
+  const largest = Math.max(...rows.map(row => Math.abs(amount(row))), 1e-9);
   const table = el("table", { class: "cell-profile" });
   table.appendChild(el("tr", {}, [el("th", { text: "Marker" }), el("th", { text: (profile.count ? 'Mean ' : '') + (transformed ? "View value" : fromTable ? "Amount" : "Signal") })]));
   rows.forEach((row) => table.appendChild(el("tr", {
@@ -1246,7 +1436,6 @@ function renderCellProfile(layer, profile, card) {
     el("td", {}, [el('div', {text: (transformed ? amount(row).toLocaleString(undefined, {maximumSignificantDigits: 4}) : number(amount(row))) + (!transformed && !fromTable && row.signal === null ? " (average)" : "")}),
       el('div', {class: 'bar' + (amount(row) < 0 ? ' neg' : ''),
         style: 'width:' + (100 * Math.abs(amount(row)) / largest) + '%'})])])));
-  card.appendChild(table);
-  if (allRows.length > 15) card.appendChild(el('button', {class: 'btn small', text: profile.showAll ? 'Show top 15' : 'Show all markers',
-    onclick: () => { profile.showAll = !profile.showAll; showCellCard(layer, state.inspectedCell.result); }}));
+  body.appendChild(table);
+  });
 }

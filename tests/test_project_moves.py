@@ -21,10 +21,10 @@ def test_settings_file_is_found_or_reported_missing(tmp_path):
 
 def test_a_moved_project_is_found_beside_the_others(tmp_path):
     new_home = tmp_path / "new" / "project"
-    pdac = _project(new_home, "PDAC")
-    innate = _project(new_home, "INNATE")
-    index = {"PDAC": str(pdac), "INNATE": str(tmp_path / "old" / "projects" / "INNATE")}
-    assert persistence.find_moved_project("INNATE", index) == innate
+    example_a = _project(new_home, "ExampleA")
+    example_b = _project(new_home, "ExampleB")
+    index = {"ExampleA": str(example_a), "ExampleB": str(tmp_path / "old" / "projects" / "ExampleB")}
+    assert persistence.find_moved_project("ExampleB", index) == example_b
     assert persistence.find_moved_project("NOWHERE", index) is None
 
 

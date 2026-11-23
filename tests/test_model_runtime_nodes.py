@@ -109,3 +109,70 @@ def test_stopping_with_spacemap_can_be_turned_off(tmp_path, monkeypatch):
     assert ai_settings.load_settings()["stop_with_spacemap"] is True
     ai_settings.update_settings(stop_with_spacemap=False)
     assert ai_settings.load_settings()["stop_with_spacemap"] is False  # unknown keys used to be dropped
+
+
+def test_slow_stop_is_a_state_and_eventually_releases_process(tmp_path, monkeypatch):
+    import json
+    from types import SimpleNamespace
+    monkeypatch.setattr(model_runtime, '_state_path', lambda: tmp_path / 'runtime.json')
+    monkeypatch.setattr(model_runtime, 'STOP_GRACE_SECONDS', .4)
+    monkeypatch.setattr(model_runtime, '_port_in_use', lambda *a: False)
+    monkeypatch.setattr(model_runtime, 'active_entry', lambda: SimpleNamespace(
+        id='test', name='Test model', backend='transformers', is_installed=lambda: True))
+    script = tmp_path / 'spacemap_assistant/model_service/server.py'
+    script.parent.mkdir(parents=True)
+    ready = tmp_path / 'ready'
+    script.write_text('import signal,time\nfrom pathlib import Path\n'
+        'signal.signal(signal.SIGTERM, signal.SIG_IGN)\n'
+        f'Path({str(ready)!r}).touch()\n'
+        'time.sleep(120)\n')
+    process = subprocess.Popen([sys.executable, str(script)], start_new_session=True)
+    try:
+        for _ in range(100):
+            if ready.exists():
+                break
+            time.sleep(.02)
+        assert ready.exists()
+        record = {'host': socket.gethostname(), 'pid': process.pid,
+                  'process_started': model_runtime._process_start_time(process.pid)}
+        model_runtime._state_path().write_text(json.dumps(record))
+        before = time.monotonic()
+        status = model_runtime.stop_runtime()
+        assert status.running and status.stopping and not status.ready
+        assert time.monotonic() - before < .3
+        assert model_runtime.stop_runtime().stopping  # idempotent while waiting
+        with pytest.raises(model_runtime.ModelRuntimeError, match='stopping'):
+            model_runtime.ensure_running()
+        with pytest.raises(model_runtime.ModelRuntimeError, match='stopping'):
+            model_runtime.start_runtime()
+        assert gone(process, 5)
+        for _ in range(100):
+            if not model_runtime._state_path().exists():
+                break
+            time.sleep(.02)
+        assert not model_runtime._state_path().exists()
+        assert not model_runtime.runtime_status().running
+    finally:
+        process.kill()
+        process.wait()
+
+
+def test_stopping_never_signals_a_shared_application_group(monkeypatch):
+    calls = []
+    monkeypatch.setattr(model_runtime.os, 'getpgid', lambda pid: 100)
+    monkeypatch.setattr(model_runtime.os, 'killpg', lambda *args: calls.append(('group', *args)))
+    monkeypatch.setattr(model_runtime.os, 'kill', lambda *args: calls.append(('pid', *args)))
+    model_runtime._signal_server(200, model_runtime.signal.SIGTERM)
+    assert calls == [('pid', 200, model_runtime.signal.SIGTERM)]
+
+
+def test_foreign_and_reused_process_records_are_not_stopped(tmp_path, monkeypatch):
+    import json
+    path = tmp_path / 'runtime.json'
+    monkeypatch.setattr(model_runtime, '_state_path', lambda: path)
+    monkeypatch.setattr(model_runtime, '_pid_matches', lambda pid: True)
+    monkeypatch.setattr(model_runtime, '_process_start_time', lambda pid: 20.)
+    path.write_text(json.dumps({'host': 'another-host', 'pid': 200}))
+    with pytest.raises(model_runtime.ModelRuntimeError, match='another computer'):
+        model_runtime.stop_runtime()
+    assert not model_runtime._record_matches({'host':socket.gethostname(),'pid':200,'process_started':10.})

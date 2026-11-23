@@ -95,7 +95,7 @@ def test_saved_model_transfer_missing_feature_and_no_reference(training, missing
 def test_saved_model_preserves_manual_labels_and_excludes_filtered_rows(training):
     table,settings,root=training
     model_id=reference_models.train(settings,root/'train',lambda *args:None)['models'][0]['model_id']
-    job=model_job(root,table,model_id,enable_filter=True,filter_col='batch_id',filter_val='roi1')
+    job=model_job(root,table,model_id,preserve_reference_labels=True,enable_filter=True,filter_col='batch_id',filter_val='roi1')
     result=tasks.mr_ml(job,root/'predict',lambda *args:None)
     found=dataio.load(table)
     known=ml_mr_utils._valid_reference_mask(found.phenotype_ref1,['Others']) & (found.batch_id=='roi1')

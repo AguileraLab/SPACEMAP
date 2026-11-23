@@ -342,6 +342,10 @@ async def annotation_sources(request):
             sample = annotation.sample_id(image)
             token = registry.register(image)
             layers = []
+            tissue = annotation.valid_tissue(output, sample)
+            if tissue.is_file():
+                layers.append(shapes_layer(tissue, image, name=annotation.tissue_label(config),
+                    layer_id='tissue-regions', regions=True, annotation_kind='tissue', editable=not readonly, visible=False))
             for part in artifact_learning.NAMES:
                 if artifact_learning.polygons_path(output, sample, part).is_file():
                     item = _layer(output, sample, part, image, readonly); item.update(visible=False, added=True); layers.append(item)
@@ -360,7 +364,13 @@ async def annotation_sources(request):
                     item = _annotation_layer(str(path), image, token, name)
                     item.update(annotation_group=group, visible=False, added=True); layers.append(item)
             layers.extend(inputs.layer(path,image,readonly) for path in inputs.imported(root,image))
-            return JSONResponse({'layers':layers})
+            from spacemap_gui.studio import annotation_links, project_files
+            seen = {layer.get('saved_file') for layer in layers}
+            for row in annotation_links.records(root, image):
+                if row['path'] not in seen and Path(row['path']).is_file() and not project_files.excluded(row['path'], root):
+                    layers.append({**_annotation_layer(row['path'], image, token, Path(row['path']).stem), 'annotation_origin':'imported'})
+                    seen.add(row['path'])
+            return JSONResponse({'layers':[layer for layer in layers if not project_files.excluded(layer.get('saved_file'), root)]})
         project = registry.session_project(request.path_params['channel']) or {}
         config = {**config, 'directory_mappings':{**project.get('mappings', {}), **config.get('directory_mappings', {})}}
         choices = await run_in_threadpool(inputs.sources,root,config,image,output)

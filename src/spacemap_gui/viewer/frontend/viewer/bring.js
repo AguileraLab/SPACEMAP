@@ -17,7 +17,7 @@ async function bringAnswer(found) {
       [["cells", "Add as cells", true], ["annotations", "Add as annotations"]]);
     if (choice === "cells") {
       const made = await cellLayersPost({ action: "add", file_token: found.file_token });
-      await addLayerToView(made.layer); buildPanel(); message(made.layer.name + " added to Cells and maps; its × takes it off.");
+      await registerImportedCells(made.layer); buildPanel(); message(made.layer.name + " added to Cells. Choose it in Add / switch cells to use it.");
     } else if (choice === "annotations") {
       const shapes = await postJSON(bringRoute("shapes"), { file_token: found.file_token });
       await importAnnotationCopy({ name: shapes.name, features: shapes.features });
@@ -138,8 +138,8 @@ async function bringCellPairs(files) {
       message("Bringing in " + outlines.name + " with " + table.name + "…");
       const [shapes, data] = [await bringUpload(outlines), await bringUpload(table)];
       const made = await cellLayersPost({ action: "add", file_token: shapes.file_token, table_token: data.file_token });
-      await addLayerToView(made.layer); buildPanel();
-      message(made.layer.name + " added to Cells and maps with " + table.name + " as its data; its × takes it off.");
+      await registerImportedCells(made.layer); buildPanel();
+      message(made.layer.name + " added to Cells with " + table.name + " as its data. Choose it in Add / switch cells to use it.");
       used.add(outlines); used.add(table);
     } catch (error) { message(error.message, true); }
   }
@@ -147,6 +147,7 @@ async function bringCellPairs(files) {
 }
 
 async function bringFiles(files) {
+  if(state.reviewer)return message('File imports are unavailable in Review: this importer uses the project server.',true);
   files = await bringCellPairs(files);
   const geojson = files.filter((file) => /\.(geo)?json$/i.test(file.name));
   if (state.studio && geojson.length > 1) {
@@ -178,11 +179,13 @@ function setUpDrop() {
   if (!target || target.dataset.dropReady) return;
   target.dataset.dropReady = "1";
   target.addEventListener("dragover", (event) => {
+    if(state.reviewer&&Array.from(event.dataTransfer?.types||[]).includes('Files')){event.preventDefault();event.dataTransfer.dropEffect='none';return;}
     if (!state.studio || !Array.from(event.dataTransfer?.types || []).includes("Files")) return;
     event.preventDefault(); target.classList.add("drop-over");
   });
   target.addEventListener("dragleave", () => target.classList.remove("drop-over"));
   target.addEventListener("drop", (event) => {
+    if(state.reviewer&&event.dataTransfer?.files?.length){event.preventDefault();message('File imports are unavailable in Review: this importer uses the project server.',true);return;}
     if (!state.studio || !event.dataTransfer?.files?.length) return;
     event.preventDefault(); target.classList.remove("drop-over");
     bringFiles(Array.from(event.dataTransfer.files));
@@ -224,12 +227,15 @@ function cellDataRoute(query) {
 // Set a table up: which columns hold x and y (and their units), which rows are this image's, how to show the cells,
 // and inside which annotation. Columns, units and the image's rows are guessed; everything can be changed.
 async function cellDataDialog(found) {
+  dataRegisterFile(found);
   const image = state.layers.find((l) => l.type === "image");
-  if (!image) { message("Open an image first, then bring the table in.", true); return; }
+  if (!image) { message(found.name + ' added to the table list. Choose it in Cells to view its rows.'); return; }
+  const target=activeCellLayer();
   message("Reading " + found.name + "…");
   const [facts, place] = await Promise.all([
     postJSON(cellDataRoute(), { action: "inspect", image_token: image.token, file_token: found.file_token }),
     getJSON(cellDataRoute("?image_token=" + encodeURIComponent(image.token)))]);
+  if(!state.layers.includes(image))return;
   $("bring-dialog")?.close(); $("bring-dialog")?.remove();
   const dialog = el("dialog", { id: "bring-dialog", class: "annotation-import-dialog cell-data-dialog", "aria-labelledby": "bring-title" });
   const pick = (label, options, value) => {
@@ -244,8 +250,8 @@ async function cellDataDialog(found) {
   const roiValue = pick("This image's value", facts.roi_values.map((v) => [v, v]), facts.roi_value || facts.roi_values[0] || "");
   const label = pick("Cell number column", [["", "(none)"], ...columns], facts.label_column);
   const show = pick("Show as", [
-    ...(place.segmentation ? [["cells:label", "This image's cells, by cell number"], ["cells:position", "This image's cells, by position"]] : []),
-    ["circles", "Circles"], ["voronoi", "Voronoi cells"]], place.segmentation ? (facts.label_column ? "cells:label" : "cells:position") : "voronoi");
+    ...(target||place.segmentation ? [["cells:label", "Current outlines, by cell number"], ["cells:position", "Current outlines, by position"]] : []),
+    ["circles", "Circles"], ["voronoi", "Voronoi cells"]], target||place.segmentation ? (facts.label_column ? "cells:label" : "cells:position") : "voronoi");
   const size = el("input", { type: "number", min: "1", step: "1", value: "10", "aria-label": "Circle size µm" });
   const reach = el("input", { type: "number", min: "1", step: "1", value: "15", "aria-label": "Voronoi reach µm" });
   const within = el("select", { "aria-label": "Within" }, [el("option", { value: "", text: "Whole image" })]);
@@ -262,28 +268,28 @@ async function cellDataDialog(found) {
   };
   [show, roiColumn].forEach((s) => s.addEventListener("change", sync));
   const status = el("p", { class: "muted", role: "status" });
-  const build = el("button", { class: "btn primary", text: "Show on the image", onclick: async () => {
+  const build = el("button", { class: "btn primary", text: "Add to Cells", onclick: async () => {
     build.disabled = true; status.textContent = "Building…";
     const [kind, link] = show.value.split(":");
     const choice = { x: x.value, y: y.value, units: units.value, roi_column: roiColumn.value, roi_value: roiColumn.value ? roiValue.value : null,
       label_column: label.value, show: kind, link: link || "", size_um: Number(size.value) || 10, reach_um: Number(reach.value) || 15, within: within.value };
     try {
-      const made = await postJSON(cellDataRoute(), { action: "build", image_token: image.token, file_token: found.file_token, choice });
+      if(kind==='cells'&&target&&!state.layers.includes(target))throw Error('The chosen outlines were removed. Reopen the import dialog.');
+      const made = await postJSON(cellDataRoute(), { action: "build", image_token: image.token, file_token: found.file_token, choice, target_token:kind==='cells'?target?.token:null, target_id:target?.id });
       if (!state.layers.includes(image)) return;
       if (made.layer) {
-        const old = state.layers.find((l) => l.id === made.layer.id);
-        if (old) removeLayer(old, true);
-        const layer = await addLayerToView({ ...made.layer, visible: true });
-        if (kind === "cells") { layer.table = made.layer.tables.find((t) => t.name === "Data: " + found.name)?.id || layer.table; layer.columns = null; }
+        if(kind==='cells'&&!state.layers.some(l=>l.id===made.layer.id))made.layer.table=made.layer.tables.find(t=>t.name==='Data: '+found.name)?.id||made.layer.table;
+        await registerImportedCells(made.layer);
         (state.layerGroups || (state.layerGroups = {})).cells = true;
-        buildPanel(); refreshLayer(layer);
+        buildPanel();
       }
       dialog.close(); dialog.remove();
-      message(found.name + ": " + made.record.text + ". In Cells and maps: Colour by any of its columns; its × takes it off.");
+      message(found.name + ": " + made.record.text + ". Choose its table in Add / switch cells to use it. Your current viewer source is unchanged.");
     } catch (error) { status.textContent = error.message; build.disabled = false; }
   } });
   dialog.append(el("h3", { id: "bring-title", text: "Cell data: " + found.name }),
-    el("p", { class: "muted", text: facts.columns.length + " columns. Check the guesses, then show it." }),
+    el("p", { class: "muted", text: 'Added to the table list. Link it to cells below, or keep it for later.' }),
+    ...(target?[line('Outlines',el('span',{text:target.name||'Cells',title:target.source||target.name}))]:[]),
     line("X, Y", el("span", { class: "inline" }, [x, y, units]), "The columns with each cell's position, in pixels of this image or in µm (divided by its pixel size)."),
     line("Image column", roiColumn, "A table of several images: the column naming each row's image. Only this image's rows are shown."), roiRow,
     line("Show as", show, "This image's cells: the table colours the image's own cells, matched by cell number, or by the cell each position falls in (when the numbers come from another run). Circles: a disc per row. Voronoi cells: the area nearest each row, when there is no segmentation."),
@@ -291,7 +297,7 @@ async function cellDataDialog(found) {
     line("Within", within, "Keep only the rows inside one annotation (the circles and Voronoi cells are cut at its edge)."),
     el("div", { class: "row" }, [build, el("button", { class: "btn", text: "Open in the data viewer", title: "Look at the table's rows and columns (Data tab, below the image) without drawing anything",
       onclick: () => { dialog.close(); dialog.remove(); dataOpenFile(found); } }),
-      el("button", { class: "btn ghost", text: "Cancel", onclick: () => { dialog.close(); dialog.remove(); } })]), status);
+      el("button", { class: "btn ghost", text: "Keep in list", onclick: () => { dialog.close(); dialog.remove(); message(found.name+' is available in Add / switch cells.'); } })]), status);
   dialog.addEventListener("cancel", () => dialog.remove());
   document.body.appendChild(dialog); sync(); dialog.showModal();
 }

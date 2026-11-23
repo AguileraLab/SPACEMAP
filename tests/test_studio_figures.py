@@ -9,6 +9,15 @@ from spacemap_gui.studio import figures
 from test_studio_commands import setup  # noqa: F401
 
 
+def test_model_profile_missing_measurements_stay_blank():
+    import matplotlib.pyplot as plt
+    from spacemap.heatmap import publication_heatmap
+    matrix = pd.DataFrame([[1., np.nan], [np.nan, 2.]], index=['A', 'B'], columns=['M0', 'M1'])
+    figure = publication_heatmap(matrix, 'Reference features', {'preserve_missing': True, 'cluster_x': False, 'cluster_y': False})
+    pd.testing.assert_frame_equal(figure.spacemap_matrix, matrix)
+    plt.close(figure)
+
+
 @pytest.fixture
 def table(tmp_path, monkeypatch):
     monkeypatch.setenv("SPACEMAP_FAST_COPY", "off")

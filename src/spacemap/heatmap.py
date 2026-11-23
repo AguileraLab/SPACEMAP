@@ -16,16 +16,17 @@ def publication_heatmap(matrix, title, options=None):
 
     options = options or {}
     matrix = matrix.replace([np.inf, -np.inf], np.nan)
-    matrix = matrix.loc[matrix.notna().any(axis=1), matrix.notna().any(axis=0)].fillna(0)
-    if matrix.empty:
+    if not options.get('preserve_missing'):
+        matrix = matrix.loc[matrix.notna().any(axis=1), matrix.notna().any(axis=0)].fillna(0)
+    if matrix.empty or not matrix.notna().any().any():
         raise ValueError("There are no values to draw.")
     if options.get("groups_on") == "columns":
         matrix = matrix.T
     # X and Y always refer to the displayed axes, including when transposed.
     cluster_y = bool(options.get("cluster_y", options.get("cluster", True))) and len(matrix) > 1
     cluster_x = bool(options.get("cluster_x", options.get("cluster", True))) and len(matrix.columns) > 1
-    row_tree = linkage(matrix.to_numpy(), method="average") if cluster_y else None
-    col_tree = linkage(matrix.to_numpy().T, method="average") if cluster_x else None
+    row_tree = linkage(matrix.fillna(0).to_numpy(), method="average") if cluster_y else None
+    col_tree = linkage(matrix.fillna(0).to_numpy().T, method="average") if cluster_x else None
     row_order = dendrogram(row_tree, no_plot=True)["leaves"] if cluster_y else list(range(len(matrix)))
     col_order = dendrogram(col_tree, no_plot=True)["leaves"] if cluster_x else list(range(len(matrix.columns)))
     shown = matrix.iloc[row_order, col_order]
@@ -50,7 +51,7 @@ def publication_heatmap(matrix, title, options=None):
     cbar_h = min(heat_h, 3.0)
     cax = axes(left + heat_w + .35, bottom + (heat_h - cbar_h) / 2, .17, cbar_h, "colour scale")
     cmap = options.get("cmap", "RdBu_r")
-    limit = float(np.max(np.abs(shown.to_numpy()))) or 1.0
+    limit = float(np.nanmax(np.abs(shown.to_numpy()))) or 1.0
     low, high = options.get("vmin"), options.get("vmax")
     low, high = -limit if low is None else float(low), limit if high is None else float(high)
     if not np.isfinite([low, high]).all() or low >= high:

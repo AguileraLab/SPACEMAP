@@ -6,6 +6,9 @@ this process and keeps the model loaded, so after the first preview another
 takes seconds. Whole ROIs run as a job through ``segment_image_cellpose``.
 """
 
+from . import project_files
+
+
 from pathlib import Path
 import threading
 import time
@@ -152,6 +155,7 @@ def saved_annotations(root, config, mappings, image_names):
     """For each image, the areas it can be segmented in, by name as Layers shows them ({image: {name: area}}): its
     tissue (all pieces), every other name of its own, and "<file> › <name>" for imported files. An area is a file's
     path, or {"path", "name"} for the polygons of one name in it (cut out by area_path when the job starts)."""
+    from hashlib import sha256
     from . import annotation, annotation_names
 
     images, output = annotation.folders(root, mappings)
@@ -160,17 +164,38 @@ def saved_annotations(root, config, mappings, image_names):
         image = _annotation_image(images, name)
         by_name = {}
         try:
+            entries = {e['path']: e for e in annotation_names.files(root, config, str(image), output)}
             tissue = annotation.valid_tissue(output, annotation.sample_id(image.name))
             if tissue.is_file():
                 by_name[annotation.tissue_label(config)] = str(tissue.resolve())
+            aliases = {}
             for group in annotation_names.groups(root, config, str(image), output):
                 if group["role"]:
                     continue  # artifacts and training examples are not areas to segment in
                 key = group["name"] if not group["source"] else f"{group['source']} › {group['name']}"
-                by_name.setdefault(key, {"path": group["files"][0], "paths": group["files"], "name": group["name"]})
-                # The same for every image: "imported:tissue" is the tissue of whatever file was imported for it.
-                rule = by_name.setdefault(group["rule"], {"path": group["files"][0], "paths": [], "name": group["name"]})
-                rule["paths"] += [path for path in group["files"] if path not in rule["paths"]]
+                for path in group['files']:
+                    entry = entries[path]
+                    source = entry['source'] or entry['layer']
+                    # Two imports can have the same display name; retain their
+                    # identities rather than merging them through a name group.
+                    if len(group['files']) > 1:
+                        source += ' · ' + Path(path).stem.split('_', 1)[0]
+                    stable_path = Path(path)
+                    if Path(root).resolve() in stable_path.parents:
+                        stable_path = stable_path.relative_to(Path(root).resolve())
+                    source_key = 'source:' + sha256((str(stable_path) + '\0' + group['name']).encode()).hexdigest()[:24]
+                    area = {'path': path, 'paths': [path], 'name': group['name'],
+                            'source': source, 'rule': group['rule']}
+                    by_name[source_key] = area
+                    for alias in (key, group['rule']):
+                        aliases.setdefault(alias, {})[path] = area
+            for alias, sources in aliases.items():
+                if alias in by_name:  # the established local Tissue file
+                    continue
+                choices = list(sources.values())
+                by_name[alias] = choices[0] if len(choices) == 1 else {
+                    'name': choices[0]['name'], 'ambiguous': True,
+                    'sources': [item['path'] for item in choices]}
         except (OSError, ValueError):
             pass
         found[name] = by_name
@@ -179,7 +204,7 @@ def saved_annotations(root, config, mappings, image_names):
 
 def _shown(value):
     """A choice saved by its plain name (tissue) is the Local one of that name, as the list shows it."""
-    if value and " › " not in value and value != WHOLE and not value.startswith(("local:", "imported:")):
+    if value and " › " not in value and value != WHOLE and not value.startswith(("local:", "imported:", "source:")):
         return "local:" + value
     return value
 
@@ -191,27 +216,42 @@ def _area_groups(saved, current=""):
     groups = {"Local": [], "Imported": []}
     for key in sorted(saved, key=str.lower):
         origin, _, name = key.partition(":")
+        area = saved[key]
+        if isinstance(area, dict) and area.get('ambiguous'):
+            continue
         if origin in ("local", "imported") and name:
             groups["Local" if origin == "local" else "Imported"].append([key, name])
+        elif origin == 'source' and (key == current or (saved.get(area['rule']) or {}).get('ambiguous')):
+            groups.setdefault('File · ' + area['source'], []).append([key, area['name']])
     found = [[group, items] for group, items in groups.items() if items]
-    if current and current in saved and " › " in current:
+    if current and current in saved and " › " in current and not saved[current].get('ambiguous'):
         found.append(["Earlier choice", [[current, current.replace(" › ", ": ")]]])
     return found
 
 
-def area_path(root, config, mappings, image_name, area):
+def require_single_area(area):
+    """An annotation name never authorizes a union of unrelated source files."""
+    if isinstance(area, dict) and (area.get('ambiguous') or len(set(area.get('paths') or [])) > 1):
+        raise ValueError(f"Multiple GeoJSON files contain {area['name']}. Choose one file in this image's Area menu.")
+
+
+def area_path(root, config, mappings, image_name, area, destination=None):
     """The GeoJSON to segment in: a file as it is, or the polygons of one name cut out of it."""
     import json
 
     from . import annotation, annotation_names
     from .annotation_edits import _atomic, read
 
+    require_single_area(area)
     if isinstance(area, str):
+        if destination is not None:
+            _atomic(Path(destination), Path(area).read_bytes())
+            return str(destination)
         return area
     images, output = annotation.folders(root, mappings)
     image = _annotation_image(images, image_name)
     entries = {e["path"]: e for e in annotation_names.files(root, config, str(image), output)}
-    wanted = area.get("paths") or [area["path"]]  # every file holding the name (a tissue piece renamed in Tissue, say)
+    wanted = area.get("paths") or [area["path"]]  # one source, possibly several polygon pieces
     if not any(path in entries for path in wanted):
         raise ValueError(f"{image_name}: the annotation file of {area['name']} is gone. Choose the area again.")
     chosen = []
@@ -225,7 +265,7 @@ def area_path(root, config, mappings, image_name, area):
         raise ValueError(f"{image_name}: no polygons are named {area['name']} any more. Choose the area again.")
     for feature in chosen:
         feature["properties"]["classification"] = {"name": area["name"]}  # every polygon counts in the mask
-    target = Path(root) / "outputs/segmentation/areas" / f"{annotation.sample_id(image_name)}__{_safe(area['name'])}.geojson"
+    target = Path(destination) if destination is not None else Path(root) / "outputs/segmentation/areas" / f"{annotation.sample_id(image_name)}__{_safe(area['name'])}.geojson"
     _atomic(target, json.dumps({"type": "FeatureCollection", "features": chosen}).encode())
     return str(target)
 
@@ -367,17 +407,30 @@ def config_for(settings):
 
 
 def channels(names, settings):
-    """(nuclear, cell-border markers) for an image: the saved choices, else DAPI (as Tab 5).
-
-    Tab 5 gives Cellpose (border markers combined, empty, nuclear); with no
-    border marker that first channel is blank and no cell is found. Studio
-    then uses the nuclear marker there, in previews and whole runs alike.
-    """
-    nuclear = [name for name in settings["tab4_last_nuclear_names"] if name in names]
+    """Lists of nuclear and border markers; no borders uses the nuclear signal."""
+    if not names:
+        raise ValueError('Open an image with markers first.')
+    nuclear = list(dict.fromkeys(name for name in settings["tab4_last_nuclear_names"] if name in names))
+    # A model trained with missing-marker examples always retained this anchor.
+    required = None
+    if settings.get('tab4_model_type') == 'custom' and settings.get('tab4_custom_model'):
+        import json
+        metadata = Path(str(settings['tab4_custom_model']) + '.json')
+        if metadata.is_file():
+            try:
+                note = json.loads(metadata.read_text())
+            except (ValueError, OSError):
+                note = {}
+            if isinstance(note, dict):
+                required = note.get('required_nuclear') if note.get('missing_marker_training') else None
+    if required and (required not in names or required not in nuclear):
+        raise ValueError(f'This model requires {required} as a Nucleus marker. Open an image containing it and select it.')
     if not nuclear:
-        nuclear = [name for name in names if "dapi" in name.lower()] or names[:1]
-    membranes = [name for name in settings["tab4_last_membrane_names"] if name in names and name not in nuclear]
-    return nuclear[0], membranes or [nuclear[0]]
+        if settings["tab4_last_nuclear_names"]:
+            raise ValueError('None of the selected nuclear markers is present. Choose an available nuclear marker.')
+        nuclear = ([name for name in names if "dapi" in name.lower()] or names)[:1]
+    membranes = list(dict.fromkeys(name for name in settings["tab4_last_membrane_names"] if name in names and name not in nuclear))
+    return nuclear, membranes or nuclear.copy()
 
 
 def read_crop(image, names, wanted, bounds):
@@ -387,6 +440,17 @@ def read_crop(image, names, wanted, bounds):
     x, y, width, height = (int(round(v)) for v in bounds)
     source = open_source(image)
     return [source.read_region(0, names.index(name), x, y, x + width, y + height) for name in wanted]
+
+
+def read_segmentation_crop(image, names, bounds, settings):
+    """The same three input planes used for predictions and corrected training tiles."""
+    from spacemap.segmentation_inputs import cellpose_input
+
+    nuclear, borders = channels(names, settings)
+    wanted = list(dict.fromkeys([*nuclear, *borders]))
+    planes = dict(zip(wanted, read_crop(image, names, wanted, bounds)))
+    picture = cellpose_input((planes[name] for name in nuclear), (planes[name] for name in borders))
+    return picture, nuclear, borders
 
 
 def _segmenter(config):
@@ -429,17 +493,14 @@ def preview(image, names, bounds, settings):
     width, height = min(int(width), PREVIEW_LIMIT), min(int(height), PREVIEW_LIMIT)
     if width < 16 or height < 16:
         raise ValueError("Choose a larger area to test.")
-    nuclear, membranes = channels(names, settings)
     started = time.perf_counter()
     with _lock:
-        planes = read_crop(image, names, [nuclear, *membranes], (x, y, width, height))
-        dapi = planes[0].astype(np.float32)
-        merged = np.max(np.stack(planes[1:]), axis=0).astype(np.float32)
+        picture, nuclear, membranes = read_segmentation_crop(image, names, (x, y, width, height), settings)
         config = config_for(settings)
         loading = not _models
         segmenter = _segmenter(config)
         masks = segmenter.segment(
-            np.stack((merged, np.zeros_like(merged), dapi), axis=-1), tile=True, tile_overlap=config.tile_overlap
+            picture, tile=True, tile_overlap=config.tile_overlap
         )[0]
     polygons = outlines(np.asarray(masks), int(x), int(y))
     return {
@@ -451,6 +512,7 @@ def preview(image, names, bounds, settings):
         "device": "GPU" if config.use_gpu and _gpu() else "CPU",
         "nuclear": nuclear,
         "membranes": membranes,
+        "missing_markers": sorted(set(settings['tab4_last_nuclear_names'] + settings['tab4_last_membrane_names']) - set(names)),
     }
 
 
@@ -477,6 +539,9 @@ def run(items, settings, report):
             report(f"{name}: {message or 'segmenting'}", (index + min(max(fraction, 0), 1)) / len(items))
 
         report(f"{Path(item['image']).name}: starting", index / len(items))
+        skipped = sorted(set(settings['tab4_last_nuclear_names'] + settings['tab4_last_membrane_names']) - set(names))
+        report(f"{item['image']}: nuclear inputs: {', '.join(nuclear)}; border inputs: {', '.join(membranes)}" +
+               (f"; unavailable markers omitted: {', '.join(skipped)}" if skipped else ''), index / len(items))
         config = config_for(settings)
         for note in region(config, Path(item["image"]).name, settings, item.get("area")):
             report(f"{Path(item['image']).name}: {note}", index / len(items))
@@ -523,7 +588,7 @@ def region(config, image_name, settings, area=None):
         own = {str(name).lower() for name in get_geojson_class_names(str(area["path"]))}
         if area.get("exact") or (own and own <= set(DEFAULT_MASK_EXCLUDE_CLASSES)):
             config.mask_exclude_class_names = []
-        notes.append(f"Segmenting inside {area['name']} ({Path(area['path']).name})")
+        notes.append(f"Segmenting inside {area['name']} ({Path(area['path']).resolve()})")
     return notes
 
 
@@ -622,6 +687,8 @@ def model_choices(root, models_folder):
     for item in sorted(trained, key=lambda m: m.get("created") or m["name"], reverse=True):
         seen.add(str(Path(item["path"]).resolve()))
         detail = [item.get("created", "")[:16].replace("T", " "), "from " + Path(str(item.get("base") or "")).name if item.get("base") else ""]
+        if item.get('missing_marker_training'):
+            detail.append(f"Requires {item.get('required_nuclear') or 'DAPI'}; optional markers may be absent. Check missing-marker validation.")
         choices.append({"id": "project:" + item["name"], "name": item["name"], "group": "Trained in this project",
                         "path": item["path"], "title": " · ".join(filter(None, detail))})
     for path in _model_files(models_folder):
@@ -638,7 +705,7 @@ def model_choices(root, models_folder):
         title = (f"From {meta['source_project']} (library)" if meta.get("source_project") else relative)
         choices.append({"id": "folder:" + relative, "name": meta.get("name") or path.name, "group": "Models folder",
                         "path": str(path), "title": title})
-    return choices
+    return [c for c in choices if not c['path'] or not project_files.excluded(c['path'], root)]
 
 
 def current_model(values, choices):
@@ -678,18 +745,23 @@ def plan(root, config, mappings):
     names = []
     if places["images"].is_dir():
         names = sorted(path.name for path in places["images"].iterdir()
-                       if path.is_file() and path.name.lower().endswith(IMAGE_SUFFIXES) and not path.name.startswith("."))
+                       if path.is_file() and not project_files.excluded(path, root) and path.name.lower().endswith(IMAGE_SUFFIXES) and not path.name.startswith("."))
     saved = saved_annotations(root, config, mappings, names)
     rows = []
     for name in names:
         table, outlines = results(places["output"], name, places["geojson"])
         kind, area = area_of(values_now, name)
+        selected = saved.get(name, {}).get(area)
+        ambiguous = isinstance(selected, dict) and bool(selected.get('ambiguous'))
         rows.append({"image": name, "segmented": table.is_file(), "cells": cell_count(table) if table.is_file() else None,
                      "outlines": outlines.is_file(), "stamp": outlines.stat().st_mtime_ns if outlines.is_file() else 0,
                      "saved": sorted(saved.get(name, {})),
                      "saved_groups": _area_groups(saved.get(name, {}), (values_now.get("tab4_mask_layer_matches") or {}).get(name, "") or values_now.get("tab4_mask_layer") or ""),
                      "area": _shown((values_now.get("tab4_mask_layer_matches") or {}).get(name, "")),
-                     "effective": area if kind == "layer" else ("Whole image" if kind == "whole" else "Annotation file"),
+                     "effective": (selected.get('name', area) if isinstance(selected, dict) else
+                                   'selected annotation' if str(area).startswith('source:') else area) if kind == 'layer' else 'Whole image',
+                     "ambiguous": ambiguous,
+                     "area_source": selected.get('path', '') if isinstance(selected, dict) else selected or '',
                      "missing": kind == "layer" and area not in saved.get(name, {})})
     from . import file_facts
 

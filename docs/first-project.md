@@ -86,7 +86,7 @@ versions and outputs. When a phenotyping page offers **Write Labels Into CSV**,
 use it before sharing: pending labels may otherwise exist only in companion
 files and be absent from the CSV opened by another program.
 
-This repository supplies software. INNATE images, the unified study CSV and
+This repository supplies software. Study images, unified cell tables and
 custom model weights belong in the accompanying reviewer/public data package.
 Use that package's README and saved parameters to reproduce the manuscript;
 a general installation guide does not replace the study package.

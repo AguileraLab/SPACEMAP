@@ -5,6 +5,7 @@
 // ---------------------------------------------------------------- set-up
 async function init(spec) {
   setUpDrop();  // files dropped on the image (Studio)
+  let display=state.displayTransfer=captureDisplayTransfer(spec);
   const generation = state.initGeneration = (state.initGeneration || 0) + 1;
   saveView();
   await flushViewerSettings();
@@ -15,6 +16,8 @@ async function init(spec) {
     }
   }
   if (generation !== state.initGeneration) return;
+  // Controls remain usable while saves finish; carry the latest choices.
+  display=state.displayTransfer=captureDisplayTransfer(spec)||display;
   state.viewReady = false;
   resetSplitMarkers();
   if (state.releaseImageWait) state.releaseImageWait();
@@ -23,9 +26,13 @@ async function init(spec) {
   state.spec = spec;
   state.studio?.viewChanged(spec);
   state.layers = [];
+  // The selected table is usable before (and even if) an image's layers load.
+  state.phenotypingLink = dataRefreshCombined().catch(error => message('Cell table: ' + error.message, true));
   clearInterval(state.pendingTimer);
   clearInterval(state.tableTimer);
   state.undo = [];
+  state.annotationSelections=new Map();state.picks=null;state.reviewLinkedSelection=null;
+  state.annotationPickEpoch=(state.annotationPickEpoch||0)+1;
   state.selected = null;
   state.inspectedCell = null;
   state.cellInspectionSelection = null;
@@ -74,22 +81,35 @@ async function init(spec) {
   state.layers = layers;
   restoreLabelDrafts();
   applySavedView(saved);
+  restoreCellDensityMaps();
+  applyDisplayTransfer(display);
   if (spec.note) message(spec.note);
   state.base = state.layers.find((l) => l.type === "image") || state.layers[0];
   createViewer();
   state.viewReady = true;
+  document.dispatchEvent(new Event('spacemap-image-opened'));
   buildPanel();
+  if(display)$('panel').scrollTop=display.scrollTop;
   watchTables();
   watchPendingCells();
   saveView();  // Rewrite older remembered views without duplicate layer entries.
   state.studio?.imageReady?.(spec);
   state.phenotypingLink = dataRefreshCombined().catch(error => message('Cell table: ' + error.message, true));
+  state.displayTransferReady=finishDisplayTransfer(generation);
 }
 
 function uniqueViewLayers(primary, extras = []) {
   const seen = new Set();
-  return primary.concat(extras).filter(layer => {
+  // Review previews are rebuilt from the current queue, never restored from an
+  // old saved view (which may predate removal of those review entries).
+  const all = primary.concat(extras.filter(layer=>!layer.review_inline&&layer.id!=='review-focus'));
+  return all.filter(layer => {
+    if (layer.type === 'annotations' && layer.saved_file && all.some(other =>
+      other.type === 'shapes' && other.saved_file === layer.saved_file)) return false;
     if (layer.id === 'clean-tissue-regions') return false; // retained in Tissue History instead
+    if (layer.type === 'cells' && layer.id.startsWith('result-') && all.some(other =>
+      other.type === 'cells' && !other.id.startsWith('result-') &&
+      other.token === layer.token && other.image_token === layer.image_token)) return false;
     if (seen.has(layer.id)) return false;
     seen.add(layer.id); return true;
   });
@@ -119,7 +139,8 @@ function watchPendingCells() {
 // The view (position, zoom, layer settings and order, added layers) is kept
 // per image, so Minimize and Restore, or reopening, come back as you left it.
 const VIEW_FIELDS = ["visible", "opacity", "mode", "color_by", "table", "colormap", "outline", "open", "selection",
-  "fcol", "fvals", "vcol", "radius", "weighted", "cmap", "cmapAuto", "profileSource", "suggestionsOn", "learnColumn", "suggestionMode", "suggestionModelId", "markerTransforms", "activeSet", "colourRows", "range", "filters"];
+  "referenceOverlay", "referenceOverlayTable", "referenceOverlayEnabled",
+  "cellsId", "dataMode", "cellScope", "cellDensity", "densitySnapshot", "groupColours", "viewSource", "fcol", "fvals", "vcol", "radius", "weighted", "cmap", "cmapAuto", "profileSource", "suggestionsOn", "learnColumn", "suggestionMode", "suggestionModelId", "markerTransforms", "activeSet", "colourRows", "range", "filters"];
 
 function loadView(id) {
   try { return JSON.parse(localStorage.getItem("spacemap-viewer-view:" + id) || "null"); } catch (e) { return null; }
@@ -246,6 +267,7 @@ document.addEventListener('visibilitychange', () => { if (document.hidden) keepV
 
 function saveView() {
   if (!state.spec || !state.viewer || !state.viewReady) return;
+  rememberDisplay();
   const layers = {};
   state.layers.forEach((layer) => {
     const kept = {};
@@ -259,11 +281,12 @@ function saveView() {
     layers[viewLayerKey(layer)] = kept;
   });
   const owned = new Set((state.spec.layers || []).map(l => l.id));
-  const extras = uniqueViewLayers(state.layers).filter((l) => l.added && !owned.has(l.id)).map((l) => {
+  const extras = uniqueViewLayers(state.layers).filter((l) => l.added && !owned.has(l.id) && !l.review_inline && l.id!=='review-focus').map((l) => {
     const copy = {};
-    ["id", "type", "name", "token", "image_token", "tables", "added", "editable", "regions", "annotation_kind", "artifact_part", "training_part", "tissue_version", "annotation_group", "classes", "default_class", "names", "saved_file", "origin", "source_name", "source", "imported_cells", "data_layer", "data_text", "data_show", "data_size", "data_reach", "data_within", "overlay", "hidden_tables"].concat(VIEW_FIELDS).forEach((f) => { if (l[f] !== undefined) copy[f] = l[f]; });
+    ["id", "type", "name", "token", "image_token", "tables", "added", "editable", "regions", "review_item", "annotation_kind", "artifact_part", "training_part", "tissue_version", "annotation_group", "annotation_origin", "annotation_section", "annotation_category", "annotation_role", "working_tissue", "classes", "default_class", "names", "saved_file", "origin", "source_name", "source", "imported_cells", "data_layer", "data_text", "data_show", "data_size", "data_reach", "data_within", "overlay", "hidden_tables"].concat(VIEW_FIELDS).forEach((f) => { if (l[f] !== undefined) copy[f] = l[f]; });
     copy.hidden = Array.from(l.hidden || []);
     copy.hiddenNames = Array.from(l.hiddenNames || []);
+    if(l.annotation_display_family)copy.annotation_display_family=l.annotation_display_family;
     if (l.preview) copy.editable = l.preview.editable;
     return copy;
   });
@@ -273,7 +296,7 @@ function saveView() {
     {center:[center.x, center.y], zoom:viewport.getZoom(true)};
   const record = { layers: layers, order: state.layers.map(viewLayerKey), extras: extras, keyedLayers:true,
     removed:Array.from(state.removedLayers || []),
-    panelLayout:1, layerGroups:state.layerGroups || {}, shownOnly:!!state.layersShownOnly,
+    panelLayout:1, annotationMode:state.annotationMode||'both', annotationOpacity:state.annotationOpacity ?? 1, cellSource:activeCellLayer()?viewLayerKey(activeCellLayer()):null, cellRowsOpen:state.cellRowsOpen||{}, layerGroups:state.layerGroups || {}, shownOnly:!!state.layersShownOnly,
     center: position.center, zoom: position.zoom, pixelSmoothing:!!state.pixelSmoothing,
     splitMarkers:{...splitMarkerOptions()} };
   try { localStorage.setItem("spacemap-viewer-view:" + state.spec.id, JSON.stringify(record)); } catch (e) { /* storage full or blocked */ }
@@ -284,12 +307,19 @@ function saveView() {
 }
 
 function applySavedView(saved) {
+  state.restoreViewport = saved?.center ? saved : null;
   Object.assign(splitMarkerOptions(), splitMarkerPreferences(saved?.splitMarkers || splitMarkerOptions()));
   state.pixelSmoothing = saved?.pixelSmoothing === true;
   state.layerGroups = {...saved?.layerGroups};
+  state.annotationMode = state.annotationMode || saved?.annotationMode || 'both';
+  // Migrate an older per-file setting once; later image opens keep the shared choice.
+  const priorAnnotation = state.layers.find(layer => isAnnotationDisplayLayer(layer) && layer.visible && !layer.review_inline);
+  state.annotationOpacity ??= saved?.annotationOpacity ?? (priorAnnotation && savedLayer(saved, priorAnnotation)?.opacity) ?? priorAnnotation?.opacity ?? 1;
   state.layersShownOnly = !!saved?.shownOnly;
+  state.cellDataLayer=state.layers.find(l=>saved?.cellSource&&viewLayerKey(l)===saved.cellSource)?.id;
+  state.cellRowsOpen={...saved?.cellRowsOpen};
   if (!saved?.panelLayout) state.layers.forEach(layer => { layer.open = layer.type === 'image'; });
-  if (!saved) return;
+  if (!saved) { syncAnnotationOpacity(); return; }
   state.layers.forEach((layer) => {
     const kept = savedLayer(saved, layer);
     if (!kept) return;
@@ -302,7 +332,7 @@ function applySavedView(saved) {
     const i = order.indexOf(saved.keyedLayers ? viewLayerKey(a) : a.id), j = order.indexOf(saved.keyedLayers ? viewLayerKey(b) : b.id);
     return (i < 0 ? 1e6 : i) - (j < 0 ? 1e6 : j);
   });
-  state.restoreViewport = saved.center ? saved : null;
+  syncAnnotationOpacity();
 }
 
 // ---------------------------------------------------------------- live refresh
@@ -318,15 +348,19 @@ function watchTables() {
       seen.add(layer.token + layer.table);
       try {
         const table = layer.table;
+        const key = layer.token + "|" + table, known = state.stamps[key];
         const result = await getJSON("/cells/" + layer.token + "/stamp?t=" + encodeURIComponent(table));
-        if (!state.layers.includes(layer) || table !== layer.table) continue;
-        const key = layer.token + "|" + table;
-        if (state.stamps[key] !== undefined && state.stamps[key] !== result.stamp) {
+        if (!state.layers.includes(layer) || table !== layer.table || state.stamps[key] !== known) continue;
+        if (known !== undefined && known !== result.stamp) {
+          if (layer.table === layer.combinedTable && new URLSearchParams(location.search).get('studio')) {
+            await dataRefreshCombined();
+            continue;
+          }
           state.layers.filter((l) => l.token === layer.token && (l.type === "cells" || l.type === "density")).forEach((l) => {
             l.columns = null;
             labelSaves.changed.add(l);
           });
-          refreshLabelColours();
+          refreshLabelColours({keepVisible:true});
           if (dataView.holder?.isConnected && (dataView.source?.combined || dataLinkedLayer() === layer)) dataLoad(true);
         }
         state.stamps[key] = result.stamp;
@@ -448,20 +482,23 @@ function tileUrl(layer, z, x, y, version, lossless = false) {
   const hidden = encodeURIComponent(Array.from(layer.hidden).join("\u001f"));
   if (layer.type === "cells") {
     return api("/cells/" + layer.token + "/tile" + where + ".png?mode=" + (layer.mode || "outline") +
-      "&t=" + encodeURIComponent(layer.table || "") + "&col=" + encodeURIComponent(layer.color_by || "") +
-      "&cmap=" + encodeURIComponent(layer.colormap || "viridis") + "&ol=" + hex(layer.outline || "#ffff00") +
+      "&" + cellColourQuery(layer) + "&ol=" + hex(layer.outline || "#ffff00") +
+      "&reference=" + encodeURIComponent(activeReferenceOverlay(layer)) +
       "&selection=" + encodeURIComponent(layer.selection || '') + "&hide=" + hidden +
-      (layer.range ? "&lo=" + encodeURIComponent(layer.range[0]) + "&hi=" + encodeURIComponent(layer.range[1]) : "") +
+      (layer.flowSelection ? '&flow='+encodeURIComponent(layer.flowSelection)+'&flow_mode='+encodeURIComponent(layer.flowMode||'filter') : '') +
       ((layer.filters || []).length ? "&f=" + encodeURIComponent(JSON.stringify(layer.filters)) : "") + "&v=" + version + "&palette=" + viewerWriter);
   }
   if (layer.type === "density") {
     return api("/cells/" + layer.token + "/density" + where + ".png?" + densityQuery(layer) + "&v=" + version);
   }
-  return api("/annotations/" + layer.token + "/tile" + where + ".png?hide=" + hidden + "&v=" + version);
+  return api("/annotations/" + layer.token + "/tile" + where + ".png?hide=" + hidden + "&mode=" + (state.annotationMode||'both') + "&v=" + version);
 }
 
 function densityQuery(layer) {
+  const owner=resolveDensityData(layer),selected=layer.cellScope==='snapshot'?layer.densitySnapshot:layer.cellScope==='viewer'?owner:null;
+  const source=selected||{};
+  const view=selected?'&viewer=1'+(source.live?'&live=1':'')+'&f='+encodeURIComponent(JSON.stringify(source.filters||[]))+'&col='+encodeURIComponent(source.color_by||'')+'&hide='+encodeURIComponent(Array.from(source.hidden||[]).join('\u001f'))+'&lo='+encodeURIComponent(source.range?.[0]??'')+'&hi='+encodeURIComponent(source.range?.[1]??'')+'&flow='+encodeURIComponent(source.flowSelection||'')+'&flow_mode='+encodeURIComponent(source.flowMode||'filter')+'&selection='+encodeURIComponent(source.selection||''):'';
   return "t=" + encodeURIComponent(layer.table || "") + "&fcol=" + encodeURIComponent(layer.fcol || "") +
     "&fvals=" + encodeURIComponent((layer.fvals || []).join("\u001f")) + "&vcol=" + encodeURIComponent(layer.vcol || "") +
-    "&r=" + (layer.radius || 50) + "&w=" + (layer.weighted ? 1 : 0) + "&cmap=" + encodeURIComponent(layer.cmap || "inferno");
+    "&r=" + (layer.radius || 50) + "&w=" + (layer.weighted ? 1 : 0) + "&cmap=" + encodeURIComponent(layer.cmap || "inferno") + view;
 }

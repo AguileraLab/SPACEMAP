@@ -383,12 +383,5 @@ window.createArtifactReview = h => {
     current.imageReady=()=>{if(holder.isConnected&&shownImage!==image()?.token)show(selected);};
     show(selected);
   }
-  function renderLayer(layer,body){
-    if(!layer.artifact_part)return;
-    const e=entry(layer.artifact_part);
-    const title=layer.artifact_part==='clot'?'Prediction settings':'Detection settings';
-    if(e?.settings){const details=node('details',{class:'artifact-layer-settings'});details.open=!!e.rightOpen;details.ontoggle=()=>{if(details.isConnected)e.rightOpen=details.open;};details.append(node('summary',{text:title}));controls(e,details,false);body.append(details);}
-    else body.append(node('button',{class:'btn small',text:title,onclick:async()=>{try{await load(layer.artifact_part);h.rebuild();}catch(error){body.append(node('span',{class:'hint',text:error.message}));}}}));
-  }
-  return {panel,renderLayer,refreshModels,sync:()=>{for(const e of entries.values())if(e.settings)refresh(e);}};
+  return {panel,refreshModels,sync:()=>{for(const e of entries.values())if(e.settings)refresh(e);}};
 };

@@ -30,11 +30,11 @@ setTimeout(async()=>{try{
  const source=await (await fetch('/editor-source')).json();
  dataOpenFile(source);await until(()=>ready()&&dataView.info?.name==='edit_me.parquet');
  assert(dataView.result.total===240&&dataView.result.rows.length===200,'The image subset remains paged');
- button(dataView.head,'All data').click();await until(()=>ready()&&dataView.result.matched===480);
+ button(dataView.head,'Whole dataset').click();await until(()=>ready()&&dataView.result.matched===480);
  assert(dataView.result.rows.length===200&&!dataView.follow&&!dataView.onlySelected,'All data spans images with only one page in the browser');
  change(document.querySelector('[aria-label="Data page"]'),'3');await until(()=>ready()&&dataView.result.offset===400);
  assert(dataView.result.rows.length===80,'Page navigation reaches the final dataset rows');
- button(dataView.head,'All data').click();await until(()=>ready()&&dataView.result.offset===0);
+ button(dataView.head,'Whole dataset').click();await until(()=>ready()&&dataView.result.offset===0);
  // Keep one image visible: the default rename must still change both images.
  dataView.rows={this_image:true,column:'batch_id',value:'A'};await dataLoad();
  document.querySelector('[aria-label="Filter phenotype_som"]').click();await until(()=>menuReady());
@@ -49,7 +49,7 @@ setTimeout(async()=>{try{
  let groups=await allGroups();
  assert(groups.some(g=>g[0]==='Epithelial'&&g[1]===240)&&!groups.some(g=>g[0]==='Epithelia')&&dataView.result.matched===240,'Default inline rename changes both images while only one image is displayed');
  assert(dataView.result.edited===1&&!dialog(),'Enter commits one undoable edit without a second dialog');
- closeContextMenu();button(dataView.head,'All data').click();await until(()=>ready()&&dataView.result.matched===480);
+ closeContextMenu();button(dataView.head,'Whole dataset').click();await until(()=>ready()&&dataView.result.matched===480);
  button(dataView.head,'Undo').click();await until(()=>ready()&&dataView.result.edited===0);
  assert(dataView.result.rows[0][3]==='Epithelia','Undo restores the original category');
  change(dataView.head.querySelector('[aria-label="More data tools"]'),'redo');await until(()=>ready()&&dataView.result.edited===1);
@@ -86,7 +86,7 @@ setTimeout(async()=>{try{
  change(dialog().querySelector('[aria-label="New column name"]'),'phenotype_corrected');button(dialog(),'Apply').click();
  await until(()=>ready()&&header('phenotype_corrected')&&!dialog());
  assert(!header('phenotype_som'),'Column header is renamed without changing values');
- context(header('unwanted'));button(document.querySelector('#ctxmenu'),'Delete columns').click();await until(()=>ready()&&!header('unwanted'));
+ context(header('unwanted'));button(document.querySelector('#ctxmenu'),'Delete columns (whole dataset)').click();await until(()=>ready()&&!header('unwanted'));
  assert(!dataView.result.columns.includes('unwanted'),'Column deletion removes the complete column');
  button(dataView.head,'Undo').click();await until(()=>ready()&&header('unwanted'));
  assert(dataView.result.columns.includes('unwanted'),'Undo restores the deleted column');

@@ -26,21 +26,25 @@ def _tables(project):
         folder = output_dir(project["root"], project.get("mappings") or {})
         paths.extend(path.resolve() for path in sorted(folder.glob("*.parquet"),
                      key=lambda item: item.stat().st_mtime, reverse=True)
-                     if path.is_file() and not path.name.endswith(".csv.parquet"))
+                     if path.is_file() and not path.name.endswith((".csv.parquet", ".labels.parquet")))
     return list(dict.fromkeys(paths))
 
 
 def state(project):
-    from spacemap import labels, pending_columns
+    from spacemap import dataio, labels, pending_columns
 
     table = project.get("unified")
     found = {"table": "", "pending": [], "labels": 0, "writing": {"state": "idle"}, "tables": []}
+    from . import annotation_pending
+    found['annotations'] = annotation_pending.pending(project['root']) if project.get('root') else []
     if table and Path(table).is_file():
+        physical = set(dataio.columns(table, include_pending=False))
         found.update(
             table=Path(table).name,
             parquet=Path(table).suffix.lower() == ".parquet",
             pending=[
-                {key: item.get(key) for key in ("column", "rows", "saved_at", "source", "stale")}
+                {**{key: item.get(key) for key in ("column", "rows", "saved_at", "source", "stale")},
+                 "in_table": item['column'] in physical}
                 for item in pending_columns.pending(table)
             ],
             labels=labels.pending_count(table),
@@ -61,6 +65,13 @@ def act(project, action, body):
 
     from . import jobs
     table = project.get("unified")
+    if action == 'write_annotations':
+        from . import annotation_pending
+        known = {row['id']: row for row in annotation_pending.pending(project['root'])}
+        items = body.get('items')
+        if not isinstance(items, list) or not items or any(not isinstance(item, dict) or item.get('id') not in known or item.get('stamp') != known[item['id']]['stamp'] for item in items):
+            raise ValueError('Choose the current pending annotation files.')
+        return {'job': jobs.start(project['root'], 'write_annotations', {'root':project['root'], 'items':items})}
     if action in {"write", "discard", "reapply"}:
         if not table or not Path(table).is_file():
             raise ValueError("No combined table yet.")

@@ -1,4 +1,7 @@
 """Image-bound editable imports and saved analysis-area choices."""
+
+from . import project_files
+
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -17,7 +20,7 @@ def import_folder(root, image):
 
 
 def imported(root, image):
-    return sorted(import_folder(root, image).glob('*.geojson'))
+    return sorted(p for p in import_folder(root, image).glob('*.geojson') if not project_files.excluded(p, root))
 
 
 def import_polygons(root, image, name, features):
@@ -26,12 +29,14 @@ def import_polygons(root, image, name, features):
     clean = annotation_edits.prepare(features)
     if not clean:
         raise ValueError('This file contains no polygon annotations.')
-    info = image_info(str(image))
-    bounds = box(0, 0, info.width, info.height)
-    if not any(shape(f['geometry']).intersects(bounds) for f in clean):
-        raise ValueError('These polygons are outside this image. Import GeoJSON in this image’s pixel coordinates.')
+    if image:
+        info = image_info(str(image))
+        bounds = box(0, 0, info.width, info.height)
+        if not any(shape(f['geometry']).intersects(bounds) for f in clean):
+            raise ValueError('These polygons are outside this image. Import GeoJSON in this image’s pixel coordinates.')
     stem = re.sub(r'[^\w .-]+', '_', Path(str(name)).stem)[:70] or 'Imported annotations'
-    target = import_folder(root, image) / (uuid.uuid4().hex[:8] + '_' + stem + '.geojson')
+    folder = import_folder(root, image) if image else Path(root) / 'outputs/studio/imported_annotations/unmatched'
+    target = folder / (uuid.uuid4().hex[:8] + '_' + stem + '.geojson')
     annotation_edits.replace(target, clean, annotation_edits.revision(target), 'Imported annotations', edited=True)
     return target
 
@@ -73,7 +78,7 @@ def layer(path, image, readonly=False):
 
 
 def sources(root, config, image, output):
-    from . import annotation_layers
+    from . import annotation_layers, annotation_links
     from spacemap.viewer.catalog import find_annotations, sample_of
     from .annotation_names import hidden_files, stale_domains
     hidden = hidden_files(root, image)  # files taken off this image's list in Layers
@@ -81,6 +86,9 @@ def sources(root, config, image, output):
                if Path(path).is_file() and 'studio_history' not in Path(path).parts and str(Path(path).resolve()) not in hidden}
     for path in imported(root, image):
         entries[str(path.resolve())] = path.stem.split('_', 1)[-1]
+    for row in annotation_links.records(root, image):
+        if Path(row['path']).is_file():
+            entries[row['path']] = Path(row['path']).stem
     entries.update({path: info['name'] for path, info in annotation_layers.generated(root, image, output).items()})
     entries.pop(str(annotation.cleaned_tissue(output, annotation.sample_id(image)).resolve()), None)
     if stale_domains(root, image, output):  # left from a deleted Classification
@@ -90,7 +98,7 @@ def sources(root, config, image, output):
                        *([] if stale_domains(root, image, output) else [('Named classes', annotation.domains(output, sample))]),
                        ('Zones', annotation.zones(annotation.zones_folder(root,config.get('directory_mappings',{})), sample))]:
         if path.is_file(): entries[str(path.resolve())] = name
-    return entries
+    return {p:n for p,n in entries.items() if not project_files.excluded(p, root)}
 
 
 def source_options(root, config, image, output, entries):
@@ -99,7 +107,7 @@ def source_options(root, config, image, output, entries):
     label = annotation.tissue_label(config)
     tissue = [
         {'mode': mode, 'name': label, 'path': str(path.resolve()),
-         'available': path.is_file()}
+         'available': path.is_file() and not project_files.excluded(path, root)}
         for mode, version, path in (
             ('tissue', 'Tissue', annotation.valid_tissue(output, sample)),
         )
@@ -155,8 +163,11 @@ def working_path(root, image, output, stage='tissue'):
     value = selection(root, image, stage)
     if value['mode'] == 'image':
         raise ValueError('Choose a Tissue or annotation layer in Work within before subtracting.')
-    return (Path(value['path']) if value['mode'] == 'file'
-            else annotation.valid_tissue(output, annotation.sample_id(image)))
+    target = (Path(value['path']) if value['mode'] == 'file'
+              else annotation.valid_tissue(output, annotation.sample_id(image)))
+    if project_files.excluded(target, root):
+        raise ValueError('This annotation was removed from the project. Import it again or choose another Work within area.')
+    return target
 
 
 def working_layer(root, config, image, output, stage='tissue', readonly=False):
@@ -206,6 +217,10 @@ def scope_path(root, image, output, stage):
     from shapely.geometry import box, mapping
     value = selection(root,image,stage)
     mode = value['mode']; sample = annotation.sample_id(image)
+    if mode != 'image':
+        target = Path(value['path']) if mode == 'file' else annotation.valid_tissue(output, sample)
+        if project_files.excluded(target, root):
+            raise ValueError('This annotation was removed from the project. Import it again or choose another Work within area.')
     if mode == 'auto': return annotation.analysis_tissue(output,sample)
     if mode == 'tissue': return annotation.valid_tissue(output,sample)
     if mode == 'cleaned':
@@ -230,3 +245,33 @@ def scope_path(root, image, output, stage):
     target = _choice_file(root,image,stage).parent / (sha256(raw).hexdigest()+'.geojson')
     if not target.is_file(): annotation_edits._atomic(target,raw)
     return target
+
+
+def display_metadata(root, image, path):
+    from .annotation_components import display_style
+    return {**_display_metadata(root, image, path), **display_style(path)}
+
+
+def _display_metadata(root, image, path):
+    """Cheap display provenance; an explicit import always retains its identity."""
+    from . import annotation_links, artifact_learning
+    path = Path(path).resolve()
+    from .annotation_components import display_identity
+    identity = display_identity(path)
+    if identity:
+        return identity
+    if any(row['path'] == str(path) for row in annotation_links.records(root, image)):
+        return {'annotation_origin': 'imported'}
+    # Recognise generated files only in the project's annotation outputs. An
+    # external file with a similar name remains an import.
+    if path.is_relative_to(Path(root).resolve() / 'outputs/processed_annotations'):
+        sample = annotation.sample_id(image)
+        name = path.name
+        if name in {sample + suffix for suffix in ('_valid_tissue.geojson', '_tissue_boundary.geojson', '_cleaned_tissue.geojson')}:
+            return dict(annotation_origin='local', annotation_section='Tissue')
+        for part, label in artifact_learning.NAMES.items():
+            if name == f'{sample}_{part}_reviewed.geojson':
+                return dict(annotation_origin='local', annotation_section='Artifacts', annotation_category=label, annotation_role='artifact')
+        if name == sample + '_annotations.geojson':
+            return dict(annotation_origin='local', annotation_section='Saved annotations')
+    return {'annotation_origin': 'imported'}

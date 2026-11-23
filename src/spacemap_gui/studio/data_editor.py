@@ -28,6 +28,19 @@ SESSIONS = OrderedDict()
 LOCK = threading.RLock()
 
 
+class ExternalChange(ValueError):
+    """An actual conflicting change; keep the draft until explicitly discarded."""
+
+
+def pending_stamps(path):
+    from spacemap import pending_columns
+    result = {}
+    for item in pending_columns.pending(path):
+        stat = Path(item['file']).stat()
+        result[item['column']] = (stat.st_size, stat.st_mtime_ns, item['stale'])
+    return result
+
+
 def stamp(path):
     from spacemap.viewer.cells import _edits_token
     stat = Path(path).stat()
@@ -38,15 +51,15 @@ def kind(dtype):
     return 'value' if pa.types.is_integer(dtype) or pa.types.is_floating(dtype) or pa.types.is_boolean(dtype) else 'group'
 
 
-def plain(dtype):
-    return dtype.value_type if pa.types.is_dictionary(dtype) else dtype
-
-
 def scalar(value, dtype):
     """Validate a scalar without going through float for integer identifiers."""
     if value is None or value == '' and kind(dtype) == 'value':
         return None, dtype
-    if pa.types.is_string(dtype) or pa.types.is_large_string(dtype) or pa.types.is_null(dtype):
+    if pa.types.is_null(dtype):
+        from spacemap import column_types
+        dtype = column_types.with_values(dtype, [value])
+        return column_types.array([value], dtype)[0].as_py(), dtype
+    if pa.types.is_string(dtype) or pa.types.is_large_string(dtype):
         return str(value), pa.string()
     if pa.types.is_boolean(dtype):
         text = str(value).lower()
@@ -79,7 +92,8 @@ def arrow(values, dtype):
     if pa.types.is_string(dtype) or pa.types.is_large_string(dtype):
         return pa.array([None if v is None else str(v) for v in values], type=dtype)
     if pa.types.is_boolean(dtype):
-        return pa.array([None if v is None else bool(v) for v in values], type=dtype)
+        from spacemap import column_types
+        return column_types.array(values, dtype)
     if pa.types.is_integer(dtype):
         return pa.array([None if v is None else int(v) for v in values], type=dtype)
     if pa.types.is_floating(dtype):
@@ -98,11 +112,8 @@ class Source:
         self.path = str(path)
         self.length = self.base.length
         self.pending = {p['column']: pq.ParquetFile(p['file']) for p in pending_columns.pending(path) if not p['stale']}
-        self.fields = {}
-        for name in self.base.names:
-            dtype = (self.pending[name].schema_arrow.field('value').type if name in self.pending else
-                     self.base.schema.field(name).type if name in self.base.schema.names else pa.string())
-            self.fields[name] = plain(dtype)
+        # Share the analysis reader's content-derived schema, including edits.
+        self.fields = dict(self.base.types)
         sidecar = labels.sidecar_path(path)
         self.labels = None
         if sidecar.is_file():
@@ -112,6 +123,14 @@ class Source:
                 self.labels = file
 
     def batches(self, names):
+        from spacemap import column_types
+
+        def cast(values, name):
+            dtype = self.fields[name]
+            if pa.types.is_string(dtype) and not pa.types.is_string(values.type):
+                return column_types.array(values.to_pylist(), dtype)
+            return values.cast(dtype)
+
         physical = [n for n in names if n in self.base.schema.names and n not in self.pending]
         if self.base.file is not None and physical:
             chunks = self.base.file.iter_batches(batch_size=BATCH, columns=physical, use_threads=False)
@@ -136,9 +155,9 @@ class Source:
                             part=batch.column(0)
                         take=min(needed,len(part));pieces.append(part.slice(0,take));needed-=take
                         if take<len(part):remainders[name]=part.slice(take)
-                    arrays[name]=pa.concat_arrays(pieces).cast(self.fields[name])
+                    arrays[name]=cast(pa.concat_arrays(pieces), name)
                 elif name in physical:
-                    arrays[name] = chunk.column(chunk.schema.get_field_index(name)).cast(self.fields[name])
+                    arrays[name] = cast(chunk.column(chunk.schema.get_field_index(name)), name)
                 else:
                     arrays[name] = pa.nulls(size, self.fields[name])
             yield start, size, arrays
@@ -184,8 +203,15 @@ class Source:
 class Editor:
     def __init__(self, path):
         self.path = str(Path(path).resolve())
-        self.stamp = stamp(self.path)
-        self.source = Source(self.path)
+        for _ in range(3):
+            self.stamp = stamp(self.path)
+            self.source = Source(self.path)
+            self.pending_stamps = pending_stamps(self.path)
+            if stamp(self.path) == self.stamp:
+                break
+        else:
+            from .data_view import Preparing
+            raise Preparing('Saved results are updating. Data will reopen when they are ready.')
         self.lock = threading.RLock()
         self.directory = tempfile.TemporaryDirectory(prefix='spacemap-data-')
         self.db = sqlite3.connect(str(Path(self.directory.name) / 'workspace.sqlite'), check_same_thread=False)
@@ -198,6 +224,11 @@ class Editor:
         if self.source.labels:
             for batch in self.source.labels.iter_batches(batch_size=BATCH, use_threads=False):
                 data = batch.to_pydict()
+                for i, (name, value) in enumerate(zip(data['column'], data['value'])):
+                    if value is None or not value.strip():
+                        data['value'][i] = None
+                    elif pa.types.is_boolean(self.source.fields[name]):
+                        data['value'][i] = value.lower() in ('true', '1', 'yes')
                 self.db.executemany('INSERT INTO label_edits VALUES(?,?,?,?) ON CONFLICT(c,r) DO UPDATE SET v=excluded.v,ts=excluded.ts WHERE excluded.ts>=label_edits.ts',
                                     ((c, int(r), v, str(ts)) for c, r, v, ts in zip(data['column'],data['row'],data['value'],data['saved_at'])))
         self.db.commit()
@@ -211,12 +242,76 @@ class Editor:
         self.serial = 0
         self.progress = None
         self.closed = False
+        self.row_selections = OrderedDict()
+        self.row_selection_serial = 0
+
+    def register_rows(self, token, rows):
+        """Private server-side selections: IDs never travel in a browser query."""
+        if token not in self.row_selections:
+            self.row_selection_serial += 1
+            name = 'selection_' + str(self.row_selection_serial)
+            self.db.execute(f'CREATE TABLE {name}(r INTEGER PRIMARY KEY)')
+            self.db.executemany(f'INSERT OR IGNORE INTO {name} VALUES(?)', ((int(r),) for r in rows))
+            self.db.commit()
+            self.row_selections[token] = name
+            while len(self.row_selections)>32:
+                _,expired=self.row_selections.popitem(last=False)
+                self.db.execute(f'DROP TABLE IF EXISTS {expired}')
+        self.row_selections.move_to_end(token)
 
     def check(self):
         if self.closed:
             raise ValueError('This Data workspace was saved or reloaded. Refresh the table before continuing.')
         if stamp(self.path) != self.stamp:
-            raise ValueError('This table or its saved labels changed outside Data. Discard these edits and reopen before continuing.')
+            raise ExternalChange('Saved data changed while this draft was open. Your unsaved edits are kept. Reload saved data to discard the draft.')
+
+    def refresh_results(self):
+        """Accept unrelated result columns while retaining drafts and image indexes.
+
+        A rewritten base, changed manual labels, or a changed column used by any
+        undo/redo entry remains a conflict. Row positions must never be rebased.
+        """
+        current = stamp(self.path)
+        if self.closed or current[:2] != self.stamp[:2] or current[3:] != self.stamp[3:]:
+            return False
+        incoming = pending_stamps(self.path)
+        if not self.pending_stamps.keys() <= incoming.keys() or any(item[2] for item in incoming.values()):
+            return False
+        changed = {name for name, value in incoming.items() if self.pending_stamps.get(name) != value}
+        touched = {row[0] for row in self.db.execute('SELECT DISTINCT c FROM changes WHERE c>=0')}
+        schemas = [self.columns]
+        for entry in self.history:
+            before = {c['id']: c for c in entry['before']}
+            after = {c['id']: c for c in entry['after']}
+            touched.update(i for i in before.keys() | after.keys() if before.get(i) != after.get(i))
+            schemas.extend([entry['before'], entry['after']])
+        if any(c['original'] in changed and c['id'] in touched for schema in schemas for c in schema):
+            return False
+        added = changed - self.source.fields.keys()
+        if any(c['name'] in added for schema in schemas for c in schema):
+            return False
+        source = Source(self.path)
+        if source.length != self.source.length or stamp(self.path) != current or pending_stamps(self.path) != incoming:
+            return False
+        next_id = max((c['id'] for schema in schemas for c in schema), default=-1) + 1
+        additions = [{'id': next_id+i, 'name': name, 'original': name, 'type': source.fields[name]}
+                     for i, name in enumerate(source.fields) if name in added]
+        for schema in schemas:
+            for col in schema:
+                if col['original'] in changed:
+                    col['type'] = source.fields[col['original']]
+            schema.extend(deepcopy(additions))
+        for col in self.columns:
+            if col['original'] in changed and col['id'] in self.loaded:
+                self.db.execute(f'DROP TABLE c{col["id"]}')
+                self.loaded.remove(col['id'])
+        self.source = source
+        self.pending_stamps = incoming
+        self.stamp = current
+        if changed:
+            self.invalidate()
+        self.db.commit()
+        return True
 
     @property
     def names(self):
@@ -263,13 +358,36 @@ class Editor:
         if key in self.views:
             self.views.move_to_end(key)
             return self.views[key]
-        if not filters and not sort and not self.db.execute('SELECT 1 FROM deleted LIMIT 1').fetchone():
+        selected = [f['_row_selection'] for f in filters if '_row_selection' in f]
+        if any(token not in self.row_selections for token in selected):
+            raise ValueError('This gate selection expired. Select the population again.')
+        filters = [f for f in filters if '_row_selection' not in f]
+        if not filters and not sort and not selected and not self.db.execute('SELECT 1 FROM deleted LIMIT 1').fetchone():
             return None, self.source.length
+        # Opening one image needs only its row positions, not millions of
+        # duplicate image-name strings inserted into a SQLite column first.
+        if roi_column and roi_value is not None and len(filters) == 1 and not sort and not selected:
+            col = self.column(roi_column)
+            if (col['id'] not in self.loaded and col['original'] not in self.label_columns
+                    and pa.types.is_string(col['type'])
+                    and not self.db.execute('SELECT 1 FROM deleted LIMIT 1').fetchone()):
+                self.serial += 1
+                name = f'v{self.serial}'
+                self.db.execute(f'CREATE TABLE {name}(seq INTEGER PRIMARY KEY,r INTEGER UNIQUE)')
+                count = 0
+                for start, _, arrays in self.source.batches([col['original']]):
+                    mask = pc.fill_null(pc.equal(arrays[col['original']], str(roi_value)), False)
+                    ids = np.flatnonzero(np.asarray(mask)) + start
+                    self.db.executemany(f'INSERT INTO {name}(r) VALUES(?)', ((int(row),) for row in ids))
+                    count += len(ids)
+                self.db.commit()
+                return self.remember_view(key, name, count)
         names = list(dict.fromkeys([f['col'] for f in filters] + ([sort['col']] if sort else []))) or [self.names[0]]
         cols = [self.ensure(n) for n in names]
         aliases = {c['name']: f'a{i}' for i, c in enumerate(cols)}
         joined = f'c{cols[0]["id"]} a0' + ''.join(f' JOIN c{c["id"]} a{i} ON a{i}.r=a0.r' for i, c in enumerate(cols[1:], 1))
         clauses = ['NOT EXISTS(SELECT 1 FROM deleted d WHERE d.r=a0.r)'];params = []
+        clauses.extend(f'a0.r IN (SELECT r FROM {self.row_selections[token]})' for token in selected)
         for item in filters:
             col = self.column(item['col']);value = self.expr(col, aliases[item['col']])
             if 'values' in item:
@@ -291,7 +409,11 @@ class Editor:
         self.db.execute(f'CREATE TABLE {name}(seq INTEGER PRIMARY KEY,r INTEGER UNIQUE)')
         self.db.execute(f'INSERT INTO {name}(r) SELECT a0.r FROM {joined} WHERE '+ ' AND '.join(clauses)+f' ORDER BY {order}',params)
         count = self.db.execute(f'SELECT COUNT(*) FROM {name}').fetchone()[0]
-        self.db.commit();self.views[key] = (name,count)
+        self.db.commit()
+        return self.remember_view(key, name, count)
+
+    def remember_view(self, key, name, count):
+        self.views[key] = (name,count)
         while len(self.views)>4:
             old,_ = self.views.popitem(last=False)[1]
             if old:self.db.execute(f'DROP TABLE {old}')
@@ -424,10 +546,13 @@ def editor(path, discard=False):
     with LOCK:
         item=SESSIONS.get(key)
         if item and (discard or stamp(key)!=item.stamp):
-            if not discard and item.cursor: item.check()
             if not item.lock.acquire(blocking=False):
                 raise ValueError('A Data operation is still running. Try again when it finishes.')
-            try:item.close()
+            try:
+                if not discard and item.refresh_results():
+                    return item
+                if not discard and item.cursor: item.check()
+                item.close()
             finally:item.lock.release()
             del SESSIONS[key];item=None
         if item is None:
@@ -454,8 +579,13 @@ def info(path, column=''):
         guess=column if column in e.names else next((n for n in e.names if n.lower() in ('batch_id','roi','image','sample','image_id','roi_id')),'')
         values=[]
         if guess:
-            c=e.ensure(guess);expr=e.expr(c,'a')
-            values=[str(r[0]) for r in e.db.execute(f'SELECT DISTINCT {expr} FROM c{c["id"]} a WHERE v IS NOT NULL ORDER BY {expr} LIMIT 5000')]
+            c=e.column(guess)
+            if c['id'] not in e.loaded:
+                from .data_view import saved_image_values
+                values=saved_image_values(path,c['original'])
+            else:
+                c=e.ensure(guess);expr=e.expr(c,'a')
+                values=[str(r[0]) for r in e.db.execute(f'SELECT DISTINCT {expr} FROM c{c["id"]} a WHERE v IS NOT NULL ORDER BY {expr} LIMIT 5000')]
         return {**e.state(),'name':Path(path).name,'image_column':guess,'values':values,'rows':e.source.length-e.db.execute('SELECT COUNT(*) FROM deleted').fetchone()[0]}
 
 

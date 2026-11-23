@@ -60,3 +60,29 @@ def test_repair_walks_the_project_and_the_umask_keeps_others_out(tmp_path):
         assert os.umask(0o022) == 0o007
     finally:
         os.umask(previous)
+
+
+def test_label_and_metadata_writers_keep_group_access_under_private_umask(tmp_path):
+    import pandas as pd
+    from spacemap import labels, pending_columns
+    from spacemap.viewer import reference
+    from spacemap_workflows.leiden_job import write_json
+    project = tmp_path / 'shared'
+    project.mkdir()
+    sharing.share(project)
+    table = project / 'cells.csv'
+    pd.DataFrame({'label': [1, 2], 'M0': [1., 2.]}).to_csv(table, index=False)
+    previous = os.umask(0o077)
+    try:
+        nested = sharing.shared_directory(project / 'outputs' / 'studio')
+        write_json(nested / 'settings.json', {'training_percent': 70})
+        labels.append(table, [{'row': 0, 'column': 'phenotype_ref1', 'value': 'B'}])
+        reference.register_column(table, 'phenotype_ref1')
+        pending_columns.save(table, {'prediction': ['B', 'T']}, anchor_column='label', anchor_values=[1, 2])
+    finally:
+        os.umask(previous)
+    for path in [nested, nested.parent, nested / 'settings.json', labels.sidecar_path(table), reference.path_for(table),
+                 *pending_columns.store_dir(table).glob('*.parquet')]:
+        assert _mode(path) & 0o060 == 0o060, str(path)
+        assert path.stat().st_gid == project.stat().st_gid
+    assert _mode(nested) & stat.S_ISGID

@@ -18,7 +18,7 @@ TOOLS = {
     "summarize_cells": "columns: up to 12 exact column names; optional filters. Returns whole-group counts and distributions, not just visual examples.",
     "sample_cells": "Optional job_id and clusters (exact cluster IDs), or filters; count: 1–6 (default 6); seed: integer (default 17); markers: up to 8 image marker names; transforms: Raw, Arcsinh, Z1, Z2, CDF, NLog; images: boolean (default true). Samples across cluster/ROI strata. Uses the selected run and clusters if omitted.",
     "inspect_cells": "rows: 1–6 zero-based table row numbers returned by a previous tool; optional markers, transforms, images. Reinspect exact cells or different markers.",
-    "cluster_reference": "job_id and reference_column (optional: selected run/reference). Compare cluster profiles with labelled reference cells. May take longer the first time; results are cached.",
+    "cluster_reference": "job_id, reference_column and model_id (optional: selected run/reference/model), clusters (optional: up to 80 IDs). Compare clusters with manual labels or sampled predictions from the saved trained model. Model probabilities are not independent accuracy. Results are cached.",
     "cluster_profiles": "Optional job_id (defaults to selected run), clusters (up to 80 exact IDs). Read the saved full marker profiles, marker scale, sizes, names and ROI distribution. This reads an existing result; it does not rerun clustering.",
     "read_settings": "method: leiden, som, vortex, consensus, subphenotyping, neighbourhoods, interactions or batch_correction. Read only this method's saved settings before changing or running it.",
 }
@@ -303,7 +303,7 @@ class Investigation:
             "describe_data": set(), "summarize_cells": {"columns", "filters"},
             "sample_cells": {"job_id", "clusters", "filters", "count", "seed", "markers", "transforms", "images"},
             "inspect_cells": {"rows", "markers", "transforms", "images"},
-            "cluster_reference": {"job_id", "reference_column"}, "read_settings": {"method"},
+            "cluster_reference": {"job_id", "reference_column", "model_id", "clusters"}, "read_settings": {"method"},
             "cluster_profiles": {"job_id", "clusters"},
         }[name]
         if set(args) - allowed:
@@ -405,9 +405,17 @@ class Investigation:
         if job.get("status") != "done" or result.get("table") != self.path or not result.get("clusters"):
             raise ValueError("Choose a finished clustering run of the active table.")
         reference = args.get("reference_column") or explorer.get("reference_column")
+        model_id = args.get("model_id") or explorer.get("model_id")
+        known = [c["name"] for c in result["clusters"]]
+        chosen = _cluster_ids(args.get("clusters", []), known, 80) or known[:80]
+        if model_id:
+            return cluster_names.evidence(cluster_names.suggest_model(self.path, result["column"], model_id, reference or "",
+                features=result.get("markers") or None, suffix=markers.suffix_of(read_config(self.root))), chosen)
         if reference not in cluster_names.reference_columns(self.path):
             raise ValueError("Choose a labelled reference column from describe_data.")
-        return cluster_names.suggest(self.path, result["column"], reference, result.get("markers") or [], markers.suffix_of(read_config(self.root)))
+        found = cluster_names.suggest(self.path, result["column"], reference, result.get("markers") or [], markers.suffix_of(read_config(self.root)))
+        return {**found, "clusters": {key: value for key, value in found["clusters"].items() if key in chosen},
+                "coverage": f"{len(chosen)} of {len(known)} clusters"}
 
     def summarize_cells(self, args):
         from . import data_view

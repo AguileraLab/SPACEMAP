@@ -51,24 +51,40 @@ def share(path, *, group=None) -> bool:
         wanted = mode | 0o060 | (0o010 if mode & 0o100 else 0)
     changed = False
     try:
-        if wanted != mode:
-            os.chmod(path, wanted)
-            changed = True
         if group is None:
             group = os.stat(path.parent).st_gid
-        if group != info.st_gid and group in os.getgroups():
+        if group != info.st_gid and group in {*os.getgroups(), os.getgid()}:
             os.chown(path, -1, group)
+            changed = True
+        # chown can clear setgid. Apply the final mode after changing the group.
+        if wanted != mode or changed:
+            os.chmod(path, wanted)
             changed = True
     except OSError:
         return changed
     return changed
 
 
+def shared_directory(path):
+    """Create project/output directories with group inheritance, even under a restrictive umask."""
+    path = Path(path)
+    missing = []
+    parent = path
+    while not parent.exists():
+        missing.append(parent)
+        parent = parent.parent
+    path.mkdir(parents=True, exist_ok=True)
+    for folder in reversed(missing):
+        share(folder)
+    share(path)
+    return path
+
+
 def open_lock(path):
     """Open a lock file for ``fcntl.flock``: written when possible, read-only when another member made it without
     group write (a shared lock works on a read-only handle too)."""
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    shared_directory(path.parent)
     try:
         handle = open(path, "a")
     except PermissionError:

@@ -175,7 +175,7 @@ def _label_batches(settings):
             yield offset, _overlay(values, offset, edits)
 
 
-def _sample(settings, progress, *, limit=MAX_EXAMPLES):
+def _sample(settings, progress, *, limit=MAX_EXAMPLES, minimum_classes=2):
     """Uniform random-priority reservoir per phenotype, including every ROI."""
     table = settings["table"]
     with reference.database(table) as db:
@@ -204,6 +204,8 @@ def _sample(settings, progress, *, limit=MAX_EXAMPLES):
     for offset, values in _label_batches(settings):
         text = pd.Series(values).fillna("").astype(str).str.strip()
         keep = ~text.str.lower().isin(_EMPTY).to_numpy()
+        from spacemap.phenotype_policy import allowed
+        keep &= allowed(text, settings.get('excluded_training_phenotypes', []))
         if settings.get("checked_rows") is not None:
             keep &= np.isin(np.arange(offset, offset + len(values)), settings["checked_rows"])
         if flagged:
@@ -226,7 +228,7 @@ def _sample(settings, progress, *, limit=MAX_EXAMPLES):
             raise ValueError("The consensus column has too many different names for a phenotype model.")
         progress(f"Reading consensus labels: {offset + len(values):,} cells checked. The viewer stays available.")
     usable = [name for name in sorted(reservoirs) if counts[name] >= 2]
-    if len(usable) < 2:
+    if len(usable) < minimum_classes:
         raise ValueError("The consensus column needs at least two phenotypes with two examples each.")
     cap = min(PER_CLASS, max(2, limit // len(usable)))
     positions, targets = [], []

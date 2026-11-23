@@ -24,13 +24,13 @@ setTimeout(async()=>{
  try{
   const role=label=>document.querySelector('[aria-label="Phenotyping '+label+' column"]');
   await until(()=>role('Cell ID'));
-  assert(!role('ROI').value && !role('Cell ID').value, 'Both roles start unassigned');
+  assert(!role('Image').value && !role('Cell ID').value, 'Both roles start unassigned');
   const choose=(label,value)=>{const input=role(label);input.value=value;input.dispatchEvent(new Event('change'));};
-  choose('ROI','batch_id');
-  assert(document.querySelector('#studio-tools').textContent.includes('Choose the ROI and Cell ID columns to save.'), 'The first selection is kept until the required pair is complete');
+  choose('Image','batch_id');
+  assert(document.querySelector('#studio-tools').textContent.includes('Choose a unique Cell ID column to save.'), 'The image selection is kept until a cell identity is chosen');
   choose('Cell ID','cell_id');
-  await until(()=>document.querySelector('tr[data-roi="roi"] td:nth-child(3)')?.textContent==='40');
-  assert(role('ROI').value==='batch_id' && role('Cell ID').value==='cell_id', 'Both selections save together');
+  await until(()=>document.querySelector('tr[data-roi="roi"] [data-cell-count]')?.textContent==='40');
+  assert(role('Image').value==='batch_id' && role('Cell ID').value==='cell_id', 'Both selections save together');
   choose('Slide','slide');
   await until(()=>document.querySelector('tr[data-roi="roi"]').textContent.includes('physical_slide_1'));
   const response=await fetch('/spacemap-viewer/api/studio/browser-check/phenotyping_inputs');

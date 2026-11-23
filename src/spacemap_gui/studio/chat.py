@@ -58,7 +58,10 @@ NAMING = re.compile(r"\b(name|label|annotat|phenotyp|call|identif|cell type)", r
 NAMING_RULES = """NAMING CLUSTERS
 RESULTS lists the project's latest clustering runs (whether or not they are on screen): each cluster's size, top
 markers and marker profile (z-scores compared across the clusters), the names already saved, and, when the user
-labelled reference cells, the reference cells in each cluster and suggested names. To name clusters, reply with ONE
+labelled reference cells, the reference cells in each cluster and suggested names. A selected trained model adds
+sampled prediction scores, feature coverage and saved validation evidence. Compare these with the marker profiles
+and manual labels; model votes are not independent accuracy, and disagreement or a mixed cluster needs review.
+To name clusters, reply with ONE
 action: {"say": "...", "action": {"name": "name_clusters", "args": {"job_id": "<that run's job_id>", "names":
 {"Cluster 0": "CD8 T cell", "Cluster 1": "Tumour"}}}}. Use studio_page.explorer.job_id for the run being reviewed.
 When the user asks for all clusters, cover the whole run. Otherwise, when explorer.picked is nonempty, propose
@@ -317,38 +320,51 @@ def results(project, text="", explorer=None, *, cached_only=False):
             entry["roi_distribution"] = distribution
         if wants and kind != "neighbourhoods" and table:
             try:
-                columns = cluster_names.reference_columns(table)
-                if columns:
-                    preferred = (explorer or {}).get("reference_column")
-                    reference_column = preferred if preferred in columns else columns[0]
+                selected_model = (explorer or {}).get("model_id")
+                if selected_model:
                     from .settings import read_config
-
-                    hints = cluster_names.suggest(
-                        table,
-                        result["column"],
-                        reference_column,
-                        result.get("markers") or [],
-                        markers.suffix_of(read_config(root)),
-                        **({"cached_only":True} if cached_only else {}),
-                    )
+                    hints = cluster_names.suggest_model(table, result["column"], selected_model,
+                        (explorer or {}).get("reference_column") or "", features=result.get("markers") or None,
+                        suffix=markers.suffix_of(read_config(root)), cached_only=cached_only)
                     if hints is None:
-                        entry["reference_note"] = "Reference comparison is available with the cluster_reference tool."
-                        entry["reference_column"] = reference_column
-                        found.append(entry)
-                        if cached_only:
-                            break
-                        continue
-                    entry["reference"] = {
-                        "column": hints["reference_column"],
-                        "labels": [item["label"] for item in hints["labels"]],
-                        "per_cluster": {
-                            cluster: {
-                                "suggested": [[s["label"], s["score"]] for s in info["suggestions"]],
-                                "reference_cells": [[r["label"], r["cells"], r["of_label"]] for r in info["top"]],
-                            }
-                            for cluster, info in hints["clusters"].items()
-                        },
-                    }
+                        entry["reference_note"] = "Use cluster_reference with this model_id for saved-model evidence."
+                        entry["model_id"] = selected_model
+                    else:
+                        entry["reference"] = cluster_names.evidence(hints,
+                            (explorer or {}).get("picked") if job["id"] == (explorer or {}).get("job_id") else None)
+                else:
+                    columns = cluster_names.reference_columns(table)
+                    if columns:
+                        preferred = (explorer or {}).get("reference_column")
+                        reference_column = preferred if preferred in columns else columns[0]
+                        from .settings import read_config
+
+                        hints = cluster_names.suggest(
+                            table,
+                            result["column"],
+                            reference_column,
+                            result.get("markers") or [],
+                            markers.suffix_of(read_config(root)),
+                            **({"cached_only":True} if cached_only else {}),
+                        )
+                        if hints is None:
+                            entry["reference_note"] = "Reference comparison is available with the cluster_reference tool."
+                            entry["reference_column"] = reference_column
+                            found.append(entry)
+                            if cached_only:
+                                break
+                            continue
+                        entry["reference"] = {
+                            "column": hints["reference_column"],
+                            "labels": [item["label"] for item in hints["labels"]],
+                            "per_cluster": {
+                                cluster: {
+                                    "suggested": [[s["label"], s["score"]] for s in info["suggestions"]],
+                                    "reference_cells": [[r["label"], r["cells"], r["of_label"]] for r in info["top"]],
+                                }
+                                for cluster, info in hints["clusters"].items()
+                            },
+                        }
             except (ValueError, OSError, KeyError) as error:
                 entry["reference_note"] = str(error)
         found.append(entry)

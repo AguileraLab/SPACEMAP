@@ -67,7 +67,7 @@ def test_roles_use_actual_columns_and_result_coverage_refreshes(setup, monkeypat
     inputs.save_roles(root, str(path), roles)
     info = inputs.plan(root, {}, str(path))
     assert info["roles"] == roles and info["cells"] == 5
-    assert len(info["rows"]) == 2 and info["rows"][0]["slide"] == "S1"
+    assert len(info["rows"]) == 1 and info["rows"][0]["slide"] == "S1"
     assert info["result_columns"] == ["phenotype_ml_consensus", "phenotype_ref1"]
     for values, expected in [(["T", None, None, None, None], 1), (["T"] * 5, 4)]:
         pending_columns.save(path, {"phenotype_test_clusters": values}, anchor_column="global_cell", anchor_values=frame.global_cell)

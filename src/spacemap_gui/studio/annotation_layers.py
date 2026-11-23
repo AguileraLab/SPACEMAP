@@ -4,7 +4,7 @@ from hashlib import sha256
 import json
 from pathlib import Path
 
-from . import annotation, annotation_edits as edits
+from . import annotation, annotation_edits as edits, project_files
 
 
 def record_path(root, image):
@@ -40,7 +40,7 @@ def generated(root, image, output):
         for path in Path(output).glob(pattern):
             known[str(path.resolve())] = {'name': name, 'kind': kind}
     known.update(records(root, image))
-    return {p: info for p, info in known.items() if Path(p).is_file()}
+    return {p: info for p, info in known.items() if Path(p).is_file() and not project_files.excluded(p, root)}
 
 
 def layer(root, image, output, path, readonly=False):

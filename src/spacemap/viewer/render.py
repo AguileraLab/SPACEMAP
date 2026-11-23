@@ -148,6 +148,24 @@ def raw_tile(path: str, info: ImageInfo, z: int, x: int, y: int, channel: int) -
     return region
 
 
+def pixel_values(path: str, info: ImageInfo, x: float, y: float, channels: list[int]) -> dict:
+    """Native values at the containing pixel; share the display's raw-tile cache."""
+    if not math.isfinite(x) or not math.isfinite(y):
+        raise ValueError("Pixel coordinates must be finite.")
+    if info.rgb or not channels or len(channels) > 256 or any(c < 0 or c >= info.channel_count for c in channels):
+        raise ValueError("Choose 1–256 available image markers.")
+    x, y = math.floor(x), math.floor(y)
+    values = {}
+    for channel in dict.fromkeys(channels):
+        value = None
+        if 0 <= x < info.width and 0 <= y < info.height:
+            pixels = raw_tile(path, info, 0, x // TILE, y // TILE, channel)
+            pixel = pixels[y % TILE, x % TILE]
+            value = pixel.item() if np.isfinite(pixel) else None
+        values[str(channel)] = value
+    return {"x": x, "y": y, "values": values}
+
+
 def composite(tiles: list[np.ndarray], styles: list[ChannelStyle]) -> np.ndarray:
     """Additive blend of single-channel tiles into an RGB uint8 image."""
     if not tiles:

@@ -8,6 +8,7 @@ for additional segmentation methods like DeepCell.
 
 import os
 import numpy as np
+from spacemap.segmentation_inputs import cellpose_input, maximum_projection, resolve_nuclear_indices
 import tifffile as tiff
 import xml.etree.ElementTree as ET
 import cv2
@@ -1445,8 +1446,8 @@ def segment_image_cellpose(ome_tiff_path, output_dir, config, markers=None, dapi
         Configuration object
     markers : list of str, optional
         List of marker channel names to use for segmentation
-    dapi_channel : str
-        Name of DAPI channel
+    dapi_channel : str or sequence of str
+        Nuclear marker name(s), combined by the maximum intensity at each pixel.
     overwrite : bool
         Whether to overwrite existing outputs (default: False)
     progress_callback : callable, optional
@@ -1496,6 +1497,8 @@ def segment_image_cellpose(ome_tiff_path, output_dir, config, markers=None, dapi
                 progress_callback(total_steps, total_steps, "Outputs already exist.")
             return output_files
     
+    if config.use_input_geojson and not os.path.isfile(config.input_geojson_path or ''):
+        raise ValueError(f"Selected segmentation GeoJSON is missing: {os.path.abspath(config.input_geojson_path) if config.input_geojson_path else '(no file selected)'}")
     os.makedirs(output_dir, exist_ok=True)
     
     # Extract channel information
@@ -1505,31 +1508,21 @@ def segment_image_cellpose(ome_tiff_path, output_dir, config, markers=None, dapi
         channel_names = get_channel_names(ome_tiff_path)
     print(f"Channel names: {channel_names}")
 
-    # Resolve DAPI channel
-    dapi_index = -1
-    if dapi_channel in channel_names:
-        dapi_index = channel_names.index(dapi_channel)
-    else:
-        for i, nm in enumerate(channel_names):
-            if isinstance(nm, str) and 'dapi' in nm.lower():
-                dapi_index = i
-                break
-    if dapi_index < 0:
-        raise ValueError(f"'{dapi_channel}' channel not found in image")
+    nuclear_indices = resolve_nuclear_indices(channel_names, dapi_channel)
     
     # Determine marker indices
     if markers is None:
-        marker_indices = [i for i, name in enumerate(channel_names) if i != dapi_index]
+        marker_indices = [i for i, name in enumerate(channel_names) if i not in nuclear_indices]
     else:
         marker_set = {m.lower(): m for m in markers if isinstance(m, str)}
         marker_indices = []
         for i, name in enumerate(channel_names):
-            if i == dapi_index:
+            if i in nuclear_indices:
                 continue
             if isinstance(name, str) and name.lower() in marker_set:
                 marker_indices.append(i)
     
-    print(f"DAPI channel index: {dapi_index}")
+    print(f"Nuclear channel indices: {nuclear_indices}")
     print(f"Marker channel indices: {marker_indices}")
     
     # Initialize segmenter
@@ -1537,12 +1530,12 @@ def segment_image_cellpose(ome_tiff_path, output_dir, config, markers=None, dapi
     segmenter = CellposeSegmenter(config)
     
     # Decide whether to use fast whole-image path or tiled path
-    use_tiled_processing = config.use_input_geojson and os.path.exists(config.input_geojson_path)
-    
+    use_tiled_processing = config.use_input_geojson
+
     process = _segment_with_tiles if use_tiled_processing else _segment_whole_image
     result = process(
         ome_tiff_path, output_dir, config, segmenter,
-        channel_names, dapi_index, marker_indices,
+        channel_names, nuclear_indices, marker_indices,
         input_image_name, progress_callback, update_progress,
         current_step, total_steps, start_time,
     )
@@ -1555,7 +1548,7 @@ def segment_image_cellpose(ome_tiff_path, output_dir, config, markers=None, dapi
 
 
 def _segment_whole_image(ome_tiff_path, output_dir, config, segmenter,
-                         channel_names, dapi_index, marker_indices,
+                         channel_names, nuclear_indices, marker_indices,
                          input_image_name, progress_callback, update_progress,
                          current_step, total_steps, start_time):
     """
@@ -1620,16 +1613,9 @@ def _segment_whole_image(ome_tiff_path, output_dir, config, segmenter,
                     img = np.zeros((img_h, img_w), dtype=np.uint16)
             all_images.append(img)
         
-        dapi_img = all_images[dapi_index]
-        marker_imgs = [all_images[i] for i in marker_indices]
-    
-    # Prepare segmentation input
-    merged_markers = np.max(marker_imgs, axis=0) if marker_imgs else np.zeros_like(dapi_img)
-    image_for_segmentation = np.stack((
-        merged_markers,
-        np.zeros_like(merged_markers),
-        dapi_img
-    ), axis=-1)
+    image_for_segmentation = cellpose_input(
+        (all_images[i] for i in nuclear_indices), (all_images[i] for i in marker_indices))
+    dapi_img = image_for_segmentation[..., 2]  # combined nuclear signal for the optional PNG
     
     # Run segmentation - let Cellpose handle tiling internally (FAST!)
     update_progress("Running Cellpose segmentation...")
@@ -1730,7 +1716,7 @@ def _segment_whole_image(ome_tiff_path, output_dir, config, segmenter,
 
 
 def _segment_with_tiles(ome_tiff_path, output_dir, config, segmenter,
-                        channel_names, dapi_index, marker_indices,
+                        channel_names, nuclear_indices, marker_indices,
                         input_image_name, progress_callback, update_progress,
                         current_step, total_steps, start_time):
     """
@@ -1786,13 +1772,13 @@ def _segment_with_tiles(ome_tiff_path, output_dir, config, segmenter,
 
     # Filter tiles by actual tissue coverage, not just a bounding-box touch.
     tiles = []
-    print(f"Filtering tiles based on ROI: {config.input_geojson_path}")
+    print(f"Filtering tiles based on ROI: {os.path.abspath(config.input_geojson_path)}")
     try:
         tissue_geometry = load_tissue_geometry(
-        config.input_geojson_path,
-        include_classes=getattr(config, "mask_class_names", None),
-        exclude_classes=getattr(config, "mask_exclude_class_names", None),
-    )
+            config.input_geojson_path,
+            include_classes=getattr(config, "mask_class_names", None),
+            exclude_classes=getattr(config, "mask_exclude_class_names", None),
+        )
         print(f"ROI Bounds: {tissue_geometry.bounds}")
         
         for y, x, h, w in all_tiles:
@@ -1810,13 +1796,13 @@ def _segment_with_tiles(ome_tiff_path, output_dir, config, segmenter,
             f"{config.min_tissue_fraction:.3%} tissue-coverage threshold."
         )
     except Exception as e:
-        print(f"Error filtering tiles by ROI: {e}. Processing all tiles.")
-        tiles = all_tiles
+        raise ValueError(f"Cannot use segmentation area {os.path.abspath(config.input_geojson_path)}: {e}") from e
     
     if not tiles:
-        tiles = all_tiles
+        raise ValueError("The selected segmentation area has no image tiles meeting the tissue-coverage threshold.")
             
     print(f"Processing {len(tiles)} tiles (Size: {tile_size}, Overlap: {overlap_px}px)")
+    print("Tissue area limits output masks; model input uses original image pixels.")
     
     # Initialize global mask (memmap) if needed
     global_mask = None
@@ -1955,22 +1941,14 @@ def _segment_with_tiles(ome_tiff_path, output_dir, config, segmenter,
             source_x = x + crop_x0
             tissue_mask_crop = tissue_mask[crop_y0:crop_y1, crop_x0:crop_x1]
 
-            # Cellpose receives a single merged membrane/cytoplasm layer plus
-            # DAPI. Full feature channels are read only after cells are found.
-            dapi_tile = read_channel_tile(dapi_index, source_y, source_x, crop_h, crop_w)
-            marker_tiles = [
-                read_channel_tile(index, source_y, source_x, crop_h, crop_w)
-                for index in marker_indices
-            ]
-            merged_markers = np.max(marker_tiles, axis=0) if marker_tiles else np.zeros_like(dapi_tile)
-            merged_markers = merged_markers * tissue_mask_crop
-            dapi_tile_masked = dapi_tile * tissue_mask_crop
-
-            image_for_segmentation = np.stack((
-                merged_markers,
-                np.zeros_like(merged_markers),
-                dapi_tile_masked
-            ), axis=-1)
+            # Project only selected planes; read measurement channels after cells are found.
+            image_for_segmentation = cellpose_input(
+                (read_channel_tile(i, source_y, source_x, crop_h, crop_w) for i in nuclear_indices),
+                (read_channel_tile(i, source_y, source_x, crop_h, crop_w) for i in marker_indices))
+            # Keep the same raw pixels as preview/training. Zeroing the area
+            # outside the ROI before Cellpose's percentile normalization changes
+            # its contrast (especially for bright-background H&E channels).
+            # Restrict the predicted labels instead, below.
 
             # The outer loop already limits ROI work to config.tile_size. Let
             # Cellpose tile again within that outer tile using a memory-safe
@@ -1982,10 +1960,11 @@ def _segment_with_tiles(ome_tiff_path, output_dir, config, segmenter,
                 bsize=config.cellpose_internal_tile_size,
                 batch_size=config.cellpose_batch_size,
             )
+            masks[tissue_mask_crop == 0] = 0
 
             props = regionprops_table(masks, properties=['label', 'centroid'])
             if len(props['label']) == 0:
-                del masks, dapi_tile, marker_tiles, image_for_segmentation
+                del masks, image_for_segmentation
                 continue
 
             valid_labels = []
@@ -2003,7 +1982,7 @@ def _segment_with_tiles(ome_tiff_path, output_dir, config, segmenter,
                     valid_labels.append(label)
 
             if not valid_labels:
-                del masks, dapi_tile, marker_tiles, image_for_segmentation
+                del masks, image_for_segmentation
                 continue
 
             label_map = {old: new + current_max_label for new, old in enumerate(valid_labels, 1)}
@@ -2015,7 +1994,7 @@ def _segment_with_tiles(ome_tiff_path, output_dir, config, segmenter,
             tile_features = extract_features(masks, all_tile_images, channel_names)
             tile_features = tile_features[tile_features['label'].isin(valid_labels)].copy()
             if tile_features.empty:
-                del masks, dapi_tile, marker_tiles, all_tile_images, image_for_segmentation
+                del masks, all_tile_images, image_for_segmentation
                 continue
 
             # Update labels and centroids
@@ -2053,7 +2032,7 @@ def _segment_with_tiles(ome_tiff_path, output_dir, config, segmenter,
 
             current_max_label += len(valid_labels)
 
-            del masks, dapi_tile, marker_tiles, all_tile_images, image_for_segmentation
+            del masks, all_tile_images, image_for_segmentation
             if (i + 1) % 16 == 0:
                 gc.collect()
 
@@ -2099,7 +2078,7 @@ def _segment_with_tiles(ome_tiff_path, output_dir, config, segmenter,
             png_path = os.path.join(png_subdir, f"{input_image_name}_segmentation.png")
             factor = max(1, max(img_h, img_w) // 4000)
             small_mask = global_mask[::factor, ::factor]
-            small_dapi = read_preview_plane(ome_tiff_path, dapi_index, small_mask.shape)
+            small_dapi = maximum_projection(read_preview_plane(ome_tiff_path, i, small_mask.shape) for i in nuclear_indices)
 
             plt_mask = np.ma.masked_where(small_mask == 0, small_mask)
             import matplotlib.pyplot as plt
@@ -2172,8 +2151,8 @@ def batch_segment_images(input_dir, output_dir, config, file_pattern="*.ome.tiff
         File pattern to match (default: "*.ome.tiff")
     markers : list of str, optional
         List of marker channel names to use
-    dapi_channel : str
-        Name of DAPI channel
+    dapi_channel : str or sequence of str
+        Nuclear marker name(s), combined by the maximum intensity at each pixel.
     overwrite : bool
         Whether to overwrite existing outputs (default: False)
         

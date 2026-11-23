@@ -69,7 +69,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        extra: ["base", "ai"]
+        extra: ["base", "ai", "flow"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -90,8 +90,8 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
           python -m pip install -e . --group dev
-          if [ "$SPACEMAP_TEST_EXTRA" = "ai" ]; then
-            python -m pip install -e ".[ai]"
+          if [ "$SPACEMAP_TEST_EXTRA" != "base" ]; then
+            python -m pip install -e ".[${SPACEMAP_TEST_EXTRA}]"
           fi
           python -m pip check
 

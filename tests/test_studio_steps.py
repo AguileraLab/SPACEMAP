@@ -59,7 +59,7 @@ def test_rail_states_summarise_each_step(project):
 
 
 def test_states_follow_real_project_file_names(project):
-    # INNATE_all_09262026: feature tables are "<roi>.ome_cell_features.csv", ROIs are cut
+    # Per-image fixture: feature tables are "<roi>.ome_cell_features.csv", ROIs are cut
     # from registered images when background removal was skipped, and the per-ROI
     # tables batch correction read were cleaned up after combining.
     for folder in [

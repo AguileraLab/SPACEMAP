@@ -9,6 +9,17 @@ from spacemap import dataio, pending_columns
 from spacemap_gui.studio import saved
 
 
+def test_label_sidecars_are_not_listed_as_data_tables(project):
+    from pathlib import Path
+    from spacemap import labels
+
+    table = Path(project['unified']).with_suffix('.parquet')
+    pd.read_csv(project['unified']).to_parquet(table, index=False)
+    labels.append(table, [{'row':0, 'column':'phenotype_ref2', 'value':'T'}])
+    found = saved.state({**project, 'unified': str(table)})
+    assert [row['name'] for row in found['tables']] == [table.name]
+
+
 @pytest.fixture
 def project(tmp_path, monkeypatch):
     monkeypatch.setenv("SPACEMAP_FAST_COPY", "off")

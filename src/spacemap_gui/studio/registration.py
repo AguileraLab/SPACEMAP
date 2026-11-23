@@ -7,6 +7,9 @@ CODEX resolution, extract the CODEX reference (anchor) channel, align with palom
 ``<registered>/<sample>_merged.ome.tiff``.
 """
 
+from . import project_files
+
+
 import os
 from pathlib import Path
 
@@ -71,7 +74,7 @@ def _images(folder):
 
     if not folder.is_dir():
         return []
-    return sorted(entry.name for entry in os.scandir(folder) if entry.is_file() and is_supported_image_file(entry.name))
+    return sorted(entry.name for entry in os.scandir(folder) if entry.is_file() and not project_files.excluded(entry.path) and is_supported_image_file(entry.name))
 
 
 def plan(root, mappings, config):

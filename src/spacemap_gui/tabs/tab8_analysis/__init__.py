@@ -43,7 +43,7 @@ def render():
         "Cell-Cell Interaction",
         "Triad",
         "Clonality",
-        "More Coming Soon",
+        "Gland types",
     ])
 
     # ---- helpers for click-to-load gating ----
@@ -119,10 +119,12 @@ def render():
             render_clonality(project_root, df, csv_path)
 
     with tabs[6]:
-        st.info(
-            "This modular Tab 8 package is ready for extension. "
-            "Add new subtab files under `interface_gui/tabs/tab8_analysis/` and wire them in `__init__.py`."
-        )
+        if not _is_loaded("gland_types"):
+            if st.button("Load Gland types", key="tab8_load_gland_types"):
+                _mark_loaded("gland_types")
+        if _is_loaded("gland_types"):
+            from .gland_clonality import render_gland_clonality
+            render_gland_clonality(project_root, df, csv_path)
 
     # Persist all Tab 8 configuration keys per active CSV so they reload automatically
     # when this same unified CSV is selected again.

@@ -20,7 +20,7 @@ BACKGROUND_DEFAULT = "${PROJECT_ROOT}/outputs/background_subtracted"
 
 
 def same_folder(first, second) -> bool:
-    """True when two folder settings name the same folder, including symbolic-link aliases."""
+    """True when two folder settings name the same folder (including paths reached through storage aliases)."""
     if not (isinstance(first, str) and isinstance(second, str) and first.strip() and second.strip()):
         return False
     try:

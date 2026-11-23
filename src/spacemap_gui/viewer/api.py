@@ -6,6 +6,7 @@ route takes a registry token, never a path.
 
     GET /image/{token}/info                     pyramid, channels, pixel size
     GET /image/{token}/limits?ch=0,5,9          suggested display limits
+    GET /image/{token}/pixels?x=12&y=34&ch=0,5 native pixel values for visible markers
     GET /image/{token}/histogram?ch=3[&shape=<token>[&sid=<id>,<id>|&name=<name>]]
                                                 one marker's histogram (whole image or in a shape)
     GET /image/{token}/tile/{z}/{x}/{y}.jpg     a rendered tile
@@ -32,7 +33,7 @@ from starlette.routing import Mount, Route
 from spacemap.viewer import render
 from spacemap.viewer.sources import image_info, open_source
 
-from . import artifact_api, classification_api, annotation_export_api, annotation_difference_api, registry
+from . import artifact_api, classification_api, annotation_export_api, annotation_difference_api, registry, lists_api
 
 # Studio's routes run on server threads, outside any page run of the classic interface. Streamlit then warns
 # "missing ScriptRunContext" or "No runtime found" whenever shared code touches one of its helpers: expected here, and
@@ -109,6 +110,20 @@ def limits(request: Request) -> Response:
         if 0 <= channel < details.channel_count and not details.rgb:
             result[str(channel)] = list(render.channel_limits(path, details, channel))
     return JSONResponse(result)
+
+
+def pixels(request: Request) -> Response:
+    found, error = _source_or_404(request.path_params["token"])
+    if error:
+        return error
+    path, source = found
+    try:
+        channels = [int(c) for c in request.query_params.get("ch", "").split(",") if c.strip()]
+        result = render.pixel_values(path, source.info, float(request.query_params.get("x", "")),
+                                     float(request.query_params.get("y", "")), channels)
+        return JSONResponse(result, headers={"Cache-Control": "no-store"})
+    except (ValueError, TypeError) as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
 
 
 def tile(request: Request) -> Response:
@@ -320,7 +335,7 @@ def _png(rgba) -> Response:
     return Response(buffer.getvalue(), media_type="image/png", headers={"Cache-Control": "private, max-age=3600"})
 
 
-def _layer(request: Request, kind: str):
+def _layer(request: Request, kind: str, *, image_required: bool = True):
     layer = registry.resolve_object(request.path_params["token"], kind)
     if layer is None:
         return None, None, JSONResponse({"error": "Unknown layer. Reopen the viewer."}, status_code=404)
@@ -334,6 +349,8 @@ def _layer(request: Request, kind: str):
                        "Reopen the image to refresh its layers; keep the History folder.") if path.is_dir() else (
                        "This annotation file is no longer available. Reopen the image to refresh its layers.")
             return None, None, JSONResponse({"error": message}, status_code=400)
+    if not image_required:
+        return layer, None, None
     try:
         image = image_info(layer["image"])
     except Exception as exc:
@@ -350,7 +367,7 @@ def _sanitize(value) -> str:
 _LUTS: dict = {}
 
 
-def _cell_lut(layer: dict, table_id: str, column: str, hidden: frozenset, colormap: str, limits=(None, None)):
+def _cell_lut(layer: dict, table_id: str, column: str, hidden: frozenset, colormap: str, limits=(None, None), colours=(), *, categorical=False):
     """Colour table for a column, cached per table version and settings. *limits* (low, high) keep a numeric
     column's colours to the cells in that range (the others are not coloured) and spread the scale over it."""
     from spacemap.viewer import cells
@@ -380,11 +397,11 @@ def _cell_lut(layer: dict, table_id: str, column: str, hidden: frozenset, colorm
             label_column=layer.get("label_column", "label"),
         )
     from spacemap.phenotype_presets import signature
-    key = (id(values), key_table, column, hidden, colormap, limits, signature())
+    key = (id(values), key_table, column, hidden, colormap, limits, signature(), colours, categorical)
     cached = _LUTS.get(key)
     if cached is not None:
         return cached
-    if (column.startswith("preview:") and scale) or cells.is_numeric(values) or _numbers(values):
+    if not categorical and ((column.startswith("preview:") and scale) or cells.is_numeric(values) or _numbers(values)):
         low, high = limits
         if low is not None and high is not None and high < low:
             low, high = high, low
@@ -410,12 +427,30 @@ def _cell_lut(layer: dict, table_id: str, column: str, hidden: frozenset, colorm
         existing = {c: saved[_sanitize(c)] for c in categories if _sanitize(c) in saved}
         from spacemap.phenotype_presets import ensure
         existing.update(ensure(categories))
+        existing.update(colours)  # This review's draft names/colours; never changes the shared palette.
         lut, items = cells.categorical_lut(labels, values, colors=existing, hidden=set(hidden))
         legend = {"kind": "categorical", "items": items}
     if len(_LUTS) > 64:
         _LUTS.clear()
     _LUTS[key] = (lut, legend)
     return lut, legend
+
+
+def _review_colours(params):
+    """Validated, request-local cluster colours, shared by the legend and tiles."""
+    import json
+    import re
+
+    raw = params.get("group_colours", "")
+    if not raw:
+        return ()
+    values = json.loads(raw)
+    if not isinstance(values, dict) or len(values) > 4096 or any(
+        not isinstance(name, str) or not isinstance(colour, str)
+        or not re.fullmatch(r"#[0-9a-fA-F]{6}", colour) for name, colour in values.items()
+    ):
+        raise ValueError("Invalid cluster colours.")
+    return tuple(sorted(values.items()))
 
 
 def _numbers(values) -> bool:
@@ -469,10 +504,14 @@ def _cell_tile(request: Request) -> Response:
     params = request.query_params
     hidden = frozenset(h for h in params.get("hide", "").split("\x1f") if h)
     lut = None
-    if params.get("col"):
-        lut, _ = _cell_lut(
-            layer, params.get("t", ""), params["col"], hidden, params.get("cmap", "viridis"), _limits(params)
-        )
+    if params.get("col") and not params.get('flow'):
+        try:
+            lut, _ = _cell_lut(
+                layer, params.get("t", ""), params["col"], hidden, params.get("cmap", "viridis"),
+                _limits(params), _review_colours(params)
+            )
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
     outline = params.get("ol", "ffff00")
     rgba_outline = tuple(int(outline[i : i + 2], 16) for i in (0, 2, 4)) + (255,)
     if not cells.pyramid_ready(layer["pyramid"]):
@@ -482,6 +521,16 @@ def _cell_tile(request: Request) -> Response:
         empty.headers["Cache-Control"] = "no-store"
         return empty
     labels = cells.label_tile(layer["pyramid"], image, z, x, y)
+    if params.get('flow'):
+        from spacemap_gui.studio import flow_gating
+        try:
+            labels, lut = flow_gating.tile(params['flow'], (layer.get('tables') or {}).get(params.get('t')),
+                                           layer['roi'], labels, params.get('flow_mode') == 'highlight')
+            # Respect the existing cell-layer draw mode. Filled + outlines uses
+            # its chosen outline colour; category fills always use the gate.
+            return _png(cells.render_cell_tile(labels, lut, mode=params.get('mode','outline'), outline_rgba=rgba_outline, z=z))
+        except (ValueError, KeyError) as exc:
+            return JSONResponse({'error':str(exc)},status_code=400)
     if params.get("f"):  # the layer's filters: cells not passing them are not drawn at all
         from spacemap_gui.studio import cell_view
 
@@ -507,6 +556,12 @@ def _cell_tile(request: Request) -> Response:
             )
         except ValueError as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
+    if params.get('reference') and not params.get('col'):
+        try:
+            reference_lut, _ = _cell_lut(layer, params.get('t', ''), params['reference'], frozenset(), 'viridis', categorical=True)
+            return _png(cells.render_reference_tile(labels, reference_lut, mode=params.get('mode', 'outline'), outline_rgba=rgba_outline, z=z))
+        except (ValueError, KeyError, OSError) as exc:
+            return JSONResponse({'error': str(exc)}, status_code=400)
     return _png(cells.render_cell_tile(labels, lut, mode=params.get("mode", "outline"), outline_rgba=rgba_outline, z=z))
 
 
@@ -529,7 +584,8 @@ def cell_legend(request: Request) -> Response:
     hidden = frozenset(h for h in params.get("hide", "").split("\x1f") if h)
     try:
         _, legend = _cell_lut(
-            layer, params.get("t", ""), params.get("col", ""), hidden, params.get("cmap", "viridis"), _limits(params)
+            layer, params.get("t", ""), params.get("col", ""), hidden, params.get("cmap", "viridis"),
+            _limits(params), _review_colours(params)
         )
     except Exception as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
@@ -565,7 +621,9 @@ def cell_filter_count(request: Request) -> Response:
     params = request.query_params
     table = (layer.get("tables") or {}).get(params.get("t", ""))
     if not table:
-        return JSONResponse({"error": "Choose the cells' data first."}, status_code=400)
+        return JSONResponse({"error": "Choose Cell data at the top of Cells."}, status_code=400)
+    from spacemap_gui.studio.cell_links import table_layer
+    layer = table_layer(layer, params.get('t', ''))
     keys = {"roi_column": layer.get("roi_column", "batch_id"), "label_column": layer.get("label_column", "label")}
     try:
         found = {}
@@ -579,7 +637,27 @@ def cell_filter_count(request: Request) -> Response:
                 found["range"] = [float(numbers.min()), float(numbers.max())]
             else:
                 found["groups"] = [[str(k), int(v)] for k, v in series.dropna().astype(str).value_counts().head(500).items()]
-        _, shown, total = cell_view.keep(table, layer["roi"], cell_view.parse_filters(params.get("f", "")), **keys)
+        import numpy as np
+        filters = cell_view.parse_filters(params.get("f", ""))
+        lookup, shown, total = cell_view.keep(table, layer["roi"], filters, **keys)
+        if not filters or params.get("col"):
+            labels, _ = cells.roi_values(table, layer["roi"], keys["label_column"], **keys)
+            total = len(labels)
+            passing = np.ones(total, dtype=bool)
+            if lookup is not None:
+                inside = (labels >= 0) & (labels < len(lookup))
+                passing &= inside
+                passing[inside] &= lookup[labels[inside]]
+            if params.get("col"):
+                lut, _ = _cell_lut(layer, params.get("t", ""), params["col"],
+                                   frozenset(params.get("hide", "").split("\x1f")), "viridis", _limits(params))
+                # An unavailable tagging preview uses the renderer's single colour,
+                # with no extra colour-based restriction. Explicit filters still apply.
+                if lut is not None:
+                    inside = (labels >= 0) & (labels < len(lut))
+                    passing &= inside
+                    passing[inside] &= lut[labels[inside], 3] > 0
+            shown = int(passing.sum())
         found.update(shown=shown, total=total)
         return JSONResponse(found)
     except (ValueError, OSError, KeyError) as exc:
@@ -932,6 +1010,10 @@ async def cell_suggestions(request: Request) -> Response:
                         "roi_column": layer.get("roi_column", "batch_id"),
                         "label_column": layer.get("label_column", "label"),
                     }
+                    project = registry.session_project(str(body.get('session', ''))) or {}
+                    if project.get('root'):
+                        from spacemap_gui.studio.reference_setup import phenotype_policy
+                        settings.update(phenotype_policy(project['root']))
                     return reference_models.request(
                         settings,
                         body.get("model_id"),
@@ -1069,7 +1151,7 @@ def _density_params(request: Request, layer: dict) -> tuple[str, dict]:
     params = request.query_params
     table = (layer.get("tables") or {}).get(params.get("t", ""))
     if not table:
-        raise ValueError("Choose a table for the density map.")
+        raise ValueError("Cell data is unavailable for this map. Choose Cell data at the top of Cells.")
     options = {
         "filter_column": params.get("fcol", ""),
         "filter_values": tuple(v for v in params.get("fvals", "").split("\x1f") if v),
@@ -1079,6 +1161,36 @@ def _density_params(request: Request, layer: dict) -> tuple[str, dict]:
         "roi_column": layer.get("roi_column", "batch_id"),
         "label_column": layer.get("label_column", "label"),
     }
+    if params.get('viewer') == '1':
+        if params.get('live') == '1':
+            raise ValueError('Save the live phenotypes before using viewer cells in a density map, or choose All cells in this image.')
+        import numpy as np
+        from spacemap.viewer import cells
+        from spacemap_gui.studio import cell_view
+        labels = cells.roi_values(table, layer['roi'], options['label_column'],
+                                  roi_column=options['roi_column'], label_column=options['label_column'])[0]
+        keep = np.ones(len(labels), bool)
+        if params.get('flow'):
+            from spacemap_gui.studio import flow_gating
+            _, lut = flow_gating.tile(params['flow'], table, layer['roi'], labels)
+            if params.get('flow_mode') != 'highlight':
+                keep &= np.array([i < len(lut) and lut[i,3] > 0 for i in labels])
+        else:
+            lookup, _, _ = cell_view.keep(table, layer['roi'], cell_view.parse_filters(params.get('f', '[]')),
+                                          roi_column=options['roi_column'], label_column=options['label_column'])
+            if lookup is not None:
+                inside=labels<len(lookup);keep &= inside
+                keep[inside] &= lookup[labels[inside]]
+            if params.get('col'):
+                lut, _ = _cell_lut(layer, params.get('t',''), params['col'],
+                                   frozenset(params.get('hide','').split('\x1f')), 'viridis', _limits(params))
+                if lut is not None:
+                    inside=(labels>=0)&(labels<len(lut));keep &= inside
+                    keep[inside] &= lut[labels[inside],3] > 0
+            if params.get('selection'):
+                from spacemap_gui.studio.selection import tile_mask
+                keep &= tile_mask(params['selection'], table, layer['roi'], labels) > 0
+        options['allowed_labels'] = labels[keep]
     return table, options
 
 
@@ -1193,20 +1305,27 @@ def annotation_tile(request: Request) -> Response:
         shapes = annotations.load_annotations(layer["path"])
     except (OSError, ValueError) as exc:
         return JSONResponse({"error": f"Could not read the annotation file: {exc}"}, status_code=400)
-    return _png(annotations.render_annotation_tile(shapes, image, z, x, y, hidden=hidden))
+    mode = request.query_params.get('mode', 'both')
+    if mode not in ('outline', 'fill', 'both'):
+        return JSONResponse({'error': 'Choose Outlines, Filled or Filled + outlines.'}, status_code=400)
+    return _png(annotations.render_annotation_tile(shapes, image, z, x, y, hidden=hidden,
+        fill_alpha=0 if mode == 'outline' else 255, line_px=0 if mode == 'fill' else 2))
 
 
 def annotation_legend(request: Request) -> Response:
     from spacemap.viewer import annotations
 
-    layer, _, error = _layer(request, "annotations")
+    # Class names and counts come entirely from the registered GeoJSON. A slow
+    # or unavailable image must not prevent users from inspecting its classes.
+    layer, _, error = _layer(request, "annotations", image_required=False)
     if error:
         return error
     try:
         items = annotations.load_annotations(layer["path"]).legend()
     except (OSError, ValueError) as exc:
         return JSONResponse({"error": f"Could not read the annotation file: {exc}"}, status_code=400)
-    return JSONResponse({"kind": "categorical", "items": items})
+    from spacemap_gui.studio.annotation_components import display_style
+    return JSONResponse({"kind": "categorical", "items": items, "display": display_style(layer['path'])})
 
 
 def annotation_at(request: Request) -> Response:
@@ -1534,14 +1653,17 @@ def _workspace_or_404(request: Request):
 
 
 def _annotation_layer(path: str, image: str, image_token: str, name: str) -> dict:
+    from spacemap_gui.studio.annotation_components import display_style
     return {
         "id": "file-" + registry.register_object("annotations", path=path, image=image)[:8],
         "type": "annotations",
         "name": name,
+        "saved_file": str(Path(path).resolve()),
         "token": registry.register_object("annotations", path=path, image=image),
         "image_token": image_token,
         "opacity": 0.7,
         "visible": True,
+        **display_style(path),
     }
 
 
@@ -1874,6 +1996,8 @@ def _studio_project(request, *, write=False):
         raise ValueError("Load a project first.")
     if write and project.get("read_only"):
         raise ValueError("This project is open for viewing only.")
+    from spacemap_gui.studio import project_files
+    project_files.use(project["root"])
     return project["root"]
 
 
@@ -1934,32 +2058,45 @@ async def studio_ai(request: Request) -> Response:
 
 
 async def studio_cluster_suggestions(request: Request) -> Response:
-    """Names for a finished clustering's groups: reference cells in each and the reference model's vote."""
+    """Naming choices and predictions for a finished clustering, without AI."""
     from starlette.concurrency import run_in_threadpool
 
-    from spacemap_gui.studio import cluster_names, jobs, markers
+    from spacemap_gui.studio import cluster_names, jobs, markers, reference_setup
     from spacemap_gui.studio.settings import read_config
 
     try:
-        root = Path(_studio_project(request))
+        root = Path(_studio_project(request, write=request.method == "POST"))
         project = registry.session_project(request.path_params["channel"]) or {}
         table = project.get("unified")
         if not table:
-            raise ValueError("No combined table yet.")
+            raise ValueError("Choose Cell data first.")
         columns = await run_in_threadpool(cluster_names.reference_columns, table)
-        job_id = request.query_params.get("job_id", "")
+        body = await _json_body(request) if request.method == "POST" else request.query_params
+        job_id = body.get("job_id", "")
         if not job_id:
-            return JSONResponse({"reference_columns": columns})
-        done = jobs.status(root, job_id)
+            return JSONResponse(await run_in_threadpool(cluster_names.suggestion_sources, root, table))
+        done = await run_in_threadpool(jobs.status, root, job_id)
         result = done.get("result") or {}
         if done.get("kind") not in {"leiden", "som", "vortex", "subphenotype"} or done.get("status") != "done":
             raise ValueError("Choose a finished clustering.")
         if result.get("table") != table:
             raise ValueError("This clustering was made on another combined table.")
-        chosen = request.query_params.get("reference") or (columns[0] if columns else "")
+        suffix = markers.suffix_of(read_config(root))
+        features = result.get("markers") or None
+        if body.get("sources"):
+            return JSONResponse(await run_in_threadpool(cluster_names.suggestion_sources, root, table, features, suffix))
+        model_id, model_key = body.get("model_id", ""), body.get("model_key", "")
+        if model_key:
+            if request.method != "POST":
+                raise ValueError("Use Suggest names to load this model.")
+            model_id = await run_in_threadpool(reference_setup.prepare_model, root, model_key, table)
+        if model_id:
+            found = await run_in_threadpool(cluster_names.suggest_model, table, result["column"], model_id, body.get("reference", ""),
+                                           features=features, suffix=suffix)
+            return JSONResponse({"reference_columns": columns, **found})
+        chosen = body.get("reference") or (columns[0] if columns else "")
         if chosen not in columns:
             raise ValueError("Label some cells in a reference column (Phenotyping > Manual reference) first.")
-        suffix = markers.suffix_of(read_config(root))
         found = await run_in_threadpool(
             cluster_names.suggest, table, result["column"], chosen, result.get("markers") or [], suffix
         )
@@ -2024,6 +2161,37 @@ async def studio_figure(request: Request) -> Response:
         )
     except (ValueError, OSError, KeyError, TypeError) as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
+
+
+async def studio_phenotype_assessment(request: Request) -> Response:
+    """Score saved phenotype columns and render Classic figures without editing data."""
+    import base64
+    from starlette.concurrency import run_in_threadpool
+    from spacemap_gui.studio import phenotype_assessment as assessment
+    try:
+        root = _studio_project(request)
+        channel = request.path_params['channel']
+        if request.method == 'GET':
+            return JSONResponse(await run_in_threadpool(assessment.options, channel))
+        body = await _json_body(request)
+        if not isinstance(body, dict):
+            raise ValueError('Expected assessment settings.')
+        action = body.get('action', 'compare')
+        if action == 'compare':
+            return JSONResponse(await run_in_threadpool(assessment.compare, channel, body))
+        if action == 'figure':
+            options = body.get('options') or {}
+            data, media = await run_in_threadpool(assessment.figure, root, body.get('id'),
+                body.get('kind', 'comparison'), body.get('method'), options)
+            name = 'phenotype_assessment_' + body.get('kind', 'comparison') + '.' + options.get('format', 'png')
+        elif action == 'export':
+            data = await run_in_threadpool(assessment.export, root, body.get('id'))
+            media, name = 'application/zip', 'phenotype_assessment.zip'
+        else:
+            raise ValueError('Choose Compare, Figure or Export.')
+        return JSONResponse({'data': base64.b64encode(data).decode(), 'type': media, 'name': name})
+    except (ValueError, OSError, KeyError, TypeError) as exc:
+        return JSONResponse({'error': str(exc)}, status_code=400)
 
 
 async def studio_saved(request: Request) -> Response:
@@ -2095,7 +2263,7 @@ async def studio_subpheno_settings(request: Request) -> Response:
     """Tab 7's sub-phenotyping settings (its subphenotyping_params.json): read, or save the ones Studio shows."""
     from starlette.concurrency import run_in_threadpool
 
-    from spacemap_gui.studio import subphenotypes
+    from spacemap_gui.studio import subphenotypes, phenotyping_inputs, reference_setup
     from spacemap_gui.studio.settings import revision
 
     try:
@@ -2105,7 +2273,12 @@ async def studio_subpheno_settings(request: Request) -> Response:
             saved = await run_in_threadpool(subphenotypes.save, root, body.get("changes"), body.get("revision"))
         else:
             saved = subphenotypes.values(root)
-        return JSONResponse({"values": saved, "revision": revision(saved)})
+        from spacemap import dataio
+        from spacemap.viewer import reference
+        table = phenotyping_inputs.combined_table(request.path_params['channel'])
+        models = await run_in_threadpool(reference_setup.options, root, table)
+        return JSONResponse({"values": saved, "revision": revision(saved), 'columns': dataio.columns(table),
+                             'references': await run_in_threadpool(reference.columns, table), 'models': models})
     except (ValueError, OSError, TypeError) as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
 
@@ -2115,25 +2288,117 @@ async def studio_phenotype_values(request: Request) -> Response:
     from starlette.concurrency import run_in_threadpool
 
     from spacemap import dataio
-    from spacemap_gui.studio import subphenotypes
+    from spacemap_gui.studio import subphenotypes, phenotyping_inputs
 
     try:
         _studio_project(request)
-        project = registry.session_project(request.path_params["channel"]) or {}
+        table = phenotyping_inputs.combined_table(request.path_params['channel'])
         column = request.query_params.get("column", "")
-        if not project.get("unified"):
-            raise ValueError("No combined table yet.")
-        if not column.startswith("phenotype_") or column not in dataio.columns(project["unified"]):
-            raise ValueError("Choose a phenotype column of the combined table.")
-        found = await run_in_threadpool(subphenotypes.phenotype_values, project["unified"], column)
-        return JSONResponse({"column": column, "values": found})
+        if column not in dataio.columns(table):
+            raise ValueError("Choose an existing table column.")
+        found = await run_in_threadpool(subphenotypes.phenotype_values, table, column)
+        return JSONResponse({"column": column, "values": found[:200], 'truncated': len(found) > 200})
     except (ValueError, OSError, KeyError) as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
 
 
+async def studio_subpheno_selection(request: Request) -> Response:
+    from starlette.concurrency import run_in_threadpool
+    from spacemap_gui.studio import subphenotypes, phenotyping_inputs
+    try:
+        root = _studio_project(request)
+        table = phenotyping_inputs.combined_table(request.path_params['channel'])
+        body = await _json_body(request)
+        scope = await run_in_threadpool(subphenotypes.image_scope, root, table)
+        result = await run_in_threadpool(subphenotypes.selection, table, body, scope)
+        return JSONResponse(result)
+    except (ValueError, OSError, KeyError, TypeError) as exc:
+        return JSONResponse({'error': str(exc)}, status_code=400)
+
+
+async def studio_subpheno_figures(request: Request) -> Response:
+    from starlette.concurrency import run_in_threadpool
+    from spacemap_gui.studio import marker_figures, subphenotypes, phenotyping_inputs, jobs
+    from spacemap_gui.studio.settings import revision
+    try:
+        root = Path(_studio_project(request, write=request.method == 'POST'))
+        table = phenotyping_inputs.combined_table(request.path_params['channel'])
+        if request.method == 'POST':
+            body = await _json_body(request)
+            config = subphenotypes.values(root)
+            if body.get('revision') != revision(config):
+                raise ValueError('Settings changed. Reopen Sub-phenotyping and try again.')
+            scope = await run_in_threadpool(subphenotypes.image_scope, root, table)
+            settings = await run_in_threadpool(marker_figures.prepare, root, table, config, scope)
+            job = await run_in_threadpool(jobs.start, root, 'marker_figures', settings)
+            return JSONResponse({'job': job})
+        recent = await run_in_threadpool(jobs.recent, root, 500)
+        latest = next((j for j in recent if j.get('kind') == 'marker_figures'
+                       and j.get('status') == 'done' and j.get('result', {}).get('table') == str(table)), None)
+        return JSONResponse({'latest': latest, 'figure_choices': marker_figures.FIGURES,
+                             'defaults': {**marker_figures.DEFAULTS,
+            'output_dir': str(root / 'outputs/phenotyping/marker_figures')}})
+    except (ValueError, OSError, KeyError, TypeError) as exc:
+        return JSONResponse({'error': str(exc)}, status_code=400)
+
+
+async def studio_subpheno_figure(request: Request) -> Response:
+    from starlette.concurrency import run_in_threadpool
+    from starlette.responses import FileResponse
+    from spacemap_gui.studio import marker_figures
+    try:
+        root = Path(_studio_project(request, write=request.method == 'POST'))
+        if request.method == 'POST':
+            body = await _json_body(request)
+            result = await run_in_threadpool(marker_figures.render, root, body.get('job_id'), body)
+            return JSONResponse(result)
+        path = await run_in_threadpool(marker_figures.figure_file, root, request.query_params.get('job_id'),
+                                      request.query_params.get('file', ''))
+        return FileResponse(path, media_type='image/png' if path.suffix == '.png' else 'application/pdf',
+                            filename=path.name, content_disposition_type='inline')
+    except (ValueError, OSError, KeyError, TypeError) as exc:
+        return JSONResponse({'error': str(exc)}, status_code=400)
+
+
+async def studio_marker_review(request: Request) -> Response:
+    from starlette.concurrency import run_in_threadpool
+    from spacemap_gui.studio import marker_review, phenotyping_inputs
+    try:
+        root = Path(_studio_project(request, write=True))
+        channel = request.path_params['channel']
+        table = phenotyping_inputs.combined_table(channel)
+        body = await _json_body(request)
+        action = body.get('action', 'evidence')
+        if action == 'evidence':
+            result = await run_in_threadpool(marker_review.evidence, root, body)
+        elif action == 'select':
+            result = await run_in_threadpool(marker_review.select, root, channel, table, body)
+        elif action == 'apply':
+            result = await run_in_threadpool(marker_review.apply, root, table, body)
+        else:
+            raise ValueError('Choose a Marker review action.')
+        return JSONResponse(result)
+    except (ValueError, OSError, KeyError, TypeError) as exc:
+        return JSONResponse({'error': str(exc)}, status_code=400)
+
+
+async def studio_subpheno_model(request: Request) -> Response:
+    from starlette.concurrency import run_in_threadpool
+    from spacemap_gui.studio import reference_setup, phenotyping_inputs
+    try:
+        root = _studio_project(request, write=True)
+        table = phenotyping_inputs.combined_table(request.path_params['channel'])
+        body = await _json_body(request)
+        identifier = await run_in_threadpool(reference_setup.prepare_model, root, body.get('key'), table)
+        models = await run_in_threadpool(reference_setup.options, root, table)
+        return JSONResponse({'model_id': identifier, 'models': models})
+    except (ValueError, OSError, KeyError, TypeError) as exc:
+        return JSONResponse({'error': str(exc)}, status_code=400)
+
+
 async def studio_mrml_settings(request: Request) -> Response:
     from starlette.concurrency import run_in_threadpool
-    from spacemap_gui.studio import mr_ml, reference_models, phenotyping_inputs
+    from spacemap_gui.studio import mr_ml, reference_models, reference_setup, phenotyping_inputs
     from spacemap_gui.studio.settings import revision
     from spacemap import dataio
     from spacemap.viewer import reference
@@ -2146,10 +2411,31 @@ async def studio_mrml_settings(request: Request) -> Response:
         else:
             saved = mr_ml.values(root)
         models = await run_in_threadpool(reference_models.available, table)
+        setup = await run_in_threadpool(reference_setup.options, root, table)
+        allowed = {m['id'] for m in setup['models']}
+        models = [m for m in models if m['model_id'] in allowed]
         references = await run_in_threadpool(reference.columns, table)
         return JSONResponse({'values': saved, 'revision': revision(saved), 'models': models, 'references': references,
+                             'loaded_model_id': setup['base_model_id'],
                              'columns': dataio.columns(table), 'table': Path(table).name})
     except (ValueError, OSError, TypeError) as exc:
+        return JSONResponse({'error': str(exc)}, status_code=400)
+
+
+async def studio_mrml_support(request: Request) -> Response:
+    from starlette.concurrency import run_in_threadpool
+    from spacemap_gui.studio import mr_ml, reference_setup, phenotyping_inputs
+    try:
+        root = _studio_project(request)
+        table = phenotyping_inputs.combined_table(request.path_params['channel'])
+        body = await _json_body(request)
+        identifier = body.get('model_id')
+        allowed = await run_in_threadpool(reference_setup.options, root, table)
+        if identifier not in {m['id'] for m in allowed['models']}:
+            raise ValueError('Load a model from the Models folder first.')
+        value = await run_in_threadpool(mr_ml.panel_support, identifier, table)
+        return JSONResponse(value)
+    except (ValueError, OSError, KeyError, TypeError) as exc:
         return JSONResponse({'error': str(exc)}, status_code=400)
 
 
@@ -2209,7 +2495,9 @@ async def studio_neighbourhood_settings(request: Request) -> Response:
         else:
             saved = neighbourhoods.values(read_config(root))
         project = registry.session_project(request.path_params["channel"]) or {}
-        columns = dataio.columns(project["unified"]) if project.get("unified") else []
+        from spacemap_gui.studio import spatial_sources
+        table = await run_in_threadpool(spatial_sources.resolve, root, project.get('unified'))
+        columns = dataio.columns(table)
         return JSONResponse(
             {
                 "values": saved,
@@ -2254,6 +2542,7 @@ async def studio_tagging_settings(request: Request) -> Response:
         else:
             state = await run_in_threadpool(tagging.values, root, await run_in_threadpool(read_config, root))
         found = await run_in_threadpool(tagging.sources, root, state)
+        tagged = tagging.outputs(state, found)
         shown = {kind: tagging._shown(root, state[key]) for kind, (key, _) in tagging.FOLDERS.items()}
         return JSONResponse(
             {
@@ -2266,13 +2555,29 @@ async def studio_tagging_settings(request: Request) -> Response:
                 "columns_added": await run_in_threadpool(tagging.planned_columns, state, tagging.rules(found, state)),
                 # The project's pixel size, to show edge distances in µm (each image's own is used when tagging).
                 "microns": (await run_in_threadpool(read_config, root)).get("mpp_codex"),
-                "tagged": tagging.outputs(state, found),
+                "tagged": tagged,
                 "csv_folders": await run_in_threadpool(tagging.folders_with, root, ".csv"),
                 "geojson_folders": await run_in_threadpool(tagging.folders_with, root, ".geojson"),
             }
         )
     except (ValueError, OSError, TypeError, KeyError) as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
+
+
+async def studio_tagging_result(request: Request) -> Response:
+    from starlette.concurrency import run_in_threadpool
+    from spacemap_gui.studio import tagging
+    from spacemap_gui.studio.data_view import Preparing
+
+    try:
+        root = Path(_studio_project(request))
+        body = await _json_body(request)
+        return JSONResponse(await run_in_threadpool(tagging.link_output, root, str(body.get('token', '')),
+                                                   body.get('outputs') or (), body.get('version')))
+    except Preparing as exc:
+        return JSONResponse({'linked': False, 'retryable': True, 'reason': str(exc)})
+    except (ValueError, OSError, TypeError, KeyError) as exc:
+        return JSONResponse({'error':str(exc)}, status_code=400)
 
 
 async def studio_tagging_preview(request: Request) -> Response:
@@ -2322,7 +2627,9 @@ async def studio_interaction_settings(request: Request) -> Response:
         else:
             saved = interactions.values(read_config(root))
         project = registry.session_project(request.path_params["channel"]) or {}
-        columns = dataio.columns(project["unified"]) if project.get("unified") else []
+        from spacemap_gui.studio import spatial_sources
+        table = await run_in_threadpool(spatial_sources.resolve, root, project.get('unified'))
+        columns = dataio.columns(table)
         return JSONResponse(
             {
                 "values": saved,
@@ -2415,7 +2722,9 @@ async def studio_bring(request: Request) -> Response:
 
         async def answer(path):
             if drops.kind_of(path.name) == "table":  # cell data: set up in the Cell data dialog
-                return {"kind": "table", "name": path.name, "file_token": registry.register_object("datafile", path=str(path))}
+                from spacemap_gui.studio.cell_data import shown_name
+                return {"kind": "table", "name": shown_name(path), "path": str(path),
+                        "file_token": registry.register_object("datafile", path=str(path))}
             if drops.kind_of(path.name) == "geojson":
                 features = await run_in_threadpool(drops.read_shapes, path)
                 if drops.looks_like_cells(features):  # numbered cell outlines: offered as cells first
@@ -2518,8 +2827,13 @@ async def studio_phenotyping_inputs(request: Request) -> Response:
         root = _studio_project(request, write=request.method == "POST")
         if request.method == "POST":
             body = await _json_body(request)
-            if not isinstance(body, dict) or set(body) - {"table", "folders", "roles"}:
-                raise ValueError("Choose a combined table or its folders.")
+            if not isinstance(body, dict) or set(body) - {"table", "folders", "roles", "pair", "selected_images"}:
+                raise ValueError("Choose a cell table or its folders.")
+            if "selected_images" in body:
+                from spacemap_gui.studio import phenotyping_images
+                project = registry.session_project(channel) or {}
+                return JSONResponse(await run_in_threadpool(phenotyping_images.save, root,
+                    project.get('unified'), body['selected_images']))
             if "folders" in body:
                 await run_in_threadpool(phenotyping_inputs.save_folders, root, body["folders"])
             if "table" in body:
@@ -2527,9 +2841,52 @@ async def studio_phenotyping_inputs(request: Request) -> Response:
             if "roles" in body:
                 project = registry.session_project(channel) or {}
                 await run_in_threadpool(phenotyping_inputs.save_roles, root, project.get("unified"), body["roles"])
+            if "pair" in body:
+                project = registry.session_project(channel) or {}
+                pair = body['pair']
+                if not isinstance(pair, dict) or set(pair) != {'image', 'table'} or not all(isinstance(v, str) for v in pair.values()):
+                    raise ValueError('Choose an image and its cell table.')
+                await run_in_threadpool(phenotyping_inputs.save_pair, root, project.get('unified'), pair['image'], pair['table'])
         project = registry.session_project(channel) or {}
-        return JSONResponse(await run_in_threadpool(phenotyping_inputs.plan, root, project.get("mappings", {}), project.get("unified")))
+        if request.method == 'GET' and request.query_params.get('image'):
+            return JSONResponse(await run_in_threadpool(phenotyping_inputs.paired_summary, root, project.get('unified'), request.query_params['image']))
+        return JSONResponse(await run_in_threadpool(phenotyping_inputs.plan, root, project.get("mappings", {}), project.get("unified"),
+                                                   summaries=request.query_params.get('summaries') != '0'))
     except (ValueError, OSError, TypeError, KeyError) as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+
+async def studio_model_review(request: Request) -> Response:
+    from starlette.concurrency import run_in_threadpool
+    from spacemap_gui.studio import model_review, reference_setup, jobs
+    try:
+        root = _studio_project(request, write=request.method == 'POST')
+        if request.method == 'GET':
+            return JSONResponse(await run_in_threadpool(reference_setup.options, root))
+        body = await _json_body(request)
+        settings = await run_in_threadpool(model_review.prepare, root, body)
+        if settings['action'] == 'inspect':
+            return JSONResponse(await run_in_threadpool(model_review.run, settings, None, lambda *a: None))
+        job = await run_in_threadpool(jobs.start, root, 'model_review', settings, request_id=body.get('request_id'))
+        return JSONResponse({'job': job, 'message': 'Checking models…' if settings['action'] == 'validate' else 'Saving a new model version…'})
+    except (ValueError, OSError, TypeError, KeyError) as exc:
+        return JSONResponse({'error': str(exc)}, status_code=400)
+
+
+async def studio_reference_collection(request: Request) -> Response:
+    from starlette.concurrency import run_in_threadpool
+    from spacemap_gui.studio import reference_collection, phenotyping_inputs, jobs
+    try:
+        channel = request.path_params["channel"]
+        root = _studio_project(request, write=request.method == "POST")
+        table = phenotyping_inputs.combined_table(channel)
+        if request.method == "GET":
+            return JSONResponse(await run_in_threadpool(reference_collection.plan, root, table))
+        body = await _json_body(request)
+        settings = await run_in_threadpool(reference_collection.prepare, channel, body)
+        job = await run_in_threadpool(jobs.start, root, "reference_collection", settings, request_id=body.get("request_id"))
+        return JSONResponse({"job": job, "message": "Training a new model." if settings["action"] == "train" else "Predicting the selected images."})
+    except (ValueError, OSError, KeyError, TypeError) as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
 
 
@@ -2572,6 +2929,32 @@ async def studio_phenotyping_link(request: Request) -> Response:
         if not isinstance(tokens, list) or len(tokens) > 32 or any(not isinstance(t, str) for t in tokens):
             raise ValueError("Choose the open cell layers.")
         return JSONResponse(await run_in_threadpool(cell_links.context, request.path_params["channel"], tokens))
+    except (ValueError, OSError, KeyError, TypeError) as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+
+async def studio_reference_setup(request: Request) -> Response:
+    from starlette.concurrency import run_in_threadpool
+    from spacemap_gui.studio import reference_setup, phenotyping_inputs, auto_reference
+    try:
+        project = _studio_project(request, write=request.method == "POST")
+        channel = request.path_params["channel"]
+        try:
+            table = await run_in_threadpool(phenotyping_inputs.combined_table, channel)
+        except ValueError:
+            table = None
+        if request.method == "POST":
+            body = await _json_body(request)
+            result = await run_in_threadpool(reference_setup.configure, project, body, table)
+            previous = await run_in_threadpool(auto_reference.status, channel) if table else {}
+            if body.get("action") == "folder":
+                result["auto_reference"] = previous
+            if previous.get("enabled") and body.get("action") in {"load", "split", "training", "phenotypes"}:
+                result["auto_reference"] = await run_in_threadpool(auto_reference.configure, channel,
+                    previous["column"], True, previous["checked_only"])
+        else:
+            result = await run_in_threadpool(reference_setup.options, project, table)
+        return JSONResponse(result)
     except (ValueError, OSError, KeyError, TypeError) as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
 
@@ -2648,7 +3031,7 @@ def _data_source(body, channel=None):
         project = registry.session_project(channel) or {}
         path = phenotyping_inputs.combined_table(channel)
         roles = phenotyping_inputs.column_roles(project["root"], path)
-        return path, {"column": roles["roi"], "value": None,
+        return path, {"column": roles["roi"], "value": None if roles["roi"] else phenotyping_inputs.single_image(project["root"], path),
                       "label_column": phenotyping_inputs.segmentation_column(project["root"], path), "cell_id_column": roles["cell_id"]}
     if source.get("cells"):
         from spacemap_gui.studio.cell_links import table_layer
@@ -2691,6 +3074,15 @@ async def studio_data(request: Request) -> Response:
         column = rows.get("column", default["column"]) if rows.get("this_image", True) else ""
         value = rows.get("value", default["value"]) if column else None
         filters, sort = body.get("filters") or [], body.get("sort") or None
+        if body.get('flow_selection'):
+            from spacemap_gui.studio import flow_gating
+            token = body['flow_selection']
+            selected_rows = await run_in_threadpool(flow_gating.token_rows, token, request.path_params['channel'], str(path))
+            def register_flow_rows():
+                with data_editor.locked(path) as editor:
+                    editor.register_rows(token, selected_rows)
+            await run_in_threadpool(register_flow_rows)
+            filters = [*filters, {'_row_selection':token}]
         if action == "info":  # the image column's values, to pick this image's rows in a merged table
             found = await run_in_threadpool(data_view.info, path, rows.get("column") or default["column"])
             return JSONResponse({**found, "default": str(default["value"]) if default["value"] is not None else "",
@@ -2709,6 +3101,8 @@ async def studio_data(request: Request) -> Response:
             for key, name in fields.items():
                 if name in found["columns"]:
                     identity[key] = [data_view._cell(v) for v in await run_in_threadpool(data_view.values_at_rows, path, ids, name)]
+            if not default["column"] and default["value"]:
+                identity["roi"] = [str(default["value"])] * len(ids)
             found["identity"] = {str(row): {key: values[i] for key, values in identity.items()} for i, row in enumerate(ids)}
             return JSONResponse(found)
         if action == "find":
@@ -2718,8 +3112,10 @@ async def studio_data(request: Request) -> Response:
             return JSONResponse({"labels": await run_in_threadpool(data_view.labels_of, path, column, value, filters, default.get("label_column", "label"))})
         if action == "groups":
             from spacemap.viewer import cells
-            if not column or value is None:
-                raise ValueError("Choose an ROI before linking selected cells.")
+            if not default["column"]:
+                value = default["value"]
+            if value is None or value == "":
+                raise ValueError("Choose an image before linking selected cells.")
             _, positions = await run_in_threadpool(cells.assignment_rows, path, str(value), body.get("labels") or [],
                                                   roi_column=column, label_column=default.get("label_column", "label"))
             values = await run_in_threadpool(cells.values_at_rows, path, positions, str(body.get("column", "")))
@@ -2747,6 +3143,8 @@ async def studio_data(request: Request) -> Response:
             return FileResponse(exported, media_type="text/csv", filename=name,
                                 background=BackgroundTask(Path(exported).unlink, missing_ok=True))
         raise ValueError("Choose a data action.")
+    except data_editor.ExternalChange as exc:
+        return JSONResponse({"error": str(exc), "code": "data_external_change"}, status_code=409)
     except data_view.Preparing as exc:
         return JSONResponse({"preparing": True, "message": str(exc)})
     except (ValueError, OSError, KeyError, TypeError) as exc:
@@ -2754,27 +3152,97 @@ async def studio_data(request: Request) -> Response:
 
 
 async def studio_spatial(request: Request) -> Response:
-    """Spatial analysis and Visualization on the combined table: quick results at once, long ones as jobs."""
+    """Spatial analysis on merged or per-image tables, with long tasks in jobs."""
     from starlette.concurrency import run_in_threadpool
+    from starlette.responses import FileResponse
 
     import json
 
-    from spacemap_gui.studio import data_view, jobs, spatial, tls
+    from spacemap_gui.studio import data_view, jobs, spatial, tls, spatial_sources
 
     try:
         action = request.path_params["action"]
-        root = Path(_studio_project(request, write=action in ("start", "tls_save") or (action == "tls_settings" and request.method == "POST")))
+        root = Path(_studio_project(request, write=action in ("start", "tls_save") or (action in ("inputs", "tls_settings", "screening_settings", "gland_settings") and request.method == "POST")))
         project = registry.session_project(request.path_params["channel"]) or {}
-        table = project.get("unified")
-        if not table or not Path(table).is_file():
-            raise ValueError("No combined table yet: make it in Batch correction.")
         body = await _json_body(request) if request.method == "POST" else {}
+        if action == 'inputs':
+            return JSONResponse(await run_in_threadpool(spatial_sources.input_plan, request.path_params['channel'],
+                body if request.method == 'POST' else None))
+        table = await run_in_threadpool(spatial_sources.resolve, root, project.get('unified'))
         images = [str(i) for i in body.get("images") or []] or None
         text = lambda key: str(body.get(key) or "")
+        if action.startswith("gland_"):
+            from spacemap_gui.studio import gland_clonality as glands
+            if action == "gland_settings":
+                return JSONResponse(await run_in_threadpool(glands.settings, root, table,
+                    body.get("values") if request.method == "POST" else None, body.get("revision")))
+            if action == "gland_options":
+                return JSONResponse(await run_in_threadpool(glands.options, table, text("column")))
+            if action == "gland_runs":
+                return JSONResponse({"runs": await run_in_threadpool(glands.runs, root, table)})
+            if action == "gland_result":
+                result, _ = await run_in_threadpool(glands.saved_result, root, table, text("job_id"))
+                return JSONResponse(result)
+            if action == "gland_silhouette":
+                return JSONResponse(await run_in_threadpool(glands.saved_silhouette, root, table, text("job_id"), text("kind")))
+            if action == "gland_structures":
+                return JSONResponse(await run_in_threadpool(glands.structures, root, table, text("job_id"), text("image")))
+            if action == "gland_maps":
+                return JSONResponse(await run_in_threadpool(glands.maps, root, table, text("job_id"), text("image")))
+            if action == "gland_cells":
+                return JSONResponse(await run_in_threadpool(glands.select_cells, root, table, text("job_id"),
+                    text("structure"), text("role"), request.path_params["channel"]))
+            if action == "gland_type_cells":
+                return JSONResponse(await run_in_threadpool(glands.select_type_cells, root, table, text("job_id"),
+                    text("image"), text("kind"), text("name"), request.path_params["channel"]))
+            if action in ("gland_compare", "gland_figure", "gland_download"):
+                result, folder = await run_in_threadpool(glands.saved_result, root, table, text("job_id"))
+                if action == "gland_download":
+                    if text("file") in {f"{kind}_silhouette.{extension}" for kind in ("interior", "exterior") for extension in ("png", "csv")}:
+                        kind, extension = text("file").split("_", 1)[0], text("file").rsplit(".", 1)[1]
+                        data = await run_in_threadpool(glands.saved_silhouette, root, table, text("job_id"), kind)
+                        content = (await run_in_threadpool(glands.silhouette_figure, data, result.get("palette"))) if extension == "png" else glands.silhouette_csv(data)
+                        return Response(content, media_type="image/png" if extension == "png" else "text/csv",
+                                        headers={"Content-Disposition": f'attachment; filename="{text("file")}"'})
+                    if text("file") in ("interior_k_review.png", "exterior_k_review.png"):
+                        kind = text("file").split("_", 1)[0]
+                        png = await run_in_threadpool(glands.k_review_figure, result["models"].get(kind), kind)
+                        return Response(png, media_type="image/png", headers={"Content-Disposition": f'attachment; filename="{text("file")}"'})
+                    allowed = {"gland_structures.csv", "gland_models.json", "gland_settings.json", "gland_structures.parquet",
+                               "interior_raw_profiles.csv", "interior_z_profiles.csv", "exterior_raw_profiles.csv", "exterior_z_profiles.csv",
+                               "sample_burdens.csv", "clinical_tests.csv", "interior_profiles.png", "exterior_profiles.png"}
+                    if text("file") not in allowed or not (folder / text("file")).is_file():
+                        raise ValueError("Choose an available gland result export.")
+                    return FileResponse(folder / text("file"), filename=text("file"))
+                if action == "gland_figure":
+                    if text("kind") not in ("interior", "exterior") or not result["profiles"].get(text("kind")):
+                        raise ValueError("No fitted profile for this selection.")
+                    return FileResponse(folder / (text("kind") + "_profiles.png"), media_type="image/png")
+                import pandas as pd
+                import base64
+                s = await run_in_threadpool(pd.read_parquet, folder / "gland_structures.parquet")
+                c = dict(result["values"])
+                changes = body.get("comparison") or {}
+                if not isinstance(changes, dict) or set(changes) - {"group_a", "group_b", "baseline", "followup", "min_samples"}:
+                    raise ValueError("Choose comparison groups, visits and a minimum sample count.")
+                c = glands.check({**c, **changes})
+                compartment = text("compartment")
+                if compartment and compartment not in c["scope"]:
+                    raise ValueError("Choose a compartment from this run.")
+                found = await run_in_threadpool(glands.clinical, s, c, compartment=compartment, strata=bool(body.get("strata", False)))
+                if body.get("figure"):
+                    from spacemap import phenotype_presets
+                    palette = await run_in_threadpool(phenotype_presets.ensure, [c["group_a"], c["group_b"]])
+                    png = await run_in_threadpool(glands.clinical_figure, found, text("view"), text("stratum") or "All", palette)
+                    found["figure"] = "data:image/png;base64," + base64.b64encode(png).decode()
+                return JSONResponse(found)
+            raise ValueError("Choose a Gland types action.")
         def tls_image_entries():
             channel = request.path_params["channel"]
             spec = (registry.session_view(channel, mark_seen=False) or {}).get("spec") or {}
-            entries = []
+            # Exact Phenotyping/Spatial image paths precede the broad catalogue,
+            # which may also contain a raw QPTIFF with the same sample name.
+            entries = spatial_sources.image_entries(root, project.get('unified'))
             for layer in spec.get("layers", []):
                 if layer.get("type") != "image":
                     continue
@@ -2784,9 +3252,90 @@ async def studio_spatial(request: Request) -> Response:
                 if path:
                     entries.append({"path": str(path), "sample": sample, "name": Path(path).name})
             return entries + (registry.session_images(channel) or [])
+        if action == 'overview':
+            return JSONResponse(await run_in_threadpool(spatial_sources.overview, root, table,
+                summaries=request.query_params.get('summaries') == '1'))
+        if action.startswith("screening_"):
+            from spacemap_gui.studio import screening
+            if action in ("screening_stability", "screening_stability_file"):
+                from spacemap_gui.studio import screening_stability
+                def parameter(key, default=""):
+                    return body.get(key, request.query_params.get(key, default))
+                found = await run_in_threadpool(screening_stability.load, root, parameter("run"))
+                extension = parameter("format", "png")
+                if action == "screening_stability_file" and extension == "csv":
+                    content = await run_in_threadpool(screening_stability.csv_bytes, found)
+                    return Response(content, media_type="text/csv", headers={"Content-Disposition": 'attachment; filename="screening_stability_all.csv"'})
+                chosen = await run_in_threadpool(screening_stability.select, found,
+                    parameter("comparison"), parameter("family"), parameter("search"),
+                    str(parameter("only_fdr", "false")).lower() == "true", int(parameter("offset", 0)), int(parameter("limit", 20)))
+                if action == "screening_stability":
+                    return JSONResponse(chosen)
+                content = await run_in_threadpool(screening_stability.figure_bytes, chosen, extension)
+                return Response(content, media_type={"png":"image/png", "svg":"image/svg+xml", "pdf":"application/pdf"}[extension],
+                    headers={"Content-Disposition": f'attachment; filename="screening_stability_{chosen["offset"]+1}.{extension}"'})
+            if action == "screening_plan":
+                from spacemap import dataio
+                from spacemap_gui.studio import screening_comparisons
+                def preview_comparisons():
+                    if not images:
+                        raise ValueError("Tick images above to preview their comparisons.")
+                    c, _ = screening.check(body.get("values", {}), dataio.columns(table))
+                    cols = [c["sample_col"], c["image_col"], *screening_comparisons.validate_design(c, dataio.columns(table))]
+                    if c["endpoint"]["type"] == "binary":
+                        cols.append(c["endpoint"]["group_col"])
+                    data = dataio.load(table, columns=list(dict.fromkeys(cols)))
+                    data = data[data[c["image_col"]].astype(str).isin(images)]
+                    return {"comparisons": screening_comparisons.plan(data, c)}
+                return JSONResponse(await run_in_threadpool(preview_comparisons))
+            if action == "screening_settings":
+                saved = (await run_in_threadpool(screening.save, root, body.get("values"), body.get("revision"))
+                         if request.method == "POST" else await run_in_threadpool(screening.settings, root))
+                saved["units"] = await run_in_threadpool(screening.units, table)
+                return JSONResponse(saved)
+            if action == "screening_runs":
+                return JSONResponse({"runs": await run_in_threadpool(screening.runs, root, table)})
+            if action == "screening_progress":
+                job_id = text("job_id")
+                job = await run_in_threadpool(jobs.status, root, job_id)
+                if job["kind"] != "spatial_screening":
+                    raise ValueError("Choose a spatial screening job.")
+                pointer = jobs.directory(root, job_id) / "screening_progress.json"
+                if not pointer.exists():
+                    return JSONResponse({"result": None})
+                run = json.loads(pointer.read_text())["run"]
+                try:
+                    found = await run_in_threadpool(screening.result, root, run)
+                except FileNotFoundError:
+                    found = None
+                return JSONResponse({"result": found, "status": job["status"]})
+            if action == "screening_cells":
+                return JSONResponse(await run_in_threadpool(screening.context_cells, root, table, text("run"), text("image"), text("feature"), int(body.get("zone", -1)), request.path_params["channel"], text("comparison"), text("sample"), text("group"), text("occasion")))
+            if action == "screening_finding":
+                return JSONResponse(await run_in_threadpool(screening.finding, root, text("run"), text("feature"), int(body.get("zone", -1)), text("comparison")))
+            if action in ("screening_result", "screening_file"):
+                run = text("run") or request.query_params.get("run", "")
+                found = await run_in_threadpool(screening.result, root, run, text("comparison") or request.query_params.get("comparison", ""))
+                if action == "screening_result":
+                    return JSONResponse(found)
+                from starlette.responses import FileResponse
+                name = request.query_params.get("name", "")
+                if name in ("tables/all_comparisons.csv", "tables/all_significant_features.csv") and found.get("scan_folder"):
+                    return FileResponse(Path(found["scan_folder"]) / name, filename=Path(name).name)
+                figure_names = {*screening.FAMILIES,
+                                *("diversity_" + metric for metric in screening.DIVERSITY)}
+                allowed = {"design.json", "result.json", *["tables/"+s for s in ("screening_results_all.csv", "significant_features.csv", "sample_features.csv", "region_features.csv")],
+                           *["figures/"+f+"."+ext for f in figure_names for ext in ("png", "svg", "pdf")]}
+                if name not in allowed:
+                    raise ValueError("Choose a saved screening table or figure.")
+                if name == "tables/significant_features.csv" and not (Path(found["folder"]) / name).exists():
+                    import pandas as pd
+                    frame = pd.DataFrame(found["tests"])
+                    return Response(frame.loc[frame.q < found["settings"]["alpha"]].to_csv(index=False), media_type="text/csv",
+                        headers={"Content-Disposition": 'attachment; filename="significant_features.csv"'})
+                return FileResponse(Path(found["folder"]) / name, filename=Path(name).name)
         if action == "tls_mpp":
-            from spacemap_gui.studio import phenotyping_overview
-            overview = await run_in_threadpool(phenotyping_overview.overview, table)
+            overview = await run_in_threadpool(spatial_sources.overview, root, table)
             return JSONResponse({"images": await run_in_threadpool(tls.calibration, root,
                 [r["roi"] for r in overview.get("rois", [])], tls_image_entries())})
         if action == "tls_settings":
@@ -2844,17 +3393,29 @@ async def studio_spatial(request: Request) -> Response:
         if action == "triad_shapes":
             folder = Path(text("folder")).resolve()
             points = folder / f"triad_instances_{folder.name}.csv"
-            if root.resolve() not in folder.parents or not points.is_file():
+            allowed = root.resolve() in folder.parents or spatial_sources.output_folder(root).resolve() in folder.parents
+            if not allowed or not points.is_file():
                 raise ValueError("Choose a triad run of this project.")
             return JSONResponse(await run_in_threadpool(spatial.triad_shapes, points, text("image")))
         if action == "outline":
             folder = Path(text("folder")).resolve()
             path = folder / (text("image") + "_tissue_outline.geojson")
-            if root.resolve() not in folder.parents or "/" in text("image") or not path.is_file():
+            allowed = root.resolve() in folder.parents or spatial_sources.output_folder(root).resolve() in folder.parents
+            if not allowed or "/" in text("image") or not path.is_file():
                 raise ValueError("No tissue outline for this image in that run.")
             return JSONResponse(json.loads(path.read_text()))
         if action == "start":
             kind = text("kind")
+            if kind == "gland_types":
+                from spacemap_gui.studio import gland_clonality as glands
+                prepared = await run_in_threadpool(glands.prepare, root, table, body.get("values") or {},
+                    images or [], body.get("overwrite", False), body.get("diagnose", False))
+                return JSONResponse({"job": await run_in_threadpool(jobs.start, str(root), kind, prepared)})
+            if kind == "spatial_screening":
+                from spacemap_gui.studio import screening
+                prepared = await run_in_threadpool(screening.prepare, root, table, body.get("values") or {}, images or [], tls_image_entries())
+                prepared["version"] = 2
+                return JSONResponse({"job": await run_in_threadpool(jobs.start, str(root), kind, prepared)})
             if kind == "tls_candidates":
                 from spacemap_gui.studio.settings import read_config, revision
                 chosen = tls.values(read_config(root))
@@ -2970,8 +3531,28 @@ async def studio_cell_data(request: Request) -> Response:
             return JSONResponse(await run_in_threadpool(cell_data.inspect, source, entry["sample"]))
         if action == "build":
             own = await run_in_threadpool(cell_layers.own, root, config, mappings, entry["path"], entry["sample"])
+            # Attach an imported table to the open geometry under a stable new ID.
+            # Rebuilding the whole layer renumbers t0/t1 and can silently replace
+            # the table currently used by the viewer and existing density maps.
+            target = None
+            if body.get("target_token") and body.get("choice", {}).get("show") == "cells":
+                target = registry.resolve_object(str(body["target_token"]), "cells")
+                if (not target or not target.get("segmentation") or
+                    Path(target.get("image", "")).resolve() != Path(entry["path"]).resolve() or
+                    not Path(target["segmentation"]).is_file()):
+                    raise ValueError("The open cell outlines changed. Reopen the import dialog before linking this table.")
+                own = target["segmentation"]
             record = await run_in_threadpool(cell_data.build, root, config, mappings, entry["path"], source,
                                              dict(body.get("choice") or {}), ui._cache_dir(root), own)
+            if target is not None:
+                key = "import_" + record["id"]
+                keys = {"roi": target["roi"], "roi_column": "batch_id", "label_column": "label"}
+                registry.connect_cell_table(str(body["target_token"]), key, record["table"], keys)
+                layer = {"id": str(body.get("target_id") or "cells"), "type": "cells", "token": str(body["target_token"]),
+                         "image_token": body.get("image_token"), "table": key,
+                         "tables": [{"id": key, "name": "Data: " + record["name"], "file": record["table"], "source_file": record["source"]}],
+                         "table_roles": {key: keys}}
+                return JSONResponse({"record": {**record, "text": cell_data.describe(record)}, "layer": layer})
             layers = await run_in_threadpool(_layers_of, channel, entry)
             wanted = "cells" if record["show"] == "cells" else "data-" + record["id"]
             layer = next((item for item in layers if item.get("id") == wanted), None)
@@ -3223,7 +3804,7 @@ async def studio_registration_pairs(request: Request) -> Response:
 
 
 def _pair_images(channel, found):
-    """Each pair's CODEX, H&E and merged image as the window can open them (group and name, no paths)."""
+    """Each pair's image identities for opening and highlighting its active view."""
     from spacemap_gui.viewer.ui import window_images
 
     images = window_images(channel)
@@ -3231,7 +3812,7 @@ def _pair_images(channel, found):
     by_path = {}
     for image, entry in zip(images, entries):
         try:
-            by_path[str(Path(entry["path"]).resolve())] = {"group": image["group"], "name": image["name"]}
+            by_path[str(Path(entry["path"]).resolve())] = {"group": image["group"], "name": image["name"], "path": str(Path(entry["path"]).resolve())}
         except (KeyError, OSError):
             pass
     folders = found["folders"]
@@ -3552,6 +4133,17 @@ async def studio_training(request: Request) -> Response:
             return JSONResponse(await run_in_threadpool(training.set_role, root, body.get("names"), body.get("role")))
         if action == "validate":
             return JSONResponse(await run_in_threadpool(training.validate, root))
+        if action == "retrain":
+            from spacemap_gui.studio import jobs
+
+            config = await run_in_threadpool(read_config, root)
+            project = registry.session_project(request.path_params['channel']) or {}
+            mappings = {**project.get('mappings', {}), **config.get('directory_mappings', {})}
+            settings = await run_in_threadpool(training.retrain_settings, root, body.get("names"),
+                                               config, mappings, body.get("epochs", 100),
+                                               missing_markers=body.get("missing_markers", False))
+            job = await run_in_threadpool(jobs.start, root, "train_cellpose", settings)
+            return JSONResponse({"job": job})
         if action == "scores":
             # Every version on the same validation tiles: a job, as it runs each model.
             from spacemap_gui.studio import jobs
@@ -4177,6 +4769,21 @@ async def studio_heatmap_summary(request: Request) -> Response:
         return JSONResponse({"error": str(exc)}, status_code=400)
 
 
+async def studio_clear_jobs(request: Request) -> Response:
+    from starlette.concurrency import run_in_threadpool
+    from spacemap_gui.studio import jobs
+
+    try:
+        root = _studio_project(request, write=True)
+        body = await _json_body(request)
+        if body.get('finished') is not True and 'ids' not in body:
+            raise ValueError('Choose jobs to clear.')
+        result = await run_in_threadpool(jobs.clear_history, root, None if body.get('finished') is True else body['ids'])
+        return JSONResponse(result)
+    except (ValueError, OSError, TypeError) as exc:
+        return JSONResponse({'error': str(exc)}, status_code=400)
+
+
 def studio_jobs(request: Request) -> Response:
     from spacemap_gui.studio import jobs
 
@@ -4539,13 +5146,58 @@ async def display_sets(request: Request) -> Response:
     return JSONResponse({"sets": sets})
 
 
+async def studio_flow_cache(request: Request) -> Response:
+    from starlette.concurrency import run_in_threadpool
+    from spacemap_gui.studio import flow_cache
+    try:
+        root = _studio_project(request, write=request.method == 'POST')
+        if request.method == 'POST':
+            body = await _json_body(request)
+            if body.get('action') != 'clear':
+                raise ValueError('Choose Clear Flow cache.')
+            return JSONResponse(await run_in_threadpool(flow_cache.clear, root))
+        return JSONResponse(await run_in_threadpool(flow_cache.state, root))
+    except (ValueError, KeyError, OSError, TypeError) as exc:
+        return JSONResponse({'error':str(exc)}, status_code=400)
+
+
+async def studio_flow_gating(request: Request) -> Response:
+    from starlette.concurrency import run_in_threadpool
+    from spacemap_gui.studio import flow_gating
+    try:
+        _studio_project(request, write=request.method == 'POST')
+        channel = request.path_params['channel']
+        if request.method == 'GET':
+            if request.query_params.get('status'):
+                found = flow_gating.public(await run_in_threadpool(flow_gating.load,channel))
+                return JSONResponse({'revision':found['revision'],'id':found['id']})
+            return JSONResponse(await run_in_threadpool(flow_gating.options,channel, metadata_only=request.query_params.get('metadata') == '1'))
+        body = await _json_body(request)
+        return JSONResponse(await run_in_threadpool(flow_gating.dispatch,channel,body))
+    except (ValueError, KeyError, OSError, TypeError) as exc:
+        return JSONResponse({'error':str(exc)},status_code=400)
+
+
+def flow_plotly(request: Request) -> Response:
+    # Use Studio's installed Plotly; no CDN/network dependency in the workbench.
+    from plotly.offline import get_plotlyjs
+    return Response(get_plotlyjs(),media_type='text/javascript',headers={'Cache-Control':'private, max-age=86400'})
+
+
 routes = [
+    Route('/studio/{channel}/flow_cache', studio_flow_cache, methods=['GET','POST']),
+    Route('/studio/{channel}/flow_gating', studio_flow_gating, methods=['GET','POST']),
+    Route('/flow_plotly.js', flow_plotly),
     Route("/studio/{channel}/classification", classification_api.classification, methods=["GET", "POST"]),
     Route("/studio/{channel}/heatmap_summary", studio_heatmap_summary, methods=["POST"]),
     Route("/studio/{channel}/annotation_export", annotation_export_api.annotation_export, methods=["GET", "POST"]),
     Route("/studio/{channel}/annotation_names", annotation_export_api.annotation_names_route, methods=["GET", "POST"]),
     Route("/studio/{channel}/annotation_palette", annotation_export_api.annotation_palette, methods=["GET", "POST"]),
     Route("/studio/{channel}/annotation_imports", annotation_export_api.annotation_imports, methods=["GET", "POST"]),
+    Route("/studio/{channel}/lists", lists_api.lists, methods=["GET", "POST"]),
+    Route("/studio/{channel}/lists/upload", lists_api.upload, methods=["POST"]),
+    Route("/studio/{channel}/lists/download/{token}", lists_api.download),
+    Route("/studio/{channel}/storage", lists_api.storage, methods=["GET", "POST"]),
     Route("/studio/{channel}/cell_layers", studio_cell_layers, methods=["GET", "POST"]),
     Route("/studio/{channel}/cell_data", studio_cell_data, methods=["GET", "POST"]),
     Route("/studio/{channel}/freshness", studio_freshness),
@@ -4553,6 +5205,8 @@ routes = [
     Route("/studio/{channel}/data/{action}", studio_data, methods=["GET", "POST"]),
     Route("/studio/{channel}/phenotyping_overview", studio_phenotyping_overview),
     Route("/studio/{channel}/phenotyping_inputs", studio_phenotyping_inputs, methods=["GET", "POST"]),
+    Route("/studio/{channel}/reference_collection", studio_reference_collection, methods=["GET", "POST"]),
+    Route("/studio/{channel}/model_review", studio_model_review, methods=["GET", "POST"]),
     Route("/studio/{channel}/resolve_setup", studio_resolve_setup, methods=["GET", "POST"]),
     Route("/studio/{channel}/phenotyping_link", studio_phenotyping_link, methods=["POST"]),
     Route("/studio/{channel}/bring/{action}", studio_bring, methods=["POST"]),
@@ -4565,6 +5219,7 @@ routes = [
     Route("/health", health),
     Route("/image/{token}/info", info),
     Route("/image/{token}/limits", limits),
+    Route("/image/{token}/pixels", pixels),
     Route("/image/{token}/background", background),
     Route("/image/{token}/display_range", auto_display_range),
     Route("/image/{token}/histogram", histogram),
@@ -4643,16 +5298,24 @@ routes = [
     Route("/studio/{channel}/marker_choices", studio_marker_choices),
     Route("/studio/{channel}/consensus_settings", studio_consensus_settings, methods=["GET", "POST"]),
     Route("/studio/{channel}/mrml_settings", studio_mrml_settings, methods=["GET", "POST"]),
+    Route("/studio/{channel}/mrml_support", studio_mrml_support, methods=["POST"]),
     Route("/studio/{channel}/subpheno_settings", studio_subpheno_settings, methods=["GET", "POST"]),
+    Route("/studio/{channel}/subpheno_selection", studio_subpheno_selection, methods=["POST"]),
+    Route("/studio/{channel}/subpheno_figures", studio_subpheno_figures, methods=["GET", "POST"]),
+    Route("/studio/{channel}/subpheno_figure", studio_subpheno_figure, methods=["GET", "POST"]),
+    Route("/studio/{channel}/marker_review", studio_marker_review, methods=["POST"]),
+    Route("/studio/{channel}/subpheno_model", studio_subpheno_model, methods=["POST"]),
     Route("/studio/{channel}/phenotype_values", studio_phenotype_values),
-    Route("/studio/{channel}/cluster_suggestions", studio_cluster_suggestions),
+    Route("/studio/{channel}/cluster_suggestions", studio_cluster_suggestions, methods=["GET", "POST"]),
     Route("/studio/{channel}/figure", studio_figure, methods=["POST"]),
+    Route("/studio/{channel}/phenotype_assessment", studio_phenotype_assessment, methods=["GET", "POST"]),
     Route("/studio/{channel}/saved", studio_saved),
     Route("/studio/{channel}/saved/{action}", studio_saved, methods=["POST"]),
     Route("/studio/{channel}/ai", studio_ai),
     Route("/studio/{channel}/ai/{action}", studio_ai, methods=["POST"]),
     Route("/studio/{channel}/neighbourhood_settings", studio_neighbourhood_settings, methods=["GET", "POST"]),
     Route("/studio/{channel}/tagging_settings", studio_tagging_settings, methods=["GET", "POST"]),
+    Route("/studio/{channel}/tagging_result", studio_tagging_result, methods=["POST"]),
     Route("/studio/{channel}/folders/{step}", studio_step_folders, methods=["GET", "POST"]),
     Route("/studio/{channel}/tagging_preview", studio_tagging_preview, methods=["POST"]),
     Route("/studio/{channel}/interaction_settings", studio_interaction_settings, methods=["GET", "POST"]),
@@ -4663,6 +5326,7 @@ routes = [
     Route("/studio/{channel}/model_library", studio_model_library, methods=["GET", "POST"]),
     Route("/studio/{channel}/manual_reference", studio_manual_reference, methods=["GET", "POST"]),
     Route("/studio/{channel}/auto_reference", studio_auto_reference, methods=["GET", "POST"]),
+    Route("/studio/{channel}/reference_setup", studio_reference_setup, methods=["GET", "POST"]),
     Route("/studio/{channel}/reference_features", studio_reference_features, methods=["GET", "POST"]),
     Route("/studio/{channel}/projects", studio_projects, methods=["GET", "POST"]),
     Route("/studio/{channel}/marker_regions", studio_marker_regions, methods=["GET", "POST"]),
@@ -4679,6 +5343,7 @@ routes = [
     Route("/studio/{channel}/selection_options", studio_selection_options),
     Route("/studio/{channel}/settings", studio_settings, methods=["GET", "POST"]),
     Route("/studio/{channel}/jobs", studio_jobs),
+    Route("/studio/{channel}/jobs/clear", studio_clear_jobs, methods=["POST"]),
     Route("/studio/{channel}/jobs/{job_id}", studio_jobs, methods=["GET", "POST"]),
     Route("/session/{session}", session_get),
     Route("/session/{session}/images", session_images),
@@ -4725,7 +5390,7 @@ def _window_files():
             stamp = assets.get(match.group(2),(b'',0))[1]
             return f'{match.group(1)}="{match.group(2)}?v={stamp}"'
 
-        return re.sub(r'(src|href)="((?!https?:|//)[^"?]+\.(?:js|css))"', stamped, html)
+        return re.sub(r'(src|href)="((?!https?:|//)[^"?]+\.(?:js|css))(?:\?[^"]*)?"', stamped, html)
 
     async def app(scope, receive, send):
         path = scope.get("path", "")
@@ -4758,6 +5423,8 @@ routes.append(Mount("/window", app=_window_files()))
 from .annotation_recording import install as _record_annotation_routes, workflow_record
 _record_annotation_routes(routes)
 routes.append(Route('/studio/{channel}/annotation_workflow', workflow_record, methods=['GET', 'POST']))
+from .review_api import install as _install_review
+_install_review(routes)
 app = Starlette(routes=routes)
 
 MOUNT_PATH = "/spacemap-viewer/api"

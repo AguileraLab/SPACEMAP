@@ -13,7 +13,7 @@ import os
 import re
 import time
 from dataclasses import asdict, dataclass
-from http.client import RemoteDisconnected
+from http.client import IncompleteRead, RemoteDisconnected
 from pathlib import Path
 from typing import Any, Iterator
 from urllib.error import HTTPError, URLError
@@ -171,7 +171,8 @@ def _stream_text(client, response, on_progress=None):
             raise ModelUnavailable(f"The model did not finish within {client.max_response_seconds} seconds. No labels were applied. Try fewer clusters or another model.")
         if on_progress and now - last_progress >= 5:
             last_progress = now
-            on_progress({"status":"The model is reasoning; no answer yet…" if info["reasoning"] and not info["content_chars"] else "Receiving the model's answer…"})
+            on_progress({"status": ("The model is reasoning; no answer yet…" if info["reasoning"] else "Waiting for the model's answer…")
+                         if not info["content_chars"] else "Receiving the model's answer…"})
         line = raw_line.decode("utf-8", errors="replace").strip()
         if not line.startswith("data:"):
             continue
@@ -386,6 +387,14 @@ class LocalModelClient:
     def __init__(self, *, base_url: str | None = None, timeout_seconds: int = 600) -> None:
         self.base_url = _validate_base_url(base_url or local_base_url())
         self.timeout_seconds = min(1800, max(5, int(timeout_seconds)))
+        self.max_response_seconds = self.timeout_seconds
+
+    def _read_error(self, error: BaseException) -> ModelUnavailable:
+        if isinstance(error, TimeoutError) or isinstance(getattr(error, 'reason', None), TimeoutError):
+            return ModelUnavailable(f'The local model sent no data for {self.timeout_seconds} seconds. '
+                'The request timed out. Try fewer clusters, or stop and restart the model in AI setup.')
+        return ModelUnavailable('The connection to the local model closed before its answer finished. '
+            'If you stopped it, this is expected. Otherwise check AI setup and the model log.')
 
     def _request(self, path: str, *, payload: dict[str, Any] | None = None):
         url = self.base_url.removesuffix("/v1") + path if path.startswith("/") else self.base_url + "/" + path
@@ -414,8 +423,10 @@ class LocalModelClient:
             raise ModelUnavailable(detail or f"The local Gemma server returned HTTP {exc.code}.") from exc
         except (URLError, TimeoutError, OSError) as exc:
             reason = getattr(exc, "reason", exc)
+            if isinstance(reason, TimeoutError):
+                raise self._read_error(exc) from exc
             raise ModelUnavailable(
-                f"The local Gemma model is not available at {self.base_url}: {reason}"
+                f"The local model is not available at {self.base_url}: {reason}"
             ) from exc
 
     def health(self) -> dict[str, Any]:
@@ -436,8 +447,11 @@ class LocalModelClient:
             "max_tokens": max_tokens,
             "stream": False,
         }
-        with self._request("chat/completions", payload=payload) as response:
-            raw_result = response.read().decode("utf-8")
+        try:
+            with self._request("chat/completions", payload=payload) as response:
+                raw_result = response.read().decode("utf-8")
+        except (OSError, IncompleteRead) as error:
+            raise self._read_error(error) from error
         try:
             result = json.loads(raw_result)
             content = result["choices"][0]["message"]["content"]
@@ -468,8 +482,8 @@ class LocalModelClient:
         try:
             with self._request("chat/completions", payload=payload) as response:
                 yield from _stream_text(self, response, on_progress)
-        except OSError as error:
-            raise ModelUnavailable("The local model stopped sending data. Retry or check AI setup.") from error
+        except (OSError, IncompleteRead) as error:
+            raise self._read_error(error) from error
 
 
 def _nvidia_error_detail(exc: HTTPError) -> str:

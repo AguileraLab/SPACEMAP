@@ -15,7 +15,7 @@ import subprocess
 import sys
 import time
 import uuid
-from spacemap.sharing import open_lock
+from spacemap.sharing import open_lock, share
 
 
 def write_json(path, value):
@@ -23,6 +23,7 @@ def write_json(path, value):
     tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     try:
         tmp.write_text(json.dumps(value, indent=2), encoding="utf-8")
+        share(tmp)
         os.replace(tmp, path)
     finally:
         tmp.unlink(missing_ok=True)
